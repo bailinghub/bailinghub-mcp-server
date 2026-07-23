@@ -1,0 +1,29 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Use an npm version with trusted publishing support
+        run: npm install --global npm@latest
+      - run: npm ci
+      - run: npm run check:release-tag
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+      - run: npm run verify
+      - name: Publish with npm trusted publishing
+        run: npm publish --access public

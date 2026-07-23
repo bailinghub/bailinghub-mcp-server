@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - name: Check current BailingHub Client API contract
+        env:
+          BAILING_CLIENT_API_CORE_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if git ls-remote --exit-code --heads https://github.com/bailinghub/bailinghub.git "$BAILING_CLIENT_API_CORE_REF" >/dev/null 2>&1; then
+            git clone --depth 1 --branch "$BAILING_CLIENT_API_CORE_REF" https://github.com/bailinghub/bailinghub.git /tmp/bailinghub-core
+          else
+            git clone --depth 1 https://github.com/bailinghub/bailinghub.git /tmp/bailinghub-core
+          fi
+          npm run client-api:check -- \
+            --contract-dir /tmp/bailinghub-core/contracts/client-api/v1
+      - run: npm pack --dry-run

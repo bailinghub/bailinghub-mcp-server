@@ -1,0 +1,71 @@
+# Threat Model
+
+## Assets
+
+- BailingHub Client Token;
+- configured route boundary;
+- business task text and public job result;
+- client-scoped idempotency and job ownership;
+- integrity of the MCP stdio protocol.
+
+## Trust Domains
+
+| Domain | Trust assumption |
+| --- | --- |
+| Model and MCP host input | Untrusted for identity, authority, approval, and route selection |
+| MCP server process | Trusted to hold the route-scoped Client Token and enforce projection |
+| BailingHub Client API | Trusted to enforce client ownership, route allowlist, rate limits, and contract |
+| Business system | Final authority for subject, object state, tenant scope, and business authorization |
+
+## Attacker Capabilities
+
+A compromised prompt, model, or MCP host conversation may:
+
+- choose task text and `request_id`;
+- repeat tool calls;
+- provide arbitrary job IDs;
+- attempt to inject credentials or identity claims into task text;
+- cause large, malformed, or adversarial upstream responses.
+
+It must not be able to:
+
+- replace the configured BailingHub origin, Client Token, or route through tool arguments;
+- call BailingHub administrator, executor, approval-decision, tool-proxy, or configuration APIs;
+- convert task text into a trusted acting subject;
+- make the MCP server assert final business authorization;
+- force an unbounded wait;
+- receive arbitrary top-level BailingHub response fields;
+- recover a secret from a raw upstream error body.
+
+## Security Invariants
+
+1. Configuration fails closed when URL, Token, or route is absent or malformed.
+2. Non-loopback HTTP requires an explicit operator override.
+3. Every submission body contains exactly `request_id`, configured `route`, and `input`.
+4. Job lookups are limited to UUIDs and BailingHub client ownership.
+5. Unknown job statuses fail closed.
+6. Response bodies are limited to 1 MiB and top-level fields are projected.
+7. Waiting is bounded to 60 seconds and never resubmits a job.
+8. stdout contains MCP protocol traffic only; diagnostics use stderr.
+9. The adapter never accepts a subject, approval result, credential, callback, metadata, or
+   arbitrary route as a tool parameter.
+
+## Non-Guarantees
+
+This adapter cannot prove that a compromised MCP server process preserved credentials, that
+BailingHub itself is uncompromised, or that an audit record authored by one runtime is
+independent cryptographic evidence. It also does not provide a delegation chain across
+multiple agents. Those require separate trust, attestation, and delegation protocols.
+
+## Validation
+
+Automated tests cover:
+
+- startup configuration and HTTPS policy;
+- tool schema exclusion of privileged fields;
+- exact request projection and Authorization header;
+- top-level response projection;
+- unknown status and response-size rejection;
+- bounded waiting without resubmission;
+- an end-to-end stdio MCP call against a no-side-effect mock BailingHub.
+

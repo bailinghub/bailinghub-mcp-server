@@ -1,0 +1,51 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.bailinghub/bailinghub-governance",
+  "title": "BailingHub Governance",
+  "description": "Submit and inspect governed AI business actions through a self-hosted BailingHub control plane.",
+  "repository": {
+    "url": "https://github.com/bailinghub/bailinghub-mcp-server",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "bailinghub-mcp-server",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "BAILINGHUB_BASE_URL",
+          "description": "Absolute URL of the self-hosted BailingHub deployment.",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "BAILINGHUB_CLIENT_TOKEN",
+          "description": "Dedicated BailingHub Client Token restricted to the configured route.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "BAILINGHUB_ROUTE",
+          "description": "One allowlisted BailingHub route fixed by the operator for this server process.",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "BAILINGHUB_ALLOW_INSECURE_HTTP",
+          "description": "Optional explicit override for operator-controlled private HTTP networks.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "name": "bailinghub-mcp-server",
+  "version": "0.1.0",
+  "description": "Submit and inspect governed AI jobs through BailingHub from MCP hosts.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "bailinghub-mcp-server": "dist/index.js"
+  },
+  "mcpName": "io.github.bailinghub/bailinghub-governance",
+  "homepage": "https://www.bailinghub.com/en/integrations",
+  "author": {
+    "name": "BailingHub Contributors",
+    "email": "niejingchuan@live.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bailinghub/bailinghub-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bailinghub/bailinghub-mcp-server/issues"
+  },
+  "keywords": [
+    "model-context-protocol",
+    "mcp",
+    "mcp-server",
+    "bailinghub",
+    "ai-agent-governance",
+    "agent-tool-governance",
+    "human-approval",
+    "audit-trail",
+    "business-system-automation",
+    "a2b"
+  ],
+  "engines": {
+    "node": ">=20.15"
+  },
+  "files": [
+    "dist",
+    "compatibility/client-api.json",
+    "docs/COMPATIBILITY.md",
+    "docs/PROJECT_BOUNDARIES.md",
+    "docs/THREAT_MODEL.md",
+    "PRIVACY.md",
+    "SECURITY.md",
+    "server.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/ensure-bin-executable.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "check:project": "node scripts/check-project.mjs",
+    "check:release-tag": "node scripts/check-release-tag.mjs",
+    "client-api:check": "node scripts/check-client-api-contract.mjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "verify": "npm run check:project && npm test && npm run audit:prod",
+    "prepack": "npm run verify"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.0",
+    "typescript": "5.9.3"
+  }
+}
