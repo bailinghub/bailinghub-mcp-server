@@ -98,6 +98,19 @@ across an untrusted network.
 `queued`, `running`, and `dispatched` are non-terminal. `done`, `error`, and `rejected` are
 terminal. A wait timeout is not a failed task and must not cause a replacement submission.
 
+## First Success and Feedback
+
+Use the [MCP integration path](https://www.bailinghub.com/en/integrations#mcp) as the
+canonical start page. The first integration is successful when an MCP host submits through
+the operator-fixed route, the same `job_id` reaches a terminal state, BailingHub retains
+its approval and audit state, and the MCP host never receives administrator or
+business-system credentials.
+
+Report a PASS, partial result, or failure through the
+[BailingHub independent validation form](https://github.com/bailinghub/bailinghub/issues/new?template=independent_validation.yml)
+and select the MCP track. Never include tokens, model keys, personal information, or
+production business data.
+
 ## Project Boundaries
 
 The dependency direction is one-way:
@@ -131,4 +144,3 @@ The integration uses the stable `bailing.client-api.v1` surface only:
 
 No administrator, executor, approval-decision, tool-proxy, configuration, or direct
 business API is called.
-
