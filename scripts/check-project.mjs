@@ -60,7 +60,8 @@ check(
   'Client Token must be marked secret',
 );
 check(
-  packageJson.repository?.url === 'https://github.com/bailinghub/bailinghub-mcp-server.git',
+  packageJson.repository?.url ===
+    'git+https://github.com/bailinghub/bailinghub-mcp-server.git',
   'package repository URL is incorrect',
 );
 check(
