@@ -1,7 +1,7 @@
 {
   "schema_version": "bailing.client-api.consumer.v1",
   "consumer": "bailinghub-mcp-server",
-  "adapter_version": "0.1.0",
+  "adapter_version": "0.1.1",
   "contract": "bailing.client-api",
   "contract_major": 1,
   "tested_contract_version": "1.0.0",
@@ -40,4 +40,3 @@
     "response_max_bytes": 1048576
   }
 }
-

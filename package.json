@@ -1,6 +1,6 @@
 {
   "name": "bailinghub-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Submit and inspect governed AI jobs through BailingHub from MCP hosts.",
   "license": "MIT",
   "type": "module",
@@ -44,6 +44,7 @@
     "docs/PROJECT_BOUNDARIES.md",
     "docs/THREAT_MODEL.md",
     "PRIVACY.md",
+    "README.zh-CN.md",
     "SECURITY.md",
     "server.json"
   ],
@@ -62,8 +63,11 @@
     "provenance": true
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "zod": "4.4.3"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.12"
   },
   "devDependencies": {
     "@types/node": "22.15.0",
