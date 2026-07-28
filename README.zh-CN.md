@@ -1,5 +1,7 @@
 # BailingHub MCP Server
 
+[English](README.md) | 简体中文
+
 让 MCP Host 通过自托管的 [BailingHub](https://www.bailinghub.com/) 控制面，提交并查询
 受治理的业务系统操作。
 
@@ -19,6 +21,24 @@ BailingHub 地址、Client Token 和 route 都由进程环境配置，不是 MCP
 
 ## 安全边界
 
+```text
+MCP Host / 模型
+    |
+    | request_id + 不可信任务文本
+    v
+BailingHub MCP Server
+    |
+    | 固定 route + route-scoped Client Token
+    v
+BailingHub
+    |
+    | 受治理调度
+    v
+业务系统
+    |
+    +-- 解析可信主体并执行最终授权
+```
+
 首版有意不接受：
 
 - 行动主体或身份声明；
@@ -32,6 +52,12 @@ BailingHub 地址、Client Token 和 route 都由进程环境配置，不是 MCP
 不同 MCP 客户端需要不同边界时，应分别启动实例。
 
 ## 安装
+
+前置条件：
+
+- Node.js 20.15 或更高版本；
+- 一套 MCP Host 可以访问的 BailingHub；
+- 一个仅允许目标 route 的 BailingHub Client Token。
 
 在 MCP Host 中配置：
 
@@ -62,7 +88,42 @@ BailingHub 地址、Client Token 和 route 都由进程环境配置，不是 MCP
 4. 短时调用 `wait_for_governed_job`，或稍后调用 `get_governed_job`；
 5. 重试同一业务请求时，复用完全相同的 `request_id` 和任务含义。
 
+`queued`、`running` 和 `dispatched` 是非终态；`done`、`error` 和 `rejected`
+是终态。
+
 等待超时不等于任务失败，也不能因此重新提交一份替代任务。
+
+## 首次成功与反馈
+
+以[官网 MCP 接入路径](https://www.bailinghub.com/integrations#mcp)作为统一起点。
+首次接入成功应同时满足：
+
+1. MCP Host 只能通过管理员固定的 route 提交任务；
+2. 同一个 `job_id` 到达终态；
+3. BailingHub 保留审批与审计状态；
+4. MCP Host 从未获得管理员凭据或业务系统凭据。
+
+请通过 [BailingHub 独立验证表单](https://github.com/bailinghub/bailinghub/issues/new?template=independent_validation.yml)
+提交 PASS、部分通过或失败结果，并选择 MCP 路径。不得提交 Token、模型密钥、个人信息或
+生产业务数据。
+
+## 项目边界
+
+依赖方向是单向的：
+
+```text
+bailinghub-mcp-server -> BailingHub 公共 Client API
+BailingHub 可以消费 ACC 声明
+ACC 不依赖任何一个实现项目
+```
+
+进一步阅读：
+
+- [项目边界](docs/PROJECT_BOUNDARIES.md)
+- [威胁模型](docs/THREAT_MODEL.md)
+- [兼容性契约](docs/COMPATIBILITY.md)
+- [隐私说明](PRIVACY.md)
+- [安全策略](SECURITY.md)
 
 ## 开发
 
@@ -74,4 +135,3 @@ npm pack --dry-run
 
 本项目只消费 `bailing.client-api.v1` 的 `POST /run` 与 `GET /jobs/{job_id}`，不会调用
 管理员、执行器、审批决策、Tool Proxy、配置或业务系统接口。
-

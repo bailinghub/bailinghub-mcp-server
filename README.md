@@ -1,5 +1,7 @@
 # BailingHub MCP Server
 
+[简体中文](README.zh-CN.md) | English
+
 Use MCP hosts to submit and inspect governed business-system actions through a
 self-hosted [BailingHub](https://www.bailinghub.com/) control plane.
 
