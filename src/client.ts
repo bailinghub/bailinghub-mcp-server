@@ -15,13 +15,98 @@ export const KNOWN_STATUSES = [
 export const CLIENT_API_LIMITS = {
   requestId: 128,
   input: 100_000,
+  toolDescription: 1_200,
+  toolResultText: 8_192,
+  toolCatalogEntries: 512,
   responseBytes: 1024 * 1024,
 } as const;
 
+export const AGENT_TOOL_INVOCATION_STATES = [
+  'executed',
+  'business_rejected',
+  'awaiting_approval',
+  'denied',
+  'rejected_before_dispatch',
+  'reconciliation_required',
+  'in_progress',
+] as const;
+
+export type AgentToolInvocationState =
+  (typeof AGENT_TOOL_INVOCATION_STATES)[number];
+
+export type AgentToolCatalogEntry = {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  scope: string;
+  risk: 'low' | 'medium' | 'high';
+  approval_required: boolean;
+  readonly: boolean;
+  idempotent: boolean;
+};
+
+export type AgentToolCatalog = {
+  schema_version: 'bailing.agent-tool-catalog.v1';
+  route: string;
+  capability_revision: string;
+  tools: AgentToolCatalogEntry[];
+};
+
+export type AgentToolInvocation = {
+  schema_version: 'bailing.agent-tool-invocation.v1';
+  invocation_id: string;
+  route: string;
+  tool: string;
+  state: AgentToolInvocationState;
+  ok: boolean;
+  auto_retry_allowed: boolean;
+  text: string;
+  business_status?: number;
+  approval_id?: number;
+};
+
+export type InvokeAgentToolInput = {
+  invocationId: string;
+  capabilityRevision: string;
+  agentRunId: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+};
+
 const TERMINAL_STATUS_SET = new Set<string>(TERMINAL_STATUSES);
 const KNOWN_STATUS_SET = new Set<string>(KNOWN_STATUSES);
+const AGENT_TOOL_INVOCATION_STATE_SET = new Set<string>(
+  AGENT_TOOL_INVOCATION_STATES,
+);
 const JOB_ID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+const INVOCATION_ID_PATTERN = /^[0-9a-f]{64}$/;
+const TOOL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const CAPABILITY_REVISION_PATTERN = /^[a-f0-9]{64}$/;
+const TOOL_RISK_SET = new Set<string>(['low', 'medium', 'high']);
+
+const PUBLIC_AGENT_ERROR_CODES = new Set([
+  'agent_direct_disabled',
+  'agent_tools_unavailable',
+  'arguments_too_large',
+  'audience_not_allowed',
+  'capability_changed',
+  'hub_paused',
+  'invalid_route',
+  'invalid_request',
+  'invocation_conflict',
+  'invocation_not_found',
+  'route_not_allowed',
+  'route_unavailable',
+  'tool_not_found',
+]);
+
+export type BailingHubClientErrorDisposition =
+  | 'accepted_unknown'
+  | 'definitive_rejection'
+  | 'refresh_required';
 
 function isAgentConfig(
   config: BailingHubRuntimeConfig,
@@ -41,6 +126,9 @@ export class BailingHubClientError extends Error {
     message: string,
     public readonly statusCode?: number,
     public readonly retryable = false,
+    public readonly publicCode?: string,
+    public readonly disposition: BailingHubClientErrorDisposition =
+      'definitive_rejection',
   ) {
     super(message);
     this.name = 'BailingHubClientError';
@@ -74,6 +162,176 @@ function optionalObject(
     throw new BailingHubClientError(`BailingHub returned an invalid ${key} value.`);
   }
   return value as Record<string, unknown>;
+}
+
+function requiredResponseText(
+  body: Record<string, unknown>,
+  key: string,
+  maximumLength: number,
+): string {
+  const value = body[key];
+  if (typeof value !== 'string' || !value.trim() || value.length > maximumLength) {
+    throw new BailingHubClientError(`BailingHub returned an invalid ${key} value.`);
+  }
+  return value;
+}
+
+function requiredResponseBoolean(
+  body: Record<string, unknown>,
+  key: string,
+): boolean {
+  const value = body[key];
+  if (typeof value !== 'boolean') {
+    throw new BailingHubClientError(`BailingHub returned an invalid ${key} value.`);
+  }
+  return value;
+}
+
+function boundedResponseText(
+  body: Record<string, unknown>,
+  key: string,
+  maximumLength: number,
+): string {
+  const value = body[key];
+  if (typeof value !== 'string' || value.length > maximumLength) {
+    throw new BailingHubClientError(`BailingHub returned an invalid ${key} value.`);
+  }
+  return value;
+}
+
+function normalizeInputSchema(value: unknown): Record<string, unknown> {
+  const schema = asObject(value);
+  if (schema.type !== 'object') {
+    throw new BailingHubClientError(
+      'BailingHub returned a tool input_schema that is not an object schema.',
+    );
+  }
+  return schema;
+}
+
+function normalizeAgentToolCatalog(value: unknown, expectedRoute: string): AgentToolCatalog {
+  const body = asObject(value);
+  if (body.schema_version !== 'bailing.agent-tool-catalog.v1') {
+    throw new BailingHubClientError(
+      'BailingHub returned an unsupported Agent tool catalog.',
+    );
+  }
+  const route = requiredResponseText(body, 'route', 128);
+  if (route !== expectedRoute) {
+    throw new BailingHubClientError(
+      'BailingHub returned an Agent tool catalog for a different route.',
+    );
+  }
+  const capabilityRevision = requiredResponseText(
+    body,
+    'capability_revision',
+    128,
+  );
+  if (!CAPABILITY_REVISION_PATTERN.test(capabilityRevision)) {
+    throw new BailingHubClientError(
+      'BailingHub returned an invalid capability_revision value.',
+    );
+  }
+  if (
+    !Array.isArray(body.tools) ||
+    body.tools.length > CLIENT_API_LIMITS.toolCatalogEntries
+  ) {
+    throw new BailingHubClientError('BailingHub returned an invalid Agent tool list.');
+  }
+
+  const tools = body.tools.map((value): AgentToolCatalogEntry => {
+    const tool = asObject(value);
+    const name = requiredResponseText(tool, 'name', 128);
+    const description = requiredResponseText(
+      tool,
+      'description',
+      CLIENT_API_LIMITS.toolDescription,
+    );
+    const scope = requiredResponseText(tool, 'scope', 256);
+    const risk = requiredResponseText(tool, 'risk', 16);
+    if (!TOOL_NAME_PATTERN.test(name) || !TOOL_RISK_SET.has(risk)) {
+      throw new BailingHubClientError(
+        'BailingHub returned an invalid Agent tool definition.',
+      );
+    }
+    return {
+      name,
+      description,
+      input_schema: normalizeInputSchema(tool.input_schema),
+      scope,
+      risk: risk as AgentToolCatalogEntry['risk'],
+      approval_required: requiredResponseBoolean(tool, 'approval_required'),
+      readonly: requiredResponseBoolean(tool, 'readonly'),
+      idempotent: requiredResponseBoolean(tool, 'idempotent'),
+    };
+  });
+
+  return {
+    schema_version: 'bailing.agent-tool-catalog.v1',
+    route,
+    capability_revision: capabilityRevision,
+    tools,
+  };
+}
+
+function normalizeAgentToolInvocation(
+  value: unknown,
+  expected: { invocationId: string; route: string; tool?: string },
+): AgentToolInvocation {
+  const body = asObject(value);
+  if (body.schema_version !== 'bailing.agent-tool-invocation.v1') {
+    throw new BailingHubClientError(
+      'BailingHub returned an unsupported Agent tool invocation.',
+    );
+  }
+  const invocationId = requiredResponseText(body, 'invocation_id', 64);
+  const route = requiredResponseText(body, 'route', 128);
+  const tool = requiredResponseText(body, 'tool', 128);
+  const state = requiredResponseText(body, 'state', 64);
+  if (
+    invocationId !== expected.invocationId ||
+    route !== expected.route ||
+    (expected.tool !== undefined && tool !== expected.tool) ||
+    !INVOCATION_ID_PATTERN.test(invocationId) ||
+    !TOOL_NAME_PATTERN.test(tool) ||
+    !AGENT_TOOL_INVOCATION_STATE_SET.has(state)
+  ) {
+    throw new BailingHubClientError(
+      'BailingHub returned an invalid Agent tool invocation.',
+    );
+  }
+
+  const normalized: AgentToolInvocation = {
+    schema_version: 'bailing.agent-tool-invocation.v1',
+    invocation_id: invocationId,
+    route,
+    tool,
+    state: state as AgentToolInvocationState,
+    ok: requiredResponseBoolean(body, 'ok'),
+    auto_retry_allowed: requiredResponseBoolean(body, 'auto_retry_allowed'),
+    text: boundedResponseText(body, 'text', CLIENT_API_LIMITS.toolResultText),
+  };
+  if (body.business_status !== undefined) {
+    if (
+      !Number.isInteger(body.business_status) ||
+      Number(body.business_status) < 100 ||
+      Number(body.business_status) > 599
+    ) {
+      throw new BailingHubClientError(
+        'BailingHub returned an invalid business_status value.',
+      );
+    }
+    normalized.business_status = Number(body.business_status);
+  }
+  if (body.approval_id !== undefined) {
+    if (!Number.isInteger(body.approval_id) || Number(body.approval_id) < 1) {
+      throw new BailingHubClientError(
+        'BailingHub returned an invalid approval_id value.',
+      );
+    }
+    normalized.approval_id = Number(body.approval_id);
+  }
+  return normalized;
 }
 
 function normalizeJob(value: unknown, requireRequestId = false): BailingHubJob {
@@ -167,6 +425,8 @@ async function readJsonWithLimit(response: Response): Promise<unknown> {
 function publicHttpError(
   statusCode: number,
   mode: 'client' | 'agent',
+  publicCode?: string,
+  acceptedUnknownOnFailure = false,
 ): BailingHubClientError {
   let message = `BailingHub rejected the request (HTTP ${statusCode}).`;
   if (statusCode === 400) message = 'BailingHub rejected the request as invalid.';
@@ -194,6 +454,44 @@ function publicHttpError(
     message,
     statusCode,
     statusCode === 408 || statusCode === 425 || statusCode === 429 || statusCode >= 500,
+    publicCode,
+    publicCode === 'capability_changed'
+      ? 'refresh_required'
+      : publicCode
+        ? 'definitive_rejection'
+        : acceptedUnknownOnFailure &&
+          (statusCode === 408 || statusCode === 425 || statusCode >= 500)
+        ? 'accepted_unknown'
+        : 'definitive_rejection',
+  );
+}
+
+async function publicErrorCode(response: Response): Promise<string | undefined> {
+  try {
+    const body = asObject(await readJsonWithLimit(response));
+    const code = typeof body.error === 'string' ? body.error.trim() : '';
+    return PUBLIC_AGENT_ERROR_CODES.has(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function acceptedUnknownResponse(error: unknown): BailingHubClientError {
+  if (error instanceof BailingHubClientError) {
+    return new BailingHubClientError(
+      error.message,
+      error.statusCode,
+      error.retryable,
+      error.publicCode,
+      'accepted_unknown',
+    );
+  }
+  return new BailingHubClientError(
+    'BailingHub returned an invalid governed invocation response.',
+    undefined,
+    true,
+    undefined,
+    'accepted_unknown',
   );
 }
 
@@ -204,6 +502,11 @@ export class BailingHubClient {
   ) {}
 
   async submitJob(requestIdValue: unknown, inputValue: unknown): Promise<BailingHubJob> {
+    if (isAgentConfig(this.config)) {
+      throw new Error(
+        'Agent Session mode does not support delegated BailingHub jobs. Use a projected business tool.',
+      );
+    }
     const requestId = requiredText(
       requestIdValue,
       'request_id',
@@ -212,7 +515,7 @@ export class BailingHubClient {
     const input = requiredText(inputValue, 'input', CLIENT_API_LIMITS.input);
     const response = await this.request(
       'POST',
-      isAgentConfig(this.config) ? '/agent-api/v1/run' : '/run',
+      '/run',
       202,
       {
         request_id: requestId,
@@ -221,6 +524,101 @@ export class BailingHubClient {
       },
     );
     return normalizeJob(response, true);
+  }
+
+  async getAgentToolCatalog(): Promise<AgentToolCatalog> {
+    if (!isAgentConfig(this.config)) {
+      throw new Error('Agent tool discovery requires an Agent Session.');
+    }
+    const response = await this.request(
+      'GET',
+      `/agent-api/v1/tools?route=${encodeURIComponent(this.config.route)}`,
+      200,
+    );
+    return normalizeAgentToolCatalog(response, this.config.route);
+  }
+
+  async invokeAgentTool(input: InvokeAgentToolInput): Promise<AgentToolInvocation> {
+    if (!isAgentConfig(this.config)) {
+      throw new Error('Agent tool invocation requires an Agent Session.');
+    }
+    const invocationId = requiredText(input.invocationId, 'invocation_id', 64);
+    const capabilityRevision = requiredText(
+      input.capabilityRevision,
+      'capability_revision',
+      128,
+    );
+    const agentRunId = requiredText(input.agentRunId, 'agent_run_id', 36);
+    const tool = requiredText(input.tool, 'tool', 128);
+    if (
+      !INVOCATION_ID_PATTERN.test(invocationId) ||
+      !CAPABILITY_REVISION_PATTERN.test(capabilityRevision) ||
+      !UUID_PATTERN.test(agentRunId) ||
+      !TOOL_NAME_PATTERN.test(tool)
+    ) {
+      throw new Error('The Agent tool invocation identifiers are invalid.');
+    }
+    if (
+      typeof input.arguments !== 'object' ||
+      input.arguments === null ||
+      Array.isArray(input.arguments)
+    ) {
+      throw new Error('Agent tool arguments must be an object.');
+    }
+    const response = await this.request(
+      'POST',
+      '/agent-api/v1/tool-invocations',
+      200,
+      {
+        invocation_id: invocationId,
+        route: this.config.route,
+        capability_revision: capabilityRevision,
+        agent_run_id: agentRunId,
+        tool,
+        arguments: input.arguments,
+      },
+      { acceptedUnknownOnFailure: true },
+    );
+    try {
+      return normalizeAgentToolInvocation(response, {
+        invocationId,
+        route: this.config.route,
+        tool,
+      });
+    } catch (error) {
+      throw acceptedUnknownResponse(error);
+    }
+  }
+
+  async resumeAgentToolInvocation(
+    invocationIdValue: unknown,
+  ): Promise<AgentToolInvocation> {
+    if (!isAgentConfig(this.config)) {
+      throw new Error('Agent tool invocation recovery requires an Agent Session.');
+    }
+    const invocationId = requiredText(
+      invocationIdValue,
+      'invocation_id',
+      64,
+    );
+    if (!INVOCATION_ID_PATTERN.test(invocationId)) {
+      throw new Error('The Agent tool invocation identifiers are invalid.');
+    }
+    const response = await this.request(
+      'POST',
+      `/agent-api/v1/tool-invocations/${encodeURIComponent(invocationId)}/resume`,
+      200,
+      undefined,
+      { acceptedUnknownOnFailure: true },
+    );
+    try {
+      return normalizeAgentToolInvocation(response, {
+        invocationId,
+        route: this.config.route,
+      });
+    } catch (error) {
+      throw acceptedUnknownResponse(error);
+    }
   }
 
   async getJob(jobIdValue: unknown): Promise<BailingHubJob> {
@@ -290,6 +688,7 @@ export class BailingHubClient {
     path: string,
     expectedStatus: number,
     body?: Record<string, unknown>,
+    options: { acceptedUnknownOnFailure?: boolean } = {},
   ): Promise<unknown> {
     const mode = isAgentConfig(this.config) ? 'agent' : 'client';
     const controller = new AbortController();
@@ -300,15 +699,42 @@ export class BailingHubClient {
         response = await this.send(method, path, body, true, controller.signal);
       }
       if (response.status !== expectedStatus) {
-        throw publicHttpError(response.status, mode);
+        const code = await publicErrorCode(response);
+        throw publicHttpError(
+          response.status,
+          mode,
+          code,
+          options.acceptedUnknownOnFailure === true,
+        );
       }
-      return await readJsonWithLimit(response);
+      try {
+        return await readJsonWithLimit(response);
+      } catch (error) {
+        if (options.acceptedUnknownOnFailure) throw acceptedUnknownResponse(error);
+        throw error;
+      }
     } catch (error) {
       if (error instanceof BailingHubClientError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new BailingHubClientError('BailingHub request timed out.', 408, true);
+        throw new BailingHubClientError(
+          'BailingHub request timed out.',
+          408,
+          true,
+          undefined,
+          options.acceptedUnknownOnFailure
+            ? 'accepted_unknown'
+            : 'definitive_rejection',
+        );
       }
-      throw new BailingHubClientError('Could not connect to BailingHub.', undefined, true);
+      throw new BailingHubClientError(
+        'Could not connect to BailingHub.',
+        undefined,
+        true,
+        undefined,
+        options.acceptedUnknownOnFailure
+          ? 'accepted_unknown'
+          : 'definitive_rejection',
+      );
     } finally {
       clearTimeout(timeout);
     }

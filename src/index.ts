@@ -4,13 +4,17 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { runCli } from './cli.js';
 import { loadRuntimeConfig } from './runtime-config.js';
-import { createBailingHubMcpServer } from './server.js';
+import {
+  createBailingHubMcpServer,
+  initializeBailingHubMcpServer,
+} from './server.js';
 
 async function main(): Promise<void> {
   if (await runCli(process.argv.slice(2))) return;
 
   const config = await loadRuntimeConfig();
   const server = createBailingHubMcpServer(config);
+  await initializeBailingHubMcpServer(server, config);
   const transport = new StdioServerTransport();
 
   const shutdown = async () => {
