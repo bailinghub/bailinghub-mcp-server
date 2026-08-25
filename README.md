@@ -6,19 +6,32 @@ Use MCP hosts to submit and inspect governed business-system actions through a
 self-hosted [BailingHub](https://www.bailinghub.com/) control plane.
 
 This package is a thin integration adapter. It does not embed BailingHub, grant business
-permissions, authenticate an end user, or replace the downstream business system's final
-authorization.
+permissions, or replace the downstream business system's final authorization. It supports
+both the existing operator-provisioned Client Token mode and an Agent Session candidate in
+which a human approves one local Agent through the system browser.
 
 ## What It Exposes
 
 | Tool | Purpose |
 | --- | --- |
 | `submit_governed_job` | Submit untrusted task text to one operator-configured BailingHub route |
-| `get_governed_job` | Read the current public state of a client-owned job |
+| `get_governed_job` | Read the current public state of a credential-owned job |
 | `wait_for_governed_job` | Poll one job for at most 60 seconds without resubmitting it |
 
-The route, BailingHub URL, and Client Token are process configuration. They are never MCP
-tool arguments and therefore cannot be selected or replaced by model output.
+The route, BailingHub URL, and credential are local process configuration. They are never
+MCP tool arguments and therefore cannot be selected or replaced by model output.
+
+## Authentication Modes
+
+- **Agent Session:** run `bailinghub-mcp-server login` once. The CLI uses a random loopback
+  callback plus PKCE, opens the system browser, and stores the approved session in macOS
+  Keychain. The MCP tools then use `/agent-api/v1/*` and refresh rotated tokens locally.
+- **Client Token (compatible):** when `BAILINGHUB_CLIENT_TOKEN` is present, the adapter keeps
+  using `POST /run` and `GET /jobs/{job_id}` exactly as before.
+
+Neither mode lets the model supply a credential, route, acting subject, or approval result.
+The Agent Session records the identity approved by the Hub/business authorization boundary;
+the downstream business system still makes the final authorization decision.
 
 ## Security Model
 
@@ -29,7 +42,7 @@ MCP host / model
     v
 BailingHub MCP Server
     |
-    | fixed route + route-scoped Client Token
+    | fixed route + Client Token or approved Agent Session
     v
 BailingHub
     |
@@ -49,9 +62,9 @@ The adapter intentionally does not accept:
 - arbitrary metadata or callback URLs;
 - an arbitrary route.
 
-Use a dedicated BailingHub Client Token restricted to the one route configured for this
-server process. Run separate server instances when different MCP clients need different
-route boundaries.
+In compatible Client Token mode, use a dedicated token restricted to the one route configured
+for this server process. Run separate server instances when different MCP clients need
+different route boundaries.
 
 ## Install
 
@@ -59,7 +72,8 @@ Prerequisites:
 
 - Node.js 20.15 or newer;
 - a reachable BailingHub deployment;
-- one BailingHub Client Token restricted to the required route.
+- either one route-scoped BailingHub Client Token or a registered public Agent client that
+  can be approved for the required route.
 
 Configure an MCP host to spawn:
 
@@ -78,6 +92,28 @@ Configure an MCP host to spawn:
   }
 }
 ```
+
+### Local Agent login candidate
+
+Authorize one registered public Agent client and one fixed route before starting the MCP
+host without a Client Token:
+
+```bash
+bailinghub-mcp-server login \
+  --base-url https://hub.example.com \
+  --client-app-id digital-cloud-agent \
+  --route order_assistant
+
+bailinghub-mcp-server status
+bailinghub-mcp-server logout
+```
+
+The login callback binds only to a random `127.0.0.1` port and uses `state` plus PKCE S256.
+Access and refresh tokens never appear in CLI output. macOS uses Keychain. Linux and other
+POSIX platforms require an explicit `BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE=true` opt-in;
+that fallback rejects files that are not owned by the current user with mode `0600`.
+Agent Session credential storage is not yet supported on Windows; compatible Client Token
+mode remains available there.
 
 For a local BailingHub process, loopback HTTP is accepted:
 
@@ -118,7 +154,7 @@ production business data.
 The dependency direction is one-way:
 
 ```text
-bailinghub-mcp-server -> BailingHub public Client API
+bailinghub-mcp-server -> BailingHub public Client API / Agent API
 BailingHub may consume ACC declarations
 ACC has no dependency on either implementation
 ```
@@ -139,10 +175,19 @@ npm run verify
 npm pack --dry-run
 ```
 
-The integration uses the stable `bailing.client-api.v1` surface only:
+Client Token mode uses the stable `bailing.client-api.v1` surface:
 
 - `POST /run`
 - `GET /jobs/{job_id}`
 
-No administrator, executor, approval-decision, tool-proxy, configuration, or direct
-business API is called.
+Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
+
+- `POST /agent-auth/v1/authorizations`
+- `POST /agent-auth/v1/token`
+- `GET /agent-auth/v1/session`
+- `POST /agent-auth/v1/revoke`
+- `POST /agent-api/v1/run`
+- `GET /agent-api/v1/jobs/{job_id}`
+
+No administrator, executor, approval-decision, tool-proxy, configuration, or direct business
+API is called by this adapter.

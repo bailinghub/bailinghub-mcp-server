@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import { BailingHubClient } from './client.js';
-import type { BailingHubMcpConfig } from './config.js';
+import type { BailingHubRuntimeConfig } from './runtime-config.js';
 import { PACKAGE_VERSION } from './version.js';
 
 function success(value: Record<string, unknown>) {
@@ -22,7 +22,7 @@ function failure(error: unknown) {
 }
 
 export function createBailingHubMcpServer(
-  config: BailingHubMcpConfig,
+  config: BailingHubRuntimeConfig,
   client = new BailingHubClient(config),
 ): McpServer {
   const server = new McpServer(

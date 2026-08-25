@@ -10,13 +10,20 @@ Security fixes are provided for the latest published minor version.
 
 ## Security Boundary
 
-The MCP server consumes only BailingHub's public Client API. It must never receive an
-administrator token, executor token, tool-provider secret, business-system credential, or
-acting-subject credential.
+The MCP server consumes only BailingHub's public Client API or the additive public Agent Auth
+and Agent API. It must never receive an administrator token, executor token, tool-provider
+secret, business-system credential, or acting-subject credential.
 
 The configured Client Token should be dedicated to one MCP deployment and restricted to the
 single configured route. Tool input remains untrusted model output. A BailingHub or business
 system boundary must independently resolve any trusted acting subject and final authority.
+
+Agent Session login uses a random `127.0.0.1` callback, `state`, and PKCE S256. It stores the
+result in macOS Keychain, or on Linux and other POSIX platforms only after explicit opt-in in
+a current-user-owned mode-0600 file. Windows Agent Session credential storage fails closed
+until a native secure store is implemented; Client Token mode remains compatible. Agent
+tokens and login parameters are process-side state and must never become MCP tool arguments.
+The adapter does not call the business approval endpoint itself.
 
 The stdio transport reserves stdout for MCP JSON-RPC. Runtime diagnostics must use stderr and
 must never contain credentials, private response bodies, or task payloads.

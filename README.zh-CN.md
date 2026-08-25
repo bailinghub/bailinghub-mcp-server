@@ -5,8 +5,9 @@
 让 MCP Host 通过自托管的 [BailingHub](https://www.bailinghub.com/) 控制面，提交并查询
 受治理的业务系统操作。
 
-它是一个独立、轻量的生态适配器，不内嵌 BailingHub，不授予业务权限，不认证最终用户，
-也不替代业务系统的最终授权。
+它是一个独立、轻量的生态适配器，不内嵌 BailingHub，不授予业务权限，也不替代
+业务系统的最终授权。它同时保留原有 Client Token 模式，并新增了一个 Agent
+Session 候选：用户通过系统浏览器授权当前本地智能体。
 
 ## 暴露的工具
 
@@ -16,8 +17,19 @@
 | `get_governed_job` | 查询当前 Client 所拥有任务的公开状态 |
 | `wait_for_governed_job` | 最多等待 60 秒，不会重新提交业务操作 |
 
-BailingHub 地址、Client Token 和 route 都由进程环境配置，不是 MCP 工具参数，因此模型
+BailingHub 地址、凭据和 route 都是本地进程配置，不是 MCP 工具参数，因此模型
 不能选择或替换它们。
+
+## 认证模式
+
+- **Agent Session：**先执行一次 `bailinghub-mcp-server login`。CLI 使用随机回环端口和
+  PKCE，打开系统浏览器，并把已批准会话保存到 macOS Keychain。MCP 工具改用
+  `/agent-api/v1/*`，并在本地安全轮换 refresh token。
+- **Client Token（保持兼容）：**存在 `BAILINGHUB_CLIENT_TOKEN` 时，仍按原样调用
+  `POST /run` 和 `GET /jobs/{job_id}`。
+
+两种模式都不允许模型提供凭据、route、行动主体或审批结论。Agent Session 只承载由
+Hub/业务授权边界确认的身份，业务系统仍负责最终权限判断。
 
 ## 安全边界
 
@@ -28,7 +40,7 @@ MCP Host / 模型
     v
 BailingHub MCP Server
     |
-    | 固定 route + route-scoped Client Token
+    | 固定 route + Client Token 或已授权 Agent Session
     v
 BailingHub
     |
@@ -48,8 +60,8 @@ BailingHub
 - 任意 metadata 或 callback URL；
 - 任意 route。
 
-每个 MCP Server 进程只绑定一个 route，并使用仅允许该 route 的专用 Client Token。
-不同 MCP 客户端需要不同边界时，应分别启动实例。
+在兼容的 Client Token 模式中，每个 MCP Server 进程只绑定一个 route，并使用仅允许该
+route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应分别启动实例。
 
 ## 安装
 
@@ -57,7 +69,8 @@ BailingHub
 
 - Node.js 20.15 或更高版本；
 - 一套 MCP Host 可以访问的 BailingHub；
-- 一个仅允许目标 route 的 BailingHub Client Token。
+- 一个仅允许目标 route 的 BailingHub Client Token，或一个能被批准使用该 route 的
+  已注册公共 Agent 客户端。
 
 在 MCP Host 中配置：
 
@@ -76,6 +89,27 @@ BailingHub
   }
 }
 ```
+
+### 本地 Agent 登录候选
+
+启动不携带 Client Token 的 MCP Host 前，先为已注册的公共 Agent 客户端和一条固定
+route 完成授权：
+
+```bash
+bailinghub-mcp-server login \
+  --base-url https://hub.example.com \
+  --client-app-id digital-cloud-agent \
+  --route order_assistant
+
+bailinghub-mcp-server status
+bailinghub-mcp-server logout
+```
+
+登录回调只监听 `127.0.0.1` 的随机端口，并同时校验 `state` 与 PKCE S256。access token
+和 refresh token 不会出现在 CLI 输出中。macOS 使用 Keychain；Linux 与其他 POSIX 平台
+目前只在显式设置 `BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE=true` 后才允许使用文件回退，
+且文件必须属于当前用户并为 `0600` 权限。Windows 暂不支持 Agent Session 凭据存储，
+仍可使用兼容的 Client Token 模式。
 
 本机回环地址允许 HTTP。非回环 HTTP 默认拒绝；只有在 TLS 已由可信私有网络的其他边界
 终止时，才可显式设置 `BAILINGHUB_ALLOW_INSECURE_HTTP=true`。
@@ -112,7 +146,7 @@ BailingHub
 依赖方向是单向的：
 
 ```text
-bailinghub-mcp-server -> BailingHub 公共 Client API
+bailinghub-mcp-server -> BailingHub 公共 Client API / Agent API
 BailingHub 可以消费 ACC 声明
 ACC 不依赖任何一个实现项目
 ```
@@ -133,5 +167,14 @@ npm run verify
 npm pack --dry-run
 ```
 
-本项目只消费 `bailing.client-api.v1` 的 `POST /run` 与 `GET /jobs/{job_id}`，不会调用
-管理员、执行器、审批决策、Tool Proxy、配置或业务系统接口。
+Client Token 模式仅消费 `bailing.client-api.v1` 的 `POST /run` 与 `GET /jobs/{job_id}`。
+Agent Session 模式另外消费增量的 Agent Auth v1 与 Agent API v1：
+
+- `POST /agent-auth/v1/authorizations`
+- `POST /agent-auth/v1/token`
+- `GET /agent-auth/v1/session`
+- `POST /agent-auth/v1/revoke`
+- `POST /agent-api/v1/run`
+- `GET /agent-api/v1/jobs/{job_id}`
+
+本适配器仍不调用管理员、执行器、审批决策、Tool Proxy、配置或业务系统直接接口。

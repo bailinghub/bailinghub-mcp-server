@@ -1,4 +1,8 @@
 import type { BailingHubMcpConfig } from './config.js';
+import type {
+  AgentBailingHubMcpConfig,
+  BailingHubRuntimeConfig,
+} from './runtime-config.js';
 import { PACKAGE_VERSION } from './version.js';
 
 export const TERMINAL_STATUSES = ['done', 'error', 'rejected'] as const;
@@ -18,6 +22,12 @@ const TERMINAL_STATUS_SET = new Set<string>(TERMINAL_STATUSES);
 const KNOWN_STATUS_SET = new Set<string>(KNOWN_STATUSES);
 const JOB_ID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+
+function isAgentConfig(
+  config: BailingHubRuntimeConfig,
+): config is AgentBailingHubMcpConfig {
+  return config.mode === 'agent';
+}
 
 export type BailingHubJob = Record<string, unknown> & {
   job_id: string;
@@ -154,14 +164,22 @@ async function readJsonWithLimit(response: Response): Promise<unknown> {
   }
 }
 
-function publicHttpError(statusCode: number): BailingHubClientError {
+function publicHttpError(
+  statusCode: number,
+  mode: 'client' | 'agent',
+): BailingHubClientError {
   let message = `BailingHub rejected the request (HTTP ${statusCode}).`;
   if (statusCode === 400) message = 'BailingHub rejected the request as invalid.';
-  else if (statusCode === 401) message = 'BailingHub rejected the Client Token.';
+  else if (statusCode === 401) {
+    message =
+      mode === 'agent'
+        ? 'BailingHub rejected the Agent Session.'
+        : 'BailingHub rejected the Client Token.';
+  }
   else if (statusCode === 403) {
-    message = 'The BailingHub client is not allowed to perform this operation.';
+    message = `The BailingHub ${mode} is not allowed to perform this operation.`;
   } else if (statusCode === 404) {
-    message = 'The BailingHub job was not found or is not owned by this client.';
+    message = `The BailingHub job was not found or is not owned by this ${mode}.`;
   } else if (statusCode === 409) {
     message = 'BailingHub rejected the request because of an idempotency conflict.';
   } else if (statusCode === 413) {
@@ -181,7 +199,7 @@ function publicHttpError(statusCode: number): BailingHubClientError {
 
 export class BailingHubClient {
   constructor(
-    private readonly config: BailingHubMcpConfig,
+    private readonly config: BailingHubRuntimeConfig,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
@@ -194,7 +212,7 @@ export class BailingHubClient {
     const input = requiredText(inputValue, 'input', CLIENT_API_LIMITS.input);
     const response = await this.request(
       'POST',
-      '/run',
+      isAgentConfig(this.config) ? '/agent-api/v1/run' : '/run',
       202,
       {
         request_id: requestId,
@@ -212,7 +230,9 @@ export class BailingHubClient {
     }
     const response = await this.request(
       'GET',
-      `/jobs/${encodeURIComponent(jobId)}`,
+      isAgentConfig(this.config)
+        ? `/agent-api/v1/jobs/${encodeURIComponent(jobId)}`
+        : `/jobs/${encodeURIComponent(jobId)}`,
       200,
     );
     return normalizeJob(response);
@@ -271,23 +291,17 @@ export class BailingHubClient {
     expectedStatus: number,
     body?: Record<string, unknown>,
   ): Promise<unknown> {
+    const mode = isAgentConfig(this.config) ? 'agent' : 'client';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
-      const requestInit: RequestInit = {
-        method,
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${this.config.clientToken}`,
-          'Content-Type': 'application/json',
-          'User-Agent': `bailinghub-mcp-server/${PACKAGE_VERSION}`,
-        },
-        signal: controller.signal,
-      };
-      if (body !== undefined) requestInit.body = JSON.stringify(body);
-
-      const response = await this.fetchImpl(`${this.config.baseUrl}${path}`, requestInit);
-      if (response.status !== expectedStatus) throw publicHttpError(response.status);
+      let response = await this.send(method, path, body, false, controller.signal);
+      if (response.status === 401 && isAgentConfig(this.config)) {
+        response = await this.send(method, path, body, true, controller.signal);
+      }
+      if (response.status !== expectedStatus) {
+        throw publicHttpError(response.status, mode);
+      }
       return await readJsonWithLimit(response);
     } catch (error) {
       if (error instanceof BailingHubClientError) throw error;
@@ -298,5 +312,40 @@ export class BailingHubClient {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async send(
+    method: 'GET' | 'POST',
+    path: string,
+    body: Record<string, unknown> | undefined,
+    forceRefresh: boolean,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    let token: string;
+    if (isAgentConfig(this.config)) {
+      try {
+        token = await this.config.accessTokenProvider.getAccessToken(forceRefresh);
+      } catch {
+        throw new BailingHubClientError(
+          'The BailingHub Agent login could not be refreshed. Run login again.',
+          401,
+        );
+      }
+    } else {
+      token = (this.config as BailingHubMcpConfig).clientToken;
+    }
+    const requestInit: RequestInit = {
+      method,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': `bailinghub-mcp-server/${PACKAGE_VERSION}`,
+      },
+      redirect: 'error',
+      signal,
+    };
+    if (body !== undefined) requestInit.body = JSON.stringify(body);
+    return await this.fetchImpl(`${this.config.baseUrl}${path}`, requestInit);
   }
 }

@@ -59,6 +59,7 @@ test('submit sends only the minimal public contract and filters private response
   });
   assert.equal(calls[0].url, 'https://hub.example.com/run');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer client-token');
+  assert.equal(calls[0].init.redirect, 'error');
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     request_id: 'mcp:run:1',
     route: 'orders',
@@ -169,4 +170,59 @@ test('bounded wait timeout returns the latest state and never submits a replacem
   assert.equal(requestCount, 2);
   assert.equal(result.status, 'running');
   assert.equal(result.wait_timed_out, true);
+});
+
+test('Agent mode uses the Agent API and refreshes once after a 401', async () => {
+  const calls = [];
+  const tokenRequests = [];
+  const agentConfig = {
+    mode: 'agent',
+    baseUrl: 'https://hub.example.com',
+    route: 'orders',
+    clientAppId: 'digital-cloud-agent',
+    sessionId: 'session-1',
+    accessTokenProvider: {
+      async getAccessToken(forceRefresh = false) {
+        tokenRequests.push(forceRefresh);
+        return forceRefresh ? 'rotated-access-secret' : 'old-access-secret';
+      },
+    },
+  };
+  const client = new BailingHubClient(agentConfig, async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (calls.length === 1) return jsonResponse({}, 401);
+    return jsonResponse(
+      { job_id: JOB_ID, request_id: 'agent:run:1', status: 'queued' },
+      202,
+    );
+  });
+
+  assert.equal((await client.submitJob('agent:run:1', 'Read order 42')).status, 'queued');
+  assert.deepEqual(tokenRequests, [false, true]);
+  assert.equal(calls[0].url, 'https://hub.example.com/agent-api/v1/run');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer old-access-secret');
+  assert.equal(calls[0].init.redirect, 'error');
+  assert.equal(calls[1].init.headers.Authorization, 'Bearer rotated-access-secret');
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    request_id: 'agent:run:1',
+    route: 'orders',
+    input: 'Read order 42',
+  });
+});
+
+test('Agent mode job lookup remains session-owned and never falls back to the Client API', async () => {
+  const agentConfig = {
+    mode: 'agent',
+    baseUrl: 'https://hub.example.com',
+    route: 'orders',
+    clientAppId: 'digital-cloud-agent',
+    sessionId: 'session-1',
+    accessTokenProvider: { getAccessToken: async () => 'access-secret' },
+  };
+  const client = new BailingHubClient(agentConfig, async (url, init) => {
+    assert.equal(String(url), `https://hub.example.com/agent-api/v1/jobs/${JOB_ID}`);
+    assert.equal(init.headers.Authorization, 'Bearer access-secret');
+    return jsonResponse({ job_id: JOB_ID, request_id: 'r1', status: 'done' });
+  });
+  assert.equal((await client.getJob(JOB_ID)).status, 'done');
 });
