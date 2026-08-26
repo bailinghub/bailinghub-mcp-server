@@ -36,7 +36,7 @@ function activeTool(name = 'employee_search') {
 function connection(accessTokenProvider = { getAccessToken: async () => 'access-token' }) {
   return {
     baseUrl: 'https://hub.example.com',
-    clientAppId: 'digital-cloud-agent',
+    clientAppId: 'example-agent-client',
     workspace: 'orders',
     sessionId: 'session-1',
     accessTokenProvider,

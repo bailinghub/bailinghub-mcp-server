@@ -43,8 +43,8 @@ test('Agent login rejects auto without changing legacy Client Token route behavi
     'auto',
   );
   assert.throws(() => normalizeAgentRoute('auto'), /not allowed for Agent login/);
-  assert.equal(normalizeClientAppId('digital_cloud-agent'), 'digital_cloud-agent');
-  assert.throws(() => normalizeClientAppId('digital.cloud'), /must match/);
+  assert.equal(normalizeClientAppId('example_agent-client'), 'example_agent-client');
+  assert.throws(() => normalizeClientAppId('example.client'), /must match/);
   assert.throws(() => normalizeClientAppId(`a${'b'.repeat(64)}`), /must not exceed 64/);
 });
 

@@ -15,7 +15,7 @@ function credentials(overrides = {}) {
   return {
     schema_version: 1,
     base_url: 'https://hub.example.com',
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     route: 'orders',
     session_id: 'session-1',
     access_token: 'access-secret-one',
@@ -42,7 +42,7 @@ async function fixture(t) {
 
 test('connection keys bind Hub, client_app_id, and workspace deterministically', () => {
   const base = {
-    baseUrl: 'https://hub.example.com/', clientAppId: 'digital-cloud-agent', workspace: 'orders',
+    baseUrl: 'https://hub.example.com/', clientAppId: 'example-agent-client', workspace: 'orders',
   };
   assert.equal(agentConnectionKey(base), agentConnectionKey({ ...base, baseUrl: 'https://hub.example.com' }));
   assert.notEqual(agentConnectionKey(base), agentConnectionKey({ ...base, workspace: 'staff' }));
@@ -95,7 +95,7 @@ test('legacy default file credentials migrate once into their bound isolated con
     credentialPathFor: (key) => join(directory, 'isolated', `${key}.json`),
   });
   const profile = await store.register({
-    baseUrl: 'https://hub.example.com', clientAppId: 'digital-cloud-agent', workspace: 'orders',
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
   }, { alias: 'default', makeCurrent: true });
 
   assert.equal(await store.migrateLegacy(profile), 'migrated');
@@ -123,7 +123,7 @@ test('legacy migration fails closed on a different Hub-client-workspace binding'
     credentialPathFor: (key) => join(directory, 'isolated', `${key}.json`),
   });
   const profile = await store.register({
-    baseUrl: 'https://hub.example.com', clientAppId: 'digital-cloud-agent', workspace: 'orders',
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
   }, { alias: 'default' });
   assert.equal(await store.migrateLegacy(profile), 'legacy_connection_mismatch');
   assert.equal((await legacy.load()).route, 'staff');

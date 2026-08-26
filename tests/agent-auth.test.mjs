@@ -26,10 +26,10 @@ function jsonResponse(body, status = 200) {
 
 const SESSION_RESPONSE = {
   session_id: 'session-1',
-  client_app_id: 'digital-cloud-agent',
+  client_app_id: 'example-agent-client',
   device_label: 'My Mac',
   principal: { id: 'admin-1', tenant: 'tenant-1' },
-  on_behalf_of: 'digital-cloud:tenant-1:admin-1',
+  on_behalf_of: 'example-business:tenant-1:admin-1',
   allowed_routes: ['orders'],
   created_at: '2026-08-25T00:00:00.000Z',
   expires_at: '2026-08-25T01:00:00.000Z',
@@ -39,7 +39,7 @@ const SESSION_RESPONSE = {
 const OLD_CREDENTIALS = {
   schema_version: 1,
   base_url: 'https://old-hub.example.com',
-  client_app_id: 'digital-cloud-agent',
+  client_app_id: 'example-agent-client',
   route: 'orders',
   session_id: 'old-session',
   access_token: 'old-access-secret',
@@ -60,7 +60,7 @@ test('authorization page permits HTTPS or explicit nonzero IP loopback, never lo
         201,
       ),
     ).createAuthorization({
-      clientAppId: 'digital-cloud-agent',
+      clientAppId: 'example-agent-client',
       redirectUri: 'http://127.0.0.1:43210/callback',
       state: 'state',
       codeChallenge: 'challenge',
@@ -111,7 +111,7 @@ test('login uses loopback state and PKCE, validates the session, then persists c
         refresh_token: 'new-refresh-secret',
         refresh_expires_in: 86400,
         session_id: 'session-1',
-        client_app_id: 'digital-cloud-agent',
+        client_app_id: 'example-agent-client',
       });
     }
     if (String(url).endsWith('/agent-auth/v1/session')) {
@@ -124,7 +124,7 @@ test('login uses loopback state and PKCE, validates the session, then persists c
   const credentials = await performAgentLogin(
     {
       baseUrl: 'https://hub.example.com',
-      clientAppId: 'digital-cloud-agent',
+      clientAppId: 'example-agent-client',
       route: 'orders',
       deviceLabel: 'My Mac',
     },
@@ -149,7 +149,7 @@ test('login uses loopback state and PKCE, validates the session, then persists c
 
   assert.equal(calls[0].url, 'https://old-hub.example.com/agent-auth/v1/revoke');
   assert.deepEqual(calls[0].body, {
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     refresh_token: 'old-refresh-secret',
   });
   const authorizationCall = calls.find((call) =>
@@ -159,7 +159,7 @@ test('login uses loopback state and PKCE, validates the session, then persists c
   const authorizationBody = authorizationCall.body;
   const verifier = Buffer.alloc(64, 64).toString('base64url');
   assert.deepEqual(authorizationBody, {
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     redirect_uri: 'http://127.0.0.1:43210/callback',
     state: expectedCallbackState,
     requested_routes: ['orders'],
@@ -169,7 +169,7 @@ test('login uses loopback state and PKCE, validates the session, then persists c
   });
   assert.deepEqual(tokenCall.body, {
     grant_type: 'authorization_code',
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     code: 'one-time-code',
     redirect_uri: 'http://127.0.0.1:43210/callback',
     code_verifier: verifier,
@@ -190,7 +190,7 @@ test('login keeps the existing credentials and never starts authorization when r
     performAgentLogin(
       {
         baseUrl: 'https://hub.example.com',
-        clientAppId: 'digital-cloud-agent',
+        clientAppId: 'example-agent-client',
         route: 'orders',
         deviceLabel: 'My Mac',
       },
@@ -239,7 +239,7 @@ test('concurrent login flows are serialized so the replaced session is revoked',
         refresh_token: `refresh-${issued}`,
         refresh_expires_in: 86400,
         session_id: `session-${issued}`,
-        client_app_id: 'digital-cloud-agent',
+        client_app_id: 'example-agent-client',
       });
     }
     if (String(url).endsWith('/agent-auth/v1/session')) {
@@ -271,7 +271,7 @@ test('concurrent login flows are serialized so the replaced session is revoked',
   };
   const config = {
     baseUrl: 'https://hub.example.com',
-    clientAppId: 'digital-cloud-agent',
+    clientAppId: 'example-agent-client',
     route: 'orders',
     deviceLabel: 'My Mac',
   };
@@ -309,7 +309,7 @@ test('login revokes the new remote session when secure persistence fails', async
         refresh_token: 'orphan-refresh-secret',
         refresh_expires_in: 86400,
         session_id: 'session-1',
-        client_app_id: 'digital-cloud-agent',
+        client_app_id: 'example-agent-client',
       });
     }
     if (String(url).endsWith('/agent-auth/v1/session')) {
@@ -326,7 +326,7 @@ test('login revokes the new remote session when secure persistence fails', async
     performAgentLogin(
       {
         baseUrl: 'https://hub.example.com',
-        clientAppId: 'digital-cloud-agent',
+        clientAppId: 'example-agent-client',
         route: 'orders',
         deviceLabel: 'My Mac',
       },
@@ -354,7 +354,7 @@ test('login revokes the new remote session when secure persistence fails', async
     /secure persistence failed/,
   );
   assert.deepEqual(revokeBody, {
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     refresh_token: 'orphan-refresh-secret',
   });
   assert.equal(closed, true);
@@ -365,7 +365,7 @@ test('refresh rotates both tokens once for concurrent callers', async () => {
   const store = new MemoryCredentialStore({
     schema_version: 1,
     base_url: 'https://hub.example.com',
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     route: 'orders',
     session_id: 'session-1',
     access_token: 'old-access-secret',
@@ -380,7 +380,7 @@ test('refresh rotates both tokens once for concurrent callers', async () => {
       if (String(url).endsWith('/agent-auth/v1/token')) {
         assert.deepEqual(JSON.parse(init.body), {
           grant_type: 'refresh_token',
-          client_app_id: 'digital-cloud-agent',
+          client_app_id: 'example-agent-client',
           refresh_token: 'old-refresh-secret',
         });
         refreshCount += 1;
@@ -391,7 +391,7 @@ test('refresh rotates both tokens once for concurrent callers', async () => {
           refresh_token: 'rotated-refresh-secret',
           refresh_expires_in: 86400,
           session_id: 'session-1',
-          client_app_id: 'digital-cloud-agent',
+          client_app_id: 'example-agent-client',
         });
       }
       assert.equal(String(url), 'https://hub.example.com/agent-auth/v1/session');
@@ -417,7 +417,7 @@ test('distinct file-store instances share the cross-process lock and reload afte
   const initial = {
     schema_version: 1,
     base_url: 'https://hub.example.com',
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     route: 'orders',
     session_id: 'session-1',
     access_token: 'old-access-secret',
@@ -439,7 +439,7 @@ test('distinct file-store instances share the cross-process lock and reload afte
       refresh_token: 'rotated-refresh-secret',
       refresh_expires_in: 86400,
       session_id: 'session-1',
-      client_app_id: 'digital-cloud-agent',
+      client_app_id: 'example-agent-client',
     });
   };
   const firstManager = new AgentSessionManager(firstStore, refreshFetch, () => now);
@@ -461,7 +461,7 @@ test('refresh rotation clears stale local credentials when the rotated token can
   let stored = {
     schema_version: 1,
     base_url: 'https://hub.example.com',
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     route: 'orders',
     session_id: 'session-1',
     access_token: 'old-access-secret',
@@ -495,7 +495,7 @@ test('refresh rotation clears stale local credentials when the rotated token can
         refresh_token: 'rotated-refresh-secret',
         refresh_expires_in: 86400,
         session_id: 'session-1',
-        client_app_id: 'digital-cloud-agent',
+        client_app_id: 'example-agent-client',
       });
     },
     () => now,
@@ -516,7 +516,7 @@ test('logout removes the local login only after remote revocation succeeds', asy
   const store = new MemoryCredentialStore({
     schema_version: 1,
     base_url: 'https://hub.example.com',
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     route: 'orders',
     session_id: 'session-1',
     access_token: 'access-secret',
@@ -530,7 +530,7 @@ test('logout removes the local login only after remote revocation succeeds', asy
       assert.equal(String(url), 'https://hub.example.com/agent-auth/v1/revoke');
       assert.equal(init.headers.Authorization, undefined);
       assert.deepEqual(JSON.parse(init.body), {
-        client_app_id: 'digital-cloud-agent',
+        client_app_id: 'example-agent-client',
         refresh_token: 'refresh-secret',
       });
       return jsonResponse({ revoked: true });

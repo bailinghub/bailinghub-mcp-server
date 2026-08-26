@@ -8,9 +8,11 @@ async function readJson(path) {
 }
 
 const packageJson = await readJson('package.json');
+const packageLock = await readJson('package-lock.json');
 const serverJson = await readJson('server.json');
 const compatibility = await readJson('compatibility/client-api.json');
 const sourceVersion = await readFile(resolve(root, 'src/version.ts'), 'utf8');
+const changelog = await readFile(resolve(root, 'CHANGELOG.md'), 'utf8');
 
 const failures = [];
 function check(condition, message) {
@@ -25,8 +27,26 @@ check(
   'package version must be stable semantic or an explicitly private prerelease candidate',
 );
 check(
+  privateCandidate || packageJson.private === false,
+  'stable packages must set private to false',
+);
+check(
+  packageJson.publishConfig?.access === 'public' &&
+    packageJson.publishConfig?.provenance === true,
+  'public npm access and provenance must remain enabled',
+);
+check(
   sourceVersion.includes(`PACKAGE_VERSION = '${packageJson.version}'`),
   'src/version.ts must match package.json',
+);
+check(
+  packageLock.version === packageJson.version &&
+    packageLock.packages?.['']?.version === packageJson.version,
+  'package-lock.json root versions must match package.json',
+);
+check(
+  changelog.includes(`## ${packageJson.version} `),
+  'CHANGELOG.md must contain the package version',
 );
 check(
   privateCandidate ? stableVersion.test(serverJson.version) : serverJson.version === packageJson.version,
@@ -94,6 +114,8 @@ for (const path of [
   'SECURITY.md',
   'PRIVACY.md',
   'CHANGELOG.md',
+  'docs/AGENT_CLIENT_SDK.md',
+  'docs/AGENT_CLIENT_SDK.zh-CN.md',
   'docs/COMPATIBILITY.md',
   'docs/PROJECT_BOUNDARIES.md',
   'docs/THREAT_MODEL.md',

@@ -18,7 +18,7 @@ function credentials(route = 'orders') {
   return {
     schema_version: 1,
     base_url: 'https://hub.example.com',
-    client_app_id: 'digital-cloud-agent',
+    client_app_id: 'example-agent-client',
     route,
     session_id: 'session-1',
     access_token: 'access-secret',
@@ -57,7 +57,7 @@ async function setup(t) {
     calls.push({ path, method: init.method, body });
     if (path === '/agent-auth/v1/session') {
       return new Response(JSON.stringify({
-        session_id: 'session-1', client_app_id: 'digital-cloud-agent',
+        session_id: 'session-1', client_app_id: 'example-agent-client',
         device_label: 'test', principal: { id: 'user-1' }, on_behalf_of: 'tenant:user-1',
         allowed_routes: ['orders', 'staff'], created_at: '2026-01-01T00:00:00.000Z',
         expires_at: '2099-01-01T00:00:00.000Z', refresh_expires_at: '2099-02-01T00:00:00.000Z',
@@ -110,7 +110,7 @@ async function setup(t) {
     throw new Error(`Unexpected path: ${path}`);
   };
   const transport = createAgentClientTransport({
-    hubUrl: 'https://hub.example.com', clientAppId: 'digital-cloud-agent',
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client',
     workspace: 'orders', connectionName: 'development',
   }, {
     connectionStore,
@@ -132,7 +132,7 @@ test('SDK subpath exports a dynamic-import factory with the DSH canonical method
     'searchCapabilities', 'invoke', 'resume', 'completeRun',
   ];
   const transport = module.createAgentClientTransport({
-    hubUrl: 'https://hub.example.com', clientAppId: 'digital-cloud-agent',
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client',
     workspace: 'orders', connectionName: 'uninitialized',
   }, {
     connectionStore: new AgentConnectionStore({
@@ -246,7 +246,7 @@ test('factory refuses first login without an explicit or configured workspace', 
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-no-workspace-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const transport = createAgentClientTransport({
-    hubUrl: 'https://hub.example.com', clientAppId: 'digital-cloud-agent',
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client',
     connectionName: 'new-connection',
   }, {
     connectionStore: new AgentConnectionStore({

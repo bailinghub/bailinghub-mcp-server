@@ -16,7 +16,7 @@ const AGENT_CONFIG = {
   mode: 'agent',
   baseUrl: 'https://hub.example.com',
   route: 'orders',
-  clientAppId: 'digital-cloud-agent',
+  clientAppId: 'example-agent-client',
   sessionId: 'session-1',
   allowInsecureHttp: false,
   accessTokenProvider: { getAccessToken: async () => 'never-print-this-token' },

@@ -179,7 +179,7 @@ test('Agent mode forbids delegated jobs and refreshes Agent auth once for direct
     mode: 'agent',
     baseUrl: 'https://hub.example.com',
     route: 'orders',
-    clientAppId: 'digital-cloud-agent',
+    clientAppId: 'example-agent-client',
     sessionId: 'session-1',
     accessTokenProvider: {
       async getAccessToken(forceRefresh = false) {
@@ -218,7 +218,7 @@ test('Agent mode job lookup remains session-owned and never falls back to the Cl
     mode: 'agent',
     baseUrl: 'https://hub.example.com',
     route: 'orders',
-    clientAppId: 'digital-cloud-agent',
+    clientAppId: 'example-agent-client',
     sessionId: 'session-1',
     accessTokenProvider: { getAccessToken: async () => 'access-secret' },
   };
@@ -239,7 +239,7 @@ function agentRuntimeConfig() {
     mode: 'agent',
     baseUrl: 'https://hub.example.com',
     route: 'orders',
-    clientAppId: 'digital-cloud-agent',
+    clientAppId: 'example-agent-client',
     sessionId: 'session-1',
     accessTokenProvider: { getAccessToken: async () => 'access-secret' },
   };

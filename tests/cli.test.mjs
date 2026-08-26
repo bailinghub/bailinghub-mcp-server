@@ -15,7 +15,7 @@ function jsonResponse(body, status = 200) {
 const CREDENTIALS = {
   schema_version: 1,
   base_url: 'https://hub.example.com',
-  client_app_id: 'digital-cloud-agent',
+  client_app_id: 'example-agent-client',
   route: 'orders',
   session_id: 'session-1',
   access_token: 'access-secret',
@@ -42,7 +42,7 @@ test('runtime preserves legacy Client Token precedence and otherwise loads Agent
   assert.equal(runtime.mode, 'agent');
   assert.equal(runtime.baseUrl, 'https://hub.example.com');
   assert.equal(runtime.route, 'orders');
-  assert.equal(runtime.clientAppId, 'digital-cloud-agent');
+  assert.equal(runtime.clientAppId, 'example-agent-client');
   assert.equal('clientToken' in runtime, false);
 });
 test('status reports safe session metadata and never prints stored tokens', async () => {
@@ -56,10 +56,10 @@ test('status reports safe session metadata and never prints stored tokens', asyn
       assert.equal(init.headers.Authorization, 'Bearer access-secret');
       return jsonResponse({
         session_id: 'session-1',
-        client_app_id: 'digital-cloud-agent',
+        client_app_id: 'example-agent-client',
         device_label: 'My Mac',
         principal: { id: 'admin-1', tenant: 'tenant-1' },
-        on_behalf_of: 'digital-cloud:tenant-1:admin-1',
+        on_behalf_of: 'example-business:tenant-1:admin-1',
         allowed_routes: ['orders'],
         created_at: '2026-08-25T00:00:00.000Z',
         expires_at: '2099-08-25T01:00:00.000Z',

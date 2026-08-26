@@ -2,16 +2,15 @@
 
 [简体中文](README.zh-CN.md) | English
 
-> **Private acceptance candidate:** `0.2.0-agent-client.0` is not a published or stable
-> package release. It exists for private BailingHub Agent Client and host-adapter validation.
-> The published `0.1.x` Client Token behavior remains compatible and is not replaced.
+> **0.2.0:** adds the stable host-neutral Agent Client SDK and browser-authorized Agent Session
+> flow. The existing `0.1.x` Client Token behavior remains compatible and is not replaced.
 
 Use MCP hosts to submit and inspect governed business-system actions through a
 self-hosted [BailingHub](https://www.bailinghub.com/) control plane.
 
 This package is a thin integration adapter. It does not embed BailingHub, grant business
 permissions, or replace the downstream business system's final authorization. It supports
-both the existing operator-provisioned Client Token mode and an Agent Session candidate in
+both the existing operator-provisioned Client Token mode and an Agent Session mode in
 which a human approves one local Agent through the system browser.
 
 ## What It Exposes
@@ -22,10 +21,12 @@ which a human approves one local Agent through the system browser.
 | `get_governed_job` | Read the current public state of a credential-owned job |
 | `wait_for_governed_job` | Poll one job for at most 60 seconds without resubmitting it |
 
-The private Agent Client candidate starts with five small meta-tools for turn bootstrap,
+The Agent Client 0.2 path starts with five small meta-tools for turn bootstrap,
 capability search, governed invocation/recovery, and visible run completion. BailingHub then
 returns at most 12 active business tools for the current turn; each replacement removes the
 previous active set instead of growing the model context indefinitely.
+
+Host implementers should use the [host-neutral Agent Client SDK guide](docs/AGENT_CLIENT_SDK.md).
 
 The route, BailingHub URL, and credential are local process configuration. They are never
 MCP tool arguments and therefore cannot be selected or replaced by model output.
@@ -41,6 +42,12 @@ MCP tool arguments and therefore cannot be selected or replaced by model output.
 Neither mode lets the model supply a credential, route, acting subject, or approval result.
 The Agent Session records the identity approved by the Hub/business authorization boundary;
 the downstream business system still makes the final authorization decision.
+
+The MCP Registry `server.json` describes only the compatible standalone stdio/Client Token
+installation, so that entry still marks `BAILINGHUB_CLIENT_TOKEN` as required. The native DSH
+plugin does not consume that Registry configuration: it imports this package's `/sdk` subpath as
+an ordinary library dependency and establishes an Agent Session through the browser. Do not add a
+Client Token field to a DSH plugin based on the Registry form.
 
 ## Security Model
 
@@ -84,7 +91,7 @@ Prerequisites:
 - either one route-scoped BailingHub Client Token or a registered public Agent client that
   can be approved for the required route.
 
-Configure an MCP host to spawn:
+For the legacy static-job mode, configure an MCP host to spawn:
 
 ```json
 {
@@ -102,7 +109,7 @@ Configure an MCP host to spawn:
 }
 ```
 
-### Local Agent login candidate
+### Agent Session login
 
 Authorize one registered public Agent client and one fixed route before starting the MCP
 host without a Client Token:
@@ -110,8 +117,8 @@ host without a Client Token:
 ```bash
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \
-  --client-app-id digital-cloud-agent \
-  --route order_assistant
+  --client-app-id merchant-agent \
+  --route order-assistant
 
 bailinghub-mcp-server status
 bailinghub-mcp-server logout
@@ -173,6 +180,7 @@ See:
 - [Project boundaries](docs/PROJECT_BOUNDARIES.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Compatibility contract](docs/COMPATIBILITY.md)
+- [Agent Client SDK](docs/AGENT_CLIENT_SDK.md)
 - [Privacy](PRIVACY.md)
 - [Security policy](SECURITY.md)
 
@@ -203,7 +211,7 @@ Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
-The private `bailinghub-mcp-server/sdk` subpath additionally exposes a host-neutral Agent
+The `bailinghub-mcp-server/sdk` subpath additionally exposes a host-neutral Agent
 Client factory. It owns browser login, connection aliases, per-Hub/client/workspace credential
 isolation, token refresh, and Core DTO mapping; host adapters such as DSH do not own credentials
 or BailingHub HTTP endpoint details.

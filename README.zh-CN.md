@@ -2,16 +2,15 @@
 
 [English](README.md) | 简体中文
 
-> **私有验收候选：**`0.2.0-agent-client.0` 不是已公开发布或稳定的 npm
-> 版本，仅用于 BailingHub Agent Client 与宿主适配器的私有联调验收。
-> 已发布的 `0.1.x` Client Token 语义继续兼容，本候选版不替换它。
+> **0.2.0：**新增稳定的宿主无关 Agent Client SDK 与浏览器授权 Agent Session
+> 流程。现有 `0.1.x` Client Token 语义继续兼容，不会被替换。
 
 让 MCP Host 通过自托管的 [BailingHub](https://www.bailinghub.com/) 控制面，提交并查询
 受治理的业务系统操作。
 
 它是一个独立、轻量的生态适配器，不内嵌 BailingHub，不授予业务权限，也不替代
-业务系统的最终授权。它同时保留原有 Client Token 模式，并新增了一个 Agent
-Session 候选：用户通过系统浏览器授权当前本地智能体。
+业务系统的最终授权。它同时保留原有 Client Token 模式，并新增 Agent
+Session 模式：用户通过系统浏览器授权当前本地智能体。
 
 ## 暴露的工具
 
@@ -21,9 +20,11 @@ Session 候选：用户通过系统浏览器授权当前本地智能体。
 | `get_governed_job` | 查询当前 Client 所拥有任务的公开状态 |
 | `wait_for_governed_job` | 最多等待 60 秒，不会重新提交业务操作 |
 
-私有 Agent Client 候选初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
+Agent Client 0.2 路径初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
 受治理调用/恢复以及同步可见结果。BailingHub 每轮最多返回 12 个 active tools，
 新集合会替换旧集合，不会在上下文中无限累加。
+
+宿主开发者应使用[宿主无关的 Agent Client SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)。
 
 BailingHub 地址、凭据和 route 都是本地进程配置，不是 MCP 工具参数，因此模型
 不能选择或替换它们。
@@ -38,6 +39,11 @@ BailingHub 地址、凭据和 route 都是本地进程配置，不是 MCP 工具
 
 两种模式都不允许模型提供凭据、route、行动主体或审批结论。Agent Session 只承载由
 Hub/业务授权边界确认的身份，业务系统仍负责最终权限判断。
+
+MCP Registry 的 `server.json` 只描述兼容的独立 stdio/Client Token 安装入口，因此该入口仍会
+把 `BAILINGHUB_CLIENT_TOKEN` 标为必填。原生 DSH 插件不读取这份 Registry 配置；它把本包的
+`/sdk` 子路径作为普通库依赖，并通过浏览器建立 Agent Session。不要根据 Registry 表单给 DSH
+插件增加 Client Token 字段。
 
 ## 安全边界
 
@@ -80,7 +86,7 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
 - 一个仅允许目标 route 的 BailingHub Client Token，或一个能被批准使用该 route 的
   已注册公共 Agent 客户端。
 
-在 MCP Host 中配置：
+旧版静态任务模式在 MCP Host 中这样配置：
 
 ```json
 {
@@ -98,7 +104,7 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
 }
 ```
 
-### 本地 Agent 登录候选
+### Agent Session 登录
 
 启动不携带 Client Token 的 MCP Host 前，先为已注册的公共 Agent 客户端和一条固定
 route 完成授权：
@@ -106,8 +112,8 @@ route 完成授权：
 ```bash
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \
-  --client-app-id digital-cloud-agent \
-  --route order_assistant
+  --client-app-id merchant-agent \
+  --route order-assistant
 
 bailinghub-mcp-server status
 bailinghub-mcp-server logout
@@ -164,6 +170,7 @@ ACC 不依赖任何一个实现项目
 - [项目边界](docs/PROJECT_BOUNDARIES.md)
 - [威胁模型](docs/THREAT_MODEL.md)
 - [兼容性契约](docs/COMPATIBILITY.md)
+- [Agent Client SDK](docs/AGENT_CLIENT_SDK.zh-CN.md)
 - [隐私说明](PRIVACY.md)
 - [安全策略](SECURITY.md)
 
@@ -190,7 +197,7 @@ Agent Session 模式另外消费增量的 Agent Auth v1 与 Agent API v1：
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
-私有候选还通过 `bailinghub-mcp-server/sdk` 子路径暴露宿主无关的 Agent Client
+`bailinghub-mcp-server/sdk` 子路径暴露宿主无关的 Agent Client
 factory。它统一负责浏览器授权、连接别名、按 Hub/client/workspace 隔离的凭据、
 token 刷新和 Core DTO 映射；DSH 等宿主适配器不保存凭据，也不拼装 BailingHub HTTP 路径。
 

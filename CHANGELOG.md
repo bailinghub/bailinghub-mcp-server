@@ -1,12 +1,13 @@
 # Changelog
 
-## 0.2.0-agent-client.0 - private acceptance candidate
+## 0.2.0 - 2026-08-26
 
 - Added a host-neutral Agent Client SDK factory and isolated multi-connection credential registry.
 - Added progressive turn bootstrap, capability search, replaceable active tools, governed invoke/resume,
   and visible-only run completion against Agent Client API v1.
-- Preserved the published `0.1.x` Client Token behavior and distribution metadata.
-- Marked the package private until maintainer acceptance; this entry is not a public release claim.
+- Added browser authorization with PKCE, secure Agent Session storage, token refresh, and explicit
+  logout/revocation behavior for local Agent hosts.
+- Preserved the `0.1.x` Client Token job flow and standalone MCP Registry configuration.
 
 ## 0.1.1 - 2026-07-28
 

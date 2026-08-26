@@ -17,7 +17,7 @@ import {
 const CREDENTIALS = {
   schema_version: 1,
   base_url: 'https://hub.example.com',
-  client_app_id: 'digital-cloud-agent',
+  client_app_id: 'example-agent-client',
   route: 'orders',
   session_id: 'session-1',
   access_token: 'access-secret',
