@@ -8,24 +8,59 @@ async function readJson(path) {
 }
 
 const packageJson = await readJson('package.json');
+const packageLock = await readJson('package-lock.json');
 const serverJson = await readJson('server.json');
 const compatibility = await readJson('compatibility/client-api.json');
 const sourceVersion = await readFile(resolve(root, 'src/version.ts'), 'utf8');
+const changelog = await readFile(resolve(root, 'CHANGELOG.md'), 'utf8');
 
 const failures = [];
 function check(condition, message) {
   if (!condition) failures.push(message);
 }
 
-check(/^\d+\.\d+\.\d+$/.test(packageJson.version), 'package version must be semantic');
+const stableVersion = /^\d+\.\d+\.\d+$/;
+const candidateVersion = /^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$/;
+const privateCandidate = packageJson.private === true && candidateVersion.test(packageJson.version);
+check(
+  stableVersion.test(packageJson.version) || privateCandidate,
+  'package version must be stable semantic or an explicitly private prerelease candidate',
+);
+check(
+  privateCandidate || packageJson.private === false,
+  'stable packages must set private to false',
+);
+check(
+  packageJson.publishConfig?.access === 'public' &&
+    packageJson.publishConfig?.provenance === true,
+  'public npm access and provenance must remain enabled',
+);
 check(
   sourceVersion.includes(`PACKAGE_VERSION = '${packageJson.version}'`),
   'src/version.ts must match package.json',
 );
-check(serverJson.version === packageJson.version, 'server.json version must match package.json');
 check(
-  compatibility.adapter_version === packageJson.version,
-  'compatibility adapter_version must match package.json',
+  packageLock.version === packageJson.version &&
+    packageLock.packages?.['']?.version === packageJson.version,
+  'package-lock.json root versions must match package.json',
+);
+check(
+  changelog.includes(`## ${packageJson.version} `),
+  'CHANGELOG.md must contain the package version',
+);
+check(
+  privateCandidate ? stableVersion.test(serverJson.version) : serverJson.version === packageJson.version,
+  privateCandidate
+    ? 'private candidates must retain a stable public server.json version'
+    : 'server.json version must match package.json',
+);
+check(
+  privateCandidate
+    ? compatibility.adapter_version === serverJson.version
+    : compatibility.adapter_version === packageJson.version,
+  privateCandidate
+    ? 'private candidates must retain the published Client API compatibility version'
+    : 'compatibility adapter_version must match package.json',
 );
 check(serverJson.name === packageJson.mcpName, 'server.json name must match package mcpName');
 check(
@@ -37,7 +72,10 @@ check(serverJson.packages?.length === 1, 'server.json must contain one package')
 const registryPackage = serverJson.packages?.[0] ?? {};
 check(registryPackage.registryType === 'npm', 'registry package must use npm');
 check(registryPackage.identifier === packageJson.name, 'registry identifier must match package name');
-check(registryPackage.version === packageJson.version, 'registry package version must match');
+check(
+  registryPackage.version === (privateCandidate ? serverJson.version : packageJson.version),
+  'registry package version must match the public server descriptor',
+);
 check(registryPackage.transport?.type === 'stdio', 'registry transport must be stdio');
 
 const environmentVariables = registryPackage.environmentVariables ?? [];
@@ -76,6 +114,8 @@ for (const path of [
   'SECURITY.md',
   'PRIVACY.md',
   'CHANGELOG.md',
+  'docs/AGENT_CLIENT_SDK.md',
+  'docs/AGENT_CLIENT_SDK.zh-CN.md',
   'docs/COMPATIBILITY.md',
   'docs/PROJECT_BOUNDARIES.md',
   'docs/THREAT_MODEL.md',

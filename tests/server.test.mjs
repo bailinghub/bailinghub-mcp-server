@@ -5,9 +5,13 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { BailingHubClient } from '../dist/client.js';
-import { createBailingHubMcpServer } from '../dist/server.js';
+import {
+  createAgentToolInvocationId,
+  createBailingHubMcpServer,
+} from '../dist/server.js';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
+const AGENT_RUN_ID = '22222222-2222-4222-8222-222222222222';
 const config = {
   baseUrl: 'https://hub.example.com',
   clientToken: 'client-token',
@@ -35,13 +39,8 @@ test('tool schemas do not expose route, credentials, identity, approval, or call
 
   const serialized = JSON.stringify(listed.tools);
   for (const forbidden of [
-    'client_token',
-    'admin_token',
-    'subject',
-    'approval_evidence',
-    'approval_decision',
-    'callback_url',
-    'executor',
+    'client_token', 'admin_token', 'subject', 'approval_evidence',
+    'approval_decision', 'callback_url', 'executor',
   ]) {
     assert.equal(serialized.includes(`"${forbidden}"`), false, `${forbidden} leaked into schema`);
   }
@@ -65,9 +64,35 @@ test('MCP errors remain structured and sanitized', async (t) => {
   });
 
   const result = await client.callTool({
-    name: 'get_governed_job',
-    arguments: { job_id: JOB_ID },
+    name: 'get_governed_job', arguments: { job_id: JOB_ID },
   });
   assert.equal(result.isError, true);
   assert.equal(result.content[0].text, 'BailingHub rejected the Client Token.');
+});
+
+test('Agent invocation ids bind session, local run, and MCP request id', () => {
+  assert.equal(
+    createAgentToolInvocationId('session-1', AGENT_RUN_ID, 17),
+    createAgentToolInvocationId('session-1', AGENT_RUN_ID, 17),
+  );
+  assert.notEqual(
+    createAgentToolInvocationId('session-1', AGENT_RUN_ID, 17),
+    createAgentToolInvocationId('session-1', AGENT_RUN_ID, 18),
+  );
+  assert.match(
+    createAgentToolInvocationId('session-1', AGENT_RUN_ID, 'request-1'),
+    /^[0-9a-f]{64}$/,
+  );
+  assert.notEqual(
+    createAgentToolInvocationId('session-1', AGENT_RUN_ID, 1),
+    createAgentToolInvocationId('session-1', AGENT_RUN_ID, '1'),
+  );
+  assert.throws(
+    () => createAgentToolInvocationId('session-1', AGENT_RUN_ID, 1.5),
+    /MCP request id is invalid/,
+  );
+  assert.throws(
+    () => createAgentToolInvocationId('session-1', AGENT_RUN_ID, ''),
+    /MCP request id is invalid/,
+  );
 });

@@ -3,6 +3,8 @@
 ## Assets
 
 - BailingHub Client Token;
+- Agent access/refresh tokens and local session binding;
+- loopback callback state and PKCE verifier;
 - configured route boundary;
 - business task text and public job result;
 - client-scoped idempotency and job ownership;
@@ -14,6 +16,7 @@
 | --- | --- |
 | Model and MCP host input | Untrusted for identity, authority, approval, and route selection |
 | MCP server process | Trusted to hold the route-scoped Client Token and enforce projection |
+| Local credential store | Trusted to protect an approved Agent Session from other users |
 | BailingHub Client API | Trusted to enforce client ownership, route allowlist, rate limits, and contract |
 | Business system | Final authority for subject, object state, tenant scope, and business authorization |
 
@@ -35,7 +38,8 @@ It must not be able to:
 - make the MCP server assert final business authorization;
 - force an unbounded wait;
 - receive arbitrary top-level BailingHub response fields;
-- recover a secret from a raw upstream error body.
+- recover a secret from a raw upstream error body;
+- replace the login callback, PKCE verifier, approved Agent client, or approved route.
 
 ## Security Invariants
 
@@ -49,6 +53,14 @@ It must not be able to:
 8. stdout contains MCP protocol traffic only; diagnostics use stderr.
 9. The adapter never accepts a subject, approval result, credential, callback, metadata, or
    arbitrary route as a tool parameter.
+10. Agent login binds a random `127.0.0.1` port, validates `state`, uses PKCE S256, and never
+    places access or refresh tokens in CLI output or command arguments.
+11. macOS stores Agent credentials in Keychain. Linux and other POSIX platforms have no
+    silent plaintext fallback; an explicitly enabled file store requires current-user
+    ownership and mode 0600. Windows Agent Session credential storage fails closed until a
+    native secure store is implemented.
+12. Agent API requests use only the approved session route, retry one 401 after rotating the
+    refresh token, and never fall back to the Client API.
 
 ## Non-Guarantees
 
@@ -67,5 +79,7 @@ Automated tests cover:
 - top-level response projection;
 - unknown status and response-size rejection;
 - bounded waiting without resubmission;
+- loopback state and PKCE request projection;
+- secure credential-store selection and refresh-token rotation;
+- Agent API isolation and one bounded 401 refresh retry;
 - an end-to-end stdio MCP call against a no-side-effect mock BailingHub.
-

@@ -1,10 +1,19 @@
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const ROUTE_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/;
+const CLIENT_APP_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 
 export type BailingHubMcpConfig = {
+  mode?: 'client';
   baseUrl: string;
   clientToken: string;
   route: string;
+};
+
+export type AgentLoginConfig = {
+  baseUrl: string;
+  clientAppId: string;
+  route: string;
+  deviceLabel: string;
 };
 
 function requiredText(
@@ -20,11 +29,37 @@ function requiredText(
   return text;
 }
 
-function booleanFlag(value: string | undefined, name: string): boolean {
+export function booleanFlag(value: string | undefined, name: string): boolean {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized || normalized === 'false' || normalized === '0') return false;
   if (normalized === 'true' || normalized === '1') return true;
   throw new Error(`${name} must be true or false.`);
+}
+
+export function normalizeRoute(value: string | undefined): string {
+  const route = requiredText(value, 'BAILINGHUB_ROUTE', 64);
+  if (!ROUTE_PATTERN.test(route)) {
+    throw new Error('BAILINGHUB_ROUTE must match ^[a-z0-9][a-z0-9_-]{1,63}$.');
+  }
+  return route;
+}
+
+export function normalizeAgentRoute(value: string | undefined): string {
+  const route = normalizeRoute(value);
+  if (route === 'auto') {
+    throw new Error('BAILINGHUB_ROUTE=auto is not allowed for Agent login.');
+  }
+  return route;
+}
+
+export function normalizeClientAppId(value: string | undefined): string {
+  const clientAppId = requiredText(value, 'BAILINGHUB_CLIENT_APP_ID', 64);
+  if (!CLIENT_APP_ID_PATTERN.test(clientAppId)) {
+    throw new Error(
+      'BAILINGHUB_CLIENT_APP_ID must match ^[a-z0-9][a-z0-9_-]{1,63}$.',
+    );
+  }
+  return clientAppId;
 }
 
 export function normalizeBaseUrl(value: string, allowInsecureHttp = false): string {
@@ -65,10 +100,7 @@ export function loadConfig(
     environment.BAILINGHUB_ALLOW_INSECURE_HTTP,
     'BAILINGHUB_ALLOW_INSECURE_HTTP',
   );
-  const route = requiredText(environment.BAILINGHUB_ROUTE, 'BAILINGHUB_ROUTE', 64);
-  if (!ROUTE_PATTERN.test(route)) {
-    throw new Error('BAILINGHUB_ROUTE must match ^[a-z0-9][a-z0-9_-]{1,63}$.');
-  }
+  const route = normalizeRoute(environment.BAILINGHUB_ROUTE);
 
   return {
     baseUrl: normalizeBaseUrl(
@@ -82,4 +114,3 @@ export function loadConfig(
     route,
   };
 }
-

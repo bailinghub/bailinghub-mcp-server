@@ -1,11 +1,23 @@
 {
   "name": "bailinghub-mcp-server",
-  "version": "0.1.1",
+  "version": "0.2.0",
+  "private": false,
   "description": "Submit and inspect governed AI jobs through BailingHub from MCP hosts.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./sdk": {
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js"
+    },
+    "./agent-client": {
+      "types": "./dist/agent-client.d.ts",
+      "import": "./dist/agent-client.js"
+    }
+  },
   "bin": {
     "bailinghub-mcp-server": "dist/index.js"
   },
@@ -40,6 +52,8 @@
   "files": [
     "dist",
     "compatibility/client-api.json",
+    "docs/AGENT_CLIENT_SDK.md",
+    "docs/AGENT_CLIENT_SDK.zh-CN.md",
     "docs/COMPATIBILITY.md",
     "docs/PROJECT_BOUNDARIES.md",
     "docs/THREAT_MODEL.md",

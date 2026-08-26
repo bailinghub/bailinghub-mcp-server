@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { loadConfig, normalizeBaseUrl } from '../dist/config.js';
+import {
+  loadConfig,
+  normalizeAgentRoute,
+  normalizeBaseUrl,
+  normalizeClientAppId,
+} from '../dist/config.js';
 
 test('loads one fixed route and rejects missing configuration', () => {
   assert.deepEqual(
@@ -26,6 +31,21 @@ test('loads one fixed route and rejects missing configuration', () => {
       }),
     /BAILINGHUB_ROUTE must match/,
   );
+});
+
+test('Agent login rejects auto without changing legacy Client Token route behavior', () => {
+  assert.equal(
+    loadConfig({
+      BAILINGHUB_BASE_URL: 'https://hub.example.com',
+      BAILINGHUB_CLIENT_TOKEN: 'client-token',
+      BAILINGHUB_ROUTE: 'auto',
+    }).route,
+    'auto',
+  );
+  assert.throws(() => normalizeAgentRoute('auto'), /not allowed for Agent login/);
+  assert.equal(normalizeClientAppId('example_agent-client'), 'example_agent-client');
+  assert.throws(() => normalizeClientAppId('example.client'), /must match/);
+  assert.throws(() => normalizeClientAppId(`a${'b'.repeat(64)}`), /must not exceed 64/);
 });
 
 test('requires HTTPS for remote origins unless the operator explicitly opts in', () => {
