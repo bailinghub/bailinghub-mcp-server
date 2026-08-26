@@ -2,6 +2,10 @@
 
 [简体中文](README.zh-CN.md) | English
 
+> **Private acceptance candidate:** `0.2.0-agent-client.0` is not a published or stable
+> package release. It exists for private BailingHub Agent Client and host-adapter validation.
+> The published `0.1.x` Client Token behavior remains compatible and is not replaced.
+
 Use MCP hosts to submit and inspect governed business-system actions through a
 self-hosted [BailingHub](https://www.bailinghub.com/) control plane.
 
@@ -17,6 +21,11 @@ which a human approves one local Agent through the system browser.
 | `submit_governed_job` | Submit untrusted task text to one operator-configured BailingHub route |
 | `get_governed_job` | Read the current public state of a credential-owned job |
 | `wait_for_governed_job` | Poll one job for at most 60 seconds without resubmitting it |
+
+The private Agent Client candidate starts with five small meta-tools for turn bootstrap,
+capability search, governed invocation/recovery, and visible run completion. BailingHub then
+returns at most 12 active business tools for the current turn; each replacement removes the
+previous active set instead of growing the model context indefinitely.
 
 The route, BailingHub URL, and credential are local process configuration. They are never
 MCP tool arguments and therefore cannot be selected or replaced by model output.
@@ -186,8 +195,18 @@ Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
 - `POST /agent-auth/v1/token`
 - `GET /agent-auth/v1/session`
 - `POST /agent-auth/v1/revoke`
-- `POST /agent-api/v1/run`
-- `GET /agent-api/v1/jobs/{job_id}`
+- `GET /agent-api/v1/workspaces`
+- `GET /agent-api/v1/workspaces/{route}/bootstrap`
+- `POST /agent-api/v1/workspaces/{route}/turns`
+- `POST /agent-api/v1/workspaces/{route}/capabilities/search`
+- `POST /agent-api/v1/tool-invocations`
+- `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
+- `POST /agent-api/v1/runs/{run_id}/complete`
+
+The private `bailinghub-mcp-server/sdk` subpath additionally exposes a host-neutral Agent
+Client factory. It owns browser login, connection aliases, per-Hub/client/workspace credential
+isolation, token refresh, and Core DTO mapping; host adapters such as DSH do not own credentials
+or BailingHub HTTP endpoint details.
 
 No administrator, executor, approval-decision, tool-proxy, configuration, or direct business
 API is called by this adapter.

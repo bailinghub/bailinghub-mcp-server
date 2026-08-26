@@ -9,9 +9,17 @@ import { z } from 'zod';
 import {
   BailingHubClient,
   BailingHubClientError,
-  type AgentToolCatalog,
   type AgentToolCatalogEntry,
 } from './client.js';
+import {
+  BailingHubAgentClient,
+  type AgentCapabilitySearchResult,
+  type AgentRunCompletion,
+  type AgentRuntimeProfile,
+  type AgentTurnContext,
+  type CompleteAgentRunInput,
+  type StartAgentTurnInput,
+} from './agent-client.js';
 import type {
   AgentBailingHubMcpConfig,
   BailingHubRuntimeConfig,
@@ -22,18 +30,32 @@ const STATIC_TOOL_NAMES = new Set([
   'submit_governed_job',
   'get_governed_job',
   'wait_for_governed_job',
+  'start_business_turn',
+  'search_business_capabilities',
+  'invoke_business_capability',
+  'complete_business_run',
   'resume_governed_tool_invocation',
 ]);
 const UUID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
 const CAPABILITY_REVISION_PATTERN = /^[a-f0-9]{64}$/;
-const DEFAULT_CATALOG_POLL_INTERVAL_MS = 30_000;
+const DEFAULT_CATALOG_POLL_INTERVAL_MS = 60_000;
 const MIN_CATALOG_POLL_INTERVAL_MS = 10;
 const MAX_CATALOG_POLL_INTERVAL_MS = 300_000;
 
 type ServerContext = {
   client: BailingHubClient;
 };
+
+type AgentClientContract = Pick<
+  BailingHubAgentClient,
+  | 'bootstrapWorkspace'
+  | 'startTurn'
+  | 'searchCapabilities'
+  | 'invoke'
+  | 'resume'
+  | 'completeRun'
+>;
 
 type PreparedAgentTool = {
   tool: AgentToolCatalogEntry;
@@ -49,27 +71,38 @@ type PreparedAgentCatalog = {
 
 type AgentToolProjectionState = {
   server: McpServer;
-  client: BailingHubClient;
+  client: AgentClientContract;
   config: AgentBailingHubMcpConfig;
-  agentRunId: string;
+  clientConversationId: string;
+  runId: string | undefined;
+  profileRevision: string;
   revision: string;
+  profileEtag: string | undefined;
   catalogSignature: string;
   tools: Map<string, PreparedAgentTool>;
   handles: Map<string, RegisteredTool>;
   refreshPromise: Promise<boolean> | undefined;
   timer: NodeJS.Timeout | undefined;
+  pollIntervalMs: number;
+  pollDelayMs: number;
   closed: boolean;
+  lastCompletion: {
+    inputSignature: string;
+    result: AgentRunCompletion;
+  } | undefined;
 };
 
 export type BailingHubMcpAgentProjection = {
   refresh(): Promise<boolean>;
   close(): void;
   revision(): string;
+  activeToolNames(): string[];
 };
 
 export type BailingHubMcpInitializationOptions = {
   client?: BailingHubClient;
-  agentRunId?: string;
+  agentClient?: AgentClientContract;
+  clientConversationId?: string;
   catalogPollIntervalMs?: number;
 };
 
@@ -187,23 +220,58 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+function normalizedMcpRequestId(requestId: unknown): string {
+  if (typeof requestId === 'string') {
+    if (!requestId || requestId.length > 256 || /[\u0000-\u001f\u007f]/.test(requestId)) {
+      throw new Error('The MCP request id is invalid.');
+    }
+    return `string:${requestId}`;
+  }
+  if (typeof requestId === 'number' && Number.isSafeInteger(requestId)) {
+    return `number:${requestId}`;
+  }
+  throw new Error('The MCP request id is invalid.');
+}
+
+function stableAgentMessageId(
+  kind: 'turn' | 'user' | 'assistant',
+  ...parts: string[]
+): string {
+  const hash = createHash('sha256').update(`bailinghub.mcp.${kind}.v1\0`);
+  for (const part of parts) hash.update(part).update('\0');
+  return `mcp_${kind}:${hash.digest('hex')}`;
+}
+
+export function createAgentTurnMessageIds(
+  sessionId: string,
+  clientConversationId: string,
+  requestId: unknown,
+  visibleInput: unknown,
+): { clientTurnId: string; userMessageId: string } {
+  for (const [label, value] of [
+    ['sessionId', sessionId],
+    ['clientConversationId', clientConversationId],
+  ] as const) {
+    if (!value || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value)) {
+      throw new Error(`${label} is invalid.`);
+    }
+  }
+  const normalizedRequestId = normalizedMcpRequestId(requestId);
+  const payload = stableJson(visibleInput);
+  return {
+    clientTurnId: stableAgentMessageId(
+      'turn', sessionId, clientConversationId, normalizedRequestId, payload,
+    ),
+    userMessageId: stableAgentMessageId(
+      'user', sessionId, clientConversationId, normalizedRequestId, payload,
+    ),
+  };
+}
+
 function dynamicToolDescription(tool: AgentToolCatalogEntry): string {
-  const access = tool.readonly
-    ? 'read-only'
-    : 'may change business data';
-  const approval = tool.approval_required
-    ? 'human approval required before dispatch'
-    : 'no route-level human approval required';
-  const idempotency = tool.idempotent
-    ? 'declared idempotent'
-    : 'not declared idempotent';
-  return (
-    `${tool.description}\n\nBailingHub governance: risk=${tool.risk}; access=${access}; ` +
-    `approval=${approval}; idempotency=${idempotency}. The local Agent chooses and ` +
-    'sequences this capability. BailingHub still enforces the authorized route, acting identity, ' +
-    'audit, approval, and dispatch controls. After an uncertain transport error, never call this ' +
-    'tool again; use resume_governed_tool_invocation with the returned invocation_id.'
-  );
+  // Shared governance and recovery rules live once in server instructions. Repeating them on
+  // every active tool made large catalogs dominate the model context.
+  return tool.description;
 }
 
 export function createAgentToolInvocationId(
@@ -219,17 +287,7 @@ export function createAgentToolInvocationId(
   ) {
     throw new Error('The Agent invocation identity is invalid.');
   }
-  let normalizedRequestId: string;
-  if (typeof requestId === 'string') {
-    if (!requestId || requestId.length > 256 || /[\u0000-\u001f\u007f]/.test(requestId)) {
-      throw new Error('The MCP request id is invalid.');
-    }
-    normalizedRequestId = `string:${requestId}`;
-  } else if (typeof requestId === 'number' && Number.isSafeInteger(requestId)) {
-    normalizedRequestId = `number:${requestId}`;
-  } else {
-    throw new Error('The MCP request id is invalid.');
-  }
+  const normalizedRequestId = normalizedMcpRequestId(requestId);
   return createHash('sha256')
     .update('bailinghub.mcp.agent-tool-invocation.v1\0')
     .update(sessionId)
@@ -263,21 +321,19 @@ function catalogPollInterval(value: number | undefined): number {
 }
 
 function prepareAgentCatalog(
-  catalog: AgentToolCatalog,
-  config: AgentBailingHubMcpConfig,
+  capabilityRevision: string,
+  activeTools: AgentToolCatalogEntry[],
 ): PreparedAgentCatalog {
   if (
-    catalog.schema_version !== 'bailing.agent-tool-catalog.v1' ||
-    catalog.route !== config.route ||
-    !CAPABILITY_REVISION_PATTERN.test(catalog.capability_revision) ||
-    !Array.isArray(catalog.tools) ||
-    catalog.tools.length > 512
+    !CAPABILITY_REVISION_PATTERN.test(capabilityRevision) ||
+    !Array.isArray(activeTools) ||
+    activeTools.length > 12
   ) {
-    throw new Error('BailingHub rejected an invalid Agent tool catalog before projection.');
+    throw new Error('BailingHub rejected an invalid active Agent tool set before projection.');
   }
 
   const tools = new Map<string, PreparedAgentTool>();
-  for (const tool of [...catalog.tools].sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const tool of [...activeTools].sort((a, b) => a.name.localeCompare(b.name))) {
     if (STATIC_TOOL_NAMES.has(tool.name)) {
       throw new Error(
         `BailingHub rejected the Agent tool catalog because ${tool.name} conflicts with a reserved MCP tool.`,
@@ -306,7 +362,7 @@ function prepareAgentCatalog(
   }
 
   return {
-    revision: catalog.capability_revision,
+    revision: capabilityRevision,
     signature: stableJson(
       [...tools.entries()].map(([name, prepared]) => [name, prepared.signature]),
     ),
@@ -331,6 +387,57 @@ function capabilityChangedFailure(
   );
 }
 
+async function invokeActiveTool(
+  state: AgentToolProjectionState,
+  tool: AgentToolCatalogEntry,
+  argumentsValue: Record<string, unknown>,
+  requestId: unknown,
+) {
+  if (!state.runId) {
+    return failureText(
+      'No Agent run is active. Call start_business_turn before invoking a business capability.',
+    );
+  }
+  let invocationId: string;
+  try {
+    invocationId = createAgentToolInvocationId(
+      state.config.sessionId,
+      state.runId,
+      requestId,
+    );
+  } catch {
+    return failureText(
+      'The MCP host supplied an invalid request id. No BailingHub invocation was created.',
+    );
+  }
+  try {
+    return success(
+      await state.client.invoke({
+        invocationId,
+        capabilityRevision: state.revision,
+        agentRunId: state.runId,
+        tool: tool.name,
+        arguments: argumentsValue,
+      }),
+    );
+  } catch (error) {
+    if (
+      error instanceof BailingHubClientError &&
+      error.publicCode === 'capability_changed'
+    ) {
+      let refreshed = false;
+      let refreshFailed = false;
+      try {
+        refreshed = await refreshAgentRuntimeProfile(state);
+      } catch {
+        refreshFailed = true;
+      }
+      return capabilityChangedFailure(invocationId, refreshed, refreshFailed);
+    }
+    return invocationFailure(error, invocationId);
+  }
+}
+
 function registerProjectedTool(
   state: AgentToolProjectionState,
   prepared: PreparedAgentTool,
@@ -350,45 +457,17 @@ function registerProjectedTool(
       },
     },
     async (argumentsValue, extra) => {
-      let invocationId: string;
       try {
-        invocationId = createAgentToolInvocationId(
-          state.config.sessionId,
-          state.agentRunId,
+        return await invokeActiveTool(
+          state,
+          tool,
+          asToolArguments(argumentsValue),
           extra.requestId,
         );
       } catch {
         return failureText(
-          'The MCP host supplied an invalid request id. No BailingHub invocation was created.',
+          'The MCP host supplied invalid business-tool arguments. No BailingHub invocation was created.',
         );
-      }
-
-      const capabilityRevision = state.revision;
-      try {
-        return success(
-          await state.client.invokeAgentTool({
-            invocationId,
-            capabilityRevision,
-            agentRunId: state.agentRunId,
-            tool: tool.name,
-            arguments: asToolArguments(argumentsValue),
-          }),
-        );
-      } catch (error) {
-        if (
-          error instanceof BailingHubClientError &&
-          error.publicCode === 'capability_changed'
-        ) {
-          let refreshed = false;
-          let refreshFailed = false;
-          try {
-            refreshed = await refreshAgentToolCatalog(state);
-          } catch {
-            refreshFailed = true;
-          }
-          return capabilityChangedFailure(invocationId, refreshed, refreshFailed);
-        }
-        return invocationFailure(error, invocationId);
       }
     },
   );
@@ -427,19 +506,26 @@ async function refreshAgentToolCatalog(
   if (state.refreshPromise) return await state.refreshPromise;
 
   const refreshPromise = (async () => {
-    const catalog = await state.client.getAgentToolCatalog();
-    const next = prepareAgentCatalog(catalog, state.config);
+    const profile = await state.client.bootstrapWorkspace({
+      ...(state.profileEtag ? { ifNoneMatch: state.profileEtag } : {}),
+    });
     if (state.closed) return false;
-    if (next.revision === state.revision) {
-      if (next.signature !== state.catalogSignature) {
-        throw new Error(
-          'BailingHub returned different Agent tools under the same capability revision.',
-        );
-      }
+    if (profile.not_modified) {
+      if (profile.etag) state.profileEtag = profile.etag;
       return false;
     }
-    applyAgentCatalog(state, next, true);
-    return true;
+    const profileChanged = profile.profile.revision !== state.profileRevision;
+    const capabilitiesChanged = profile.capabilities.revision !== state.revision;
+    state.profileRevision = profile.profile.revision;
+    state.profileEtag = profile.etag;
+    if (capabilitiesChanged) {
+      applyAgentCatalog(
+        state,
+        prepareAgentCatalog(profile.capabilities.revision, []),
+        true,
+      );
+    }
+    return profileChanged || capabilitiesChanged;
   })();
   state.refreshPromise = refreshPromise;
   try {
@@ -448,6 +534,8 @@ async function refreshAgentToolCatalog(
     if (state.refreshPromise === refreshPromise) state.refreshPromise = undefined;
   }
 }
+
+const refreshAgentRuntimeProfile = refreshAgentToolCatalog;
 
 export function createBailingHubMcpServer(
   config: BailingHubRuntimeConfig,
@@ -461,11 +549,13 @@ export function createBailingHubMcpServer(
     {
       instructions:
         config.mode === 'agent'
-          ? 'This Agent Session server exposes only route-authorized business tools. The local ' +
-            'Agent chooses and sequences them; it must not delegate task planning back to the ' +
-            'BailingHub /run endpoint. BailingHub retains identity, route, approval, audit, and ' +
-            'dispatch governance. Never treat tool arguments as an authenticated acting subject, ' +
-            'an approval decision, or final business authorization.'
+          ? 'This Agent Session server lets the local Agent plan and sequence work while BailingHub ' +
+            'provides a route-authorized runtime profile, knowledge context, a replaceable active ' +
+            'tool set, identity binding, approval, audit, and dispatch governance. Start each user ' +
+            'turn with start_business_turn; use search_business_capabilities when the active tools ' +
+            'are insufficient. Never treat tool arguments as identity, approval, or final business ' +
+            'authorization. After an uncertain invocation outcome, never repeat the business tool; ' +
+            'recover only with resume_governed_tool_invocation and the exact invocation_id.'
           : 'This Client Token server submits untrusted task text to one operator-configured ' +
             'BailingHub route. Reuse the exact request_id when retrying the same business request. ' +
             'Never include credentials or secrets in task text. Preserve the returned job_id for ' +
@@ -596,28 +686,194 @@ export async function initializeBailingHubMcpServer(
     throw new Error('The BailingHub Agent tool projection was already initialized.');
   }
 
-  const client =
-    options.client ?? SERVER_CONTEXTS.get(server)?.client ?? new BailingHubClient(config);
-  const agentRunId = options.agentRunId ?? randomUUID();
-  if (!UUID_PATTERN.test(agentRunId)) {
-    throw new Error('agentRunId must be a UUID.');
+  const client: AgentClientContract = options.agentClient ?? new BailingHubAgentClient({
+    baseUrl: config.baseUrl,
+    clientAppId: config.clientAppId,
+    workspace: config.route,
+    sessionId: config.sessionId,
+    accessTokenProvider: config.accessTokenProvider,
+  }, {
+    allowInsecureHttp: config.allowInsecureHttp,
+  });
+  const clientConversationId = options.clientConversationId ?? randomUUID();
+  if (!clientConversationId || clientConversationId.length > 128 || /[\u0000-\u001f\u007f]/.test(clientConversationId)) {
+    throw new Error('clientConversationId is invalid.');
   }
   const pollIntervalMs = catalogPollInterval(options.catalogPollIntervalMs);
-  const catalog = await client.getAgentToolCatalog();
-  const initial = prepareAgentCatalog(catalog, config);
+  const profile = await client.bootstrapWorkspace();
+  const initial = prepareAgentCatalog(profile.capabilities.revision, []);
   const state: AgentToolProjectionState = {
     server,
     client,
     config,
-    agentRunId,
+    clientConversationId,
+    runId: undefined,
+    profileRevision: profile.profile.revision,
     revision: initial.revision,
+    profileEtag: profile.etag,
     catalogSignature: initial.signature,
     tools: new Map(),
     handles: new Map(),
     refreshPromise: undefined,
     timer: undefined,
+    pollIntervalMs,
+    pollDelayMs: pollIntervalMs,
     closed: false,
+    lastCompletion: undefined,
   };
+
+  server.registerTool(
+    'start_business_turn',
+    {
+      title: 'Start Business Turn',
+      description:
+        'Start one local-Agent turn, retrieve the governed runtime context, and replace the ' +
+        'active business-tool set with the capabilities relevant to this user request.',
+      inputSchema: {
+        user_input: z.string().min(1).max(64_000),
+        page_context: z.record(z.string(), z.unknown()).refine(
+          (value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= 16 * 1024,
+          'page_context must not exceed 16 KiB.',
+        ).optional(),
+        renderers: z.array(z.string().min(1).max(64)).max(20).optional(),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ user_input, page_context, renderers }, extra) => {
+      let clientTurnId: string;
+      let userMessageId: string;
+      try {
+        ({ clientTurnId, userMessageId } = createAgentTurnMessageIds(
+          state.config.sessionId,
+          state.clientConversationId,
+          extra.requestId,
+          { user_input, page_context: page_context ?? null, renderers: renderers ?? [] },
+        ));
+      } catch {
+        return failureText('The MCP host supplied an invalid request id. No Agent turn was created.');
+      }
+      const input: StartAgentTurnInput = {
+        clientConversationId: state.clientConversationId,
+        clientTurnId,
+        userMessageId,
+        userInput: user_input,
+        ...(page_context ? { pageContext: page_context } : {}),
+        ...(renderers ? { renderers } : {}),
+      };
+      try {
+        const turn: AgentTurnContext = await state.client.startTurn(input);
+        state.runId = turn.run_id;
+        state.lastCompletion = undefined;
+        state.profileRevision = turn.profile_revision;
+        applyAgentCatalog(
+          state,
+          prepareAgentCatalog(turn.capability_revision, turn.active_tools),
+          server.isConnected(),
+        );
+        return success({
+          schema: turn.schema,
+          run_id: turn.run_id,
+          profile_revision: turn.profile_revision,
+          capability_revision: turn.capability_revision,
+          context: turn.context,
+          active_tools: turn.active_tools.map((tool) => ({
+            name: tool.name,
+            scope: tool.scope,
+            risk: tool.risk,
+            approval_required: tool.approval_required,
+          })),
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'search_business_capabilities',
+    {
+      title: 'Search Business Capabilities',
+      description:
+        'Search within the authorized workspace and replace the current active tool set with up ' +
+        'to 12 capabilities relevant to the query or current turn. This grants no new authority.',
+      inputSchema: {
+        query: z.string().max(2_000).optional(),
+        limit: z.number().int().min(1).max(12).default(12),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ query, limit }) => {
+      const hasQuery = typeof query === 'string' && Boolean(query.trim());
+      if (!hasQuery && !state.runId) {
+        return failureText(
+          'A non-empty query or an active Agent run is required to search business capabilities.',
+        );
+      }
+      try {
+        const result: AgentCapabilitySearchResult = await state.client.searchCapabilities({
+          ...(hasQuery ? { query } : {}),
+          limit,
+          ...(state.runId ? { runId: state.runId } : {}),
+        });
+        applyAgentCatalog(
+          state,
+          prepareAgentCatalog(result.capability_revision, result.tools),
+          server.isConnected(),
+        );
+        return success({
+          schema: result.schema,
+          capability_revision: result.capability_revision,
+          active_tools: result.tools.map((tool) => ({
+            name: tool.name,
+            scope: tool.scope,
+            risk: tool.risk,
+            approval_required: tool.approval_required,
+          })),
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'invoke_business_capability',
+    {
+      title: 'Invoke Active Business Capability',
+      description:
+        'Invoke one capability from the current active set. Prefer its dynamically listed typed ' +
+        'tool when the MCP host supports tools/list_changed.',
+      inputSchema: {
+        tool: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+        arguments: z.record(z.string(), z.unknown()),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ tool, arguments: argumentsValue }, extra) => {
+      const prepared = state.tools.get(tool);
+      if (!prepared) {
+        return failureText(
+          'The requested capability is not in the current active set. Start the turn or search capabilities first.',
+        );
+      }
+      return await invokeActiveTool(state, prepared.tool, argumentsValue, extra.requestId);
+    },
+  );
 
   server.registerTool(
     'resume_governed_tool_invocation',
@@ -644,9 +900,65 @@ export async function initializeBailingHubMcpServer(
     },
     async ({ invocation_id }) => {
       try {
-        return success(await client.resumeAgentToolInvocation(invocation_id));
+        return success(await client.resume(invocation_id));
       } catch (error) {
         return resumeFailure(error, invocation_id);
+      }
+    },
+  );
+
+  server.registerTool(
+    'complete_business_run',
+    {
+      title: 'Complete Business Run',
+      description:
+        'Synchronize only the visible final assistant message and public usage metadata for the ' +
+        'current local-Agent run. Hidden reasoning must never be submitted.',
+      inputSchema: {
+        content: z.string().min(1).max(64_000),
+        status: z.enum(['completed', 'failed', 'cancelled']).default('completed'),
+        model: z.string().min(1).max(191).regex(/^[^\u0000-\u001f\u007f]+$/).optional(),
+        runtime: z.string().min(1).max(191).regex(/^[^\u0000-\u001f\u007f]+$/).optional(),
+        usage: z.object({
+          input_tokens: z.number().nonnegative().optional(),
+          cached_input_tokens: z.number().nonnegative().optional(),
+          output_tokens: z.number().nonnegative().optional(),
+          total_tokens: z.number().nonnegative().optional(),
+          tool_calls: z.number().nonnegative().optional(),
+          cost_usd: z.number().nonnegative().optional(),
+        }).strict().optional(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ content, status, model, runtime, usage }) => {
+      const inputSignature = stableJson({ content, status, model: model ?? null, runtime: runtime ?? null, usage: usage ?? null });
+      if (!state.runId) {
+        return state.lastCompletion?.inputSignature === inputSignature
+          ? success(state.lastCompletion.result)
+          : failureText('No Agent run is active.');
+      }
+      const runId = state.runId;
+      const input: CompleteAgentRunInput = {
+        assistantMessageId: stableAgentMessageId('assistant', runId, inputSignature),
+        content,
+        status,
+        ...(model ? { model } : {}),
+        ...(runtime ? { runtime } : {}),
+        ...(usage ? { usage } : {}),
+      };
+      try {
+        const completed = await state.client.completeRun(runId, input);
+        state.lastCompletion = { inputSignature, result: completed };
+        state.runId = undefined;
+        applyAgentCatalog(state, prepareAgentCatalog(state.revision, []), server.isConnected());
+        return success(completed);
+      } catch (error) {
+        return failure(error);
       }
     },
   );
@@ -654,14 +966,15 @@ export async function initializeBailingHubMcpServer(
   applyAgentCatalog(state, initial, false);
 
   const projection: BailingHubMcpAgentProjection = {
-    refresh: () => refreshAgentToolCatalog(state),
+    refresh: () => refreshAgentRuntimeProfile(state),
     close: () => {
       if (state.closed) return;
       state.closed = true;
-      if (state.timer) clearInterval(state.timer);
+      if (state.timer) clearTimeout(state.timer);
       state.timer = undefined;
     },
     revision: () => state.revision,
+    activeToolNames: () => [...state.tools.keys()].sort(),
   };
 
   const previousOnClose = server.server.onclose;
@@ -675,15 +988,33 @@ export async function initializeBailingHubMcpServer(
     await originalClose();
   };
 
-  state.timer = setInterval(() => {
-    if (state.closed || !server.isConnected()) return;
-    void refreshAgentToolCatalog(state).catch(() => {
-      if (!state.closed) {
-        console.error('BailingHub Agent tool catalog refresh failed; the last valid catalog remains active.');
+  const scheduleRefresh = () => {
+    if (state.closed) return;
+    state.timer = setTimeout(async () => {
+      if (state.closed) return;
+      if (!server.isConnected()) {
+        state.pollDelayMs = state.pollIntervalMs;
+        scheduleRefresh();
+        return;
       }
-    });
-  }, pollIntervalMs);
-  state.timer.unref();
+      try {
+        await refreshAgentRuntimeProfile(state);
+        // If the Hub supplied an ETag, every poll is a cheap conditional request. Without an
+        // ETag, back off to avoid repeatedly downloading even the compact bootstrap document.
+        state.pollDelayMs = state.profileEtag
+          ? state.pollIntervalMs
+          : Math.min(MAX_CATALOG_POLL_INTERVAL_MS, Math.max(state.pollIntervalMs, state.pollDelayMs * 2));
+      } catch {
+        state.pollDelayMs = Math.min(MAX_CATALOG_POLL_INTERVAL_MS, Math.max(state.pollIntervalMs, state.pollDelayMs * 2));
+        if (!state.closed) {
+          console.error('BailingHub Agent runtime profile refresh failed; the last valid profile remains active.');
+        }
+      }
+      scheduleRefresh();
+    }, state.pollDelayMs);
+    state.timer.unref();
+  };
+  scheduleRefresh();
 
   INITIALIZED_AGENT_SERVERS.add(server);
   return projection;

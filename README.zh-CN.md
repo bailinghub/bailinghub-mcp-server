@@ -2,6 +2,10 @@
 
 [English](README.md) | 简体中文
 
+> **私有验收候选：**`0.2.0-agent-client.0` 不是已公开发布或稳定的 npm
+> 版本，仅用于 BailingHub Agent Client 与宿主适配器的私有联调验收。
+> 已发布的 `0.1.x` Client Token 语义继续兼容，本候选版不替换它。
+
 让 MCP Host 通过自托管的 [BailingHub](https://www.bailinghub.com/) 控制面，提交并查询
 受治理的业务系统操作。
 
@@ -16,6 +20,10 @@ Session 候选：用户通过系统浏览器授权当前本地智能体。
 | `submit_governed_job` | 把不可信任务文本提交到管理员固定的 BailingHub route |
 | `get_governed_job` | 查询当前 Client 所拥有任务的公开状态 |
 | `wait_for_governed_job` | 最多等待 60 秒，不会重新提交业务操作 |
+
+私有 Agent Client 候选初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
+受治理调用/恢复以及同步可见结果。BailingHub 每轮最多返回 12 个 active tools，
+新集合会替换旧集合，不会在上下文中无限累加。
 
 BailingHub 地址、凭据和 route 都是本地进程配置，不是 MCP 工具参数，因此模型
 不能选择或替换它们。
@@ -174,7 +182,16 @@ Agent Session 模式另外消费增量的 Agent Auth v1 与 Agent API v1：
 - `POST /agent-auth/v1/token`
 - `GET /agent-auth/v1/session`
 - `POST /agent-auth/v1/revoke`
-- `POST /agent-api/v1/run`
-- `GET /agent-api/v1/jobs/{job_id}`
+- `GET /agent-api/v1/workspaces`
+- `GET /agent-api/v1/workspaces/{route}/bootstrap`
+- `POST /agent-api/v1/workspaces/{route}/turns`
+- `POST /agent-api/v1/workspaces/{route}/capabilities/search`
+- `POST /agent-api/v1/tool-invocations`
+- `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
+- `POST /agent-api/v1/runs/{run_id}/complete`
+
+私有候选还通过 `bailinghub-mcp-server/sdk` 子路径暴露宿主无关的 Agent Client
+factory。它统一负责浏览器授权、连接别名、按 Hub/client/workspace 隔离的凭据、
+token 刷新和 Core DTO 映射；DSH 等宿主适配器不保存凭据，也不拼装 BailingHub HTTP 路径。
 
 本适配器仍不调用管理员、执行器、审批决策、Tool Proxy、配置或业务系统直接接口。

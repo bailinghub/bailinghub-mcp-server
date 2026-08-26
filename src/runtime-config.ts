@@ -15,6 +15,7 @@ import {
 export type AgentBailingHubMcpConfig = {
   mode: 'agent';
   baseUrl: string;
+  allowInsecureHttp: boolean;
   route: string;
   clientAppId: string;
   sessionId: string;
@@ -66,6 +67,7 @@ export async function loadRuntimeConfig(
   return {
     mode: 'agent',
     baseUrl,
+    allowInsecureHttp,
     route,
     clientAppId,
     sessionId: credentials.session_id,

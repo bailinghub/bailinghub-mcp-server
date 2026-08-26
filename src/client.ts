@@ -129,6 +129,7 @@ export class BailingHubClientError extends Error {
     public readonly publicCode?: string,
     public readonly disposition: BailingHubClientErrorDisposition =
       'definitive_rejection',
+    public readonly invocationId?: string,
   ) {
     super(message);
     this.name = 'BailingHubClientError';

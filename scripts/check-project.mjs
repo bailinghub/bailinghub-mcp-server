@@ -17,15 +17,30 @@ function check(condition, message) {
   if (!condition) failures.push(message);
 }
 
-check(/^\d+\.\d+\.\d+$/.test(packageJson.version), 'package version must be semantic');
+const stableVersion = /^\d+\.\d+\.\d+$/;
+const candidateVersion = /^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$/;
+const privateCandidate = packageJson.private === true && candidateVersion.test(packageJson.version);
+check(
+  stableVersion.test(packageJson.version) || privateCandidate,
+  'package version must be stable semantic or an explicitly private prerelease candidate',
+);
 check(
   sourceVersion.includes(`PACKAGE_VERSION = '${packageJson.version}'`),
   'src/version.ts must match package.json',
 );
-check(serverJson.version === packageJson.version, 'server.json version must match package.json');
 check(
-  compatibility.adapter_version === packageJson.version,
-  'compatibility adapter_version must match package.json',
+  privateCandidate ? stableVersion.test(serverJson.version) : serverJson.version === packageJson.version,
+  privateCandidate
+    ? 'private candidates must retain a stable public server.json version'
+    : 'server.json version must match package.json',
+);
+check(
+  privateCandidate
+    ? compatibility.adapter_version === serverJson.version
+    : compatibility.adapter_version === packageJson.version,
+  privateCandidate
+    ? 'private candidates must retain the published Client API compatibility version'
+    : 'compatibility adapter_version must match package.json',
 );
 check(serverJson.name === packageJson.mcpName, 'server.json name must match package mcpName');
 check(
@@ -37,7 +52,10 @@ check(serverJson.packages?.length === 1, 'server.json must contain one package')
 const registryPackage = serverJson.packages?.[0] ?? {};
 check(registryPackage.registryType === 'npm', 'registry package must use npm');
 check(registryPackage.identifier === packageJson.name, 'registry identifier must match package name');
-check(registryPackage.version === packageJson.version, 'registry package version must match');
+check(
+  registryPackage.version === (privateCandidate ? serverJson.version : packageJson.version),
+  'registry package version must match the public server descriptor',
+);
 check(registryPackage.transport?.type === 'stdio', 'registry transport must be stdio');
 
 const environmentVariables = registryPackage.environmentVariables ?? [];

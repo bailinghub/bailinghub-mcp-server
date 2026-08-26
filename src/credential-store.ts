@@ -266,17 +266,25 @@ export const runCommand = createCommandRunner();
 
 export class MacOsKeychainCredentialStore implements CredentialStore {
   readonly description = 'macOS Keychain';
-  private readonly refreshLock = new LoopbackRefreshLock(
-    `keychain:${process.getuid?.() ?? 'user'}:${KEYCHAIN_SERVICE}:${KEYCHAIN_ACCOUNT}`,
-  );
+  private readonly refreshLock: LoopbackRefreshLock;
 
-  constructor(private readonly commandRunner: CommandRunner = runCommand) {}
+  constructor(
+    private readonly commandRunner: CommandRunner = runCommand,
+    private readonly account: string = KEYCHAIN_ACCOUNT,
+  ) {
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(account)) {
+      throw new Error('The Keychain credential account is invalid.');
+    }
+    this.refreshLock = new LoopbackRefreshLock(
+      `keychain:${process.getuid?.() ?? 'user'}:${KEYCHAIN_SERVICE}:${account}`,
+    );
+  }
 
   async load(): Promise<AgentCredentials | undefined> {
     const result = await this.commandRunner('/usr/bin/security', [
       'find-generic-password',
       '-a',
-      KEYCHAIN_ACCOUNT,
+      this.account,
       '-s',
       KEYCHAIN_SERVICE,
       '-w',
@@ -301,7 +309,7 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
     const result = await this.commandRunner(
       '/usr/bin/security',
       ['-i'],
-      `add-generic-password -a ${KEYCHAIN_ACCOUNT} -s ${KEYCHAIN_SERVICE} -U -X ${passwordHex}\n`,
+      `add-generic-password -a ${this.account} -s ${KEYCHAIN_SERVICE} -U -X ${passwordHex}\n`,
     );
     if (result.exitCode !== 0) {
       throw new Error('Could not save Agent credentials in macOS Keychain.');
@@ -315,7 +323,7 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
       const cleanup = await this.commandRunner('/usr/bin/security', [
         'delete-generic-password',
         '-a',
-        KEYCHAIN_ACCOUNT,
+        this.account,
         '-s',
         KEYCHAIN_SERVICE,
       ]);
@@ -332,7 +340,7 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
     const result = await this.commandRunner('/usr/bin/security', [
       'delete-generic-password',
       '-a',
-      KEYCHAIN_ACCOUNT,
+      this.account,
       '-s',
       KEYCHAIN_SERVICE,
     ]);

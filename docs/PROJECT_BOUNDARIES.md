@@ -11,6 +11,8 @@ version, tests, issues, npm package, and release process.
 - the minimal client for BailingHub's public Client API;
 - the local Agent Auth client, loopback/PKCE flow, secure credential store, and Agent API
   projection;
+- the host-neutral Agent Client SDK transport, public connection aliases, isolated credentials,
+  and progressive active-tool projection used by host adapters;
 - MCP-specific packaging, discovery metadata, compatibility checks, and documentation;
 - adapter-specific threat modeling, security, and privacy behavior.
 
@@ -22,6 +24,7 @@ version, tests, issues, npm package, and release process.
 | BailingHub routes, approvals, runtime behavior, and trace storage | BailingHub repository |
 | Business authorization and trusted-subject resolution | Business system |
 | MCP protocol and host behavior | MCP project and host implementation |
+| DSH/Codex/OpenClaw-specific lifecycle and UI | Each host adapter repository |
 | Private host configuration, URLs, tokens, and run evidence | Deploying organization |
 
 ## Dependency Direction
@@ -43,7 +46,8 @@ Client Token mode consumes only:
 - `GET /jobs/{job_id}`.
 
 Agent Session mode additionally consumes only the public `/agent-auth/v1/*` authorization,
-token, session, and revoke endpoints and `/agent-api/v1/run|jobs/*`. It does not call the
+token, session, and revoke endpoints plus the Agent Client v1 workspace, turn, capability
+search, governed invocation/resume, and run-completion endpoints. It does not call the
 business Client's approval endpoint; that approval belongs to the Hub/business authorization
 boundary opened in the system browser.
 
