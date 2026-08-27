@@ -453,7 +453,16 @@ export function createAgentClientTransport(
           ...(profile.alias ? { connectionName: profile.alias } : {}), workspace: profile.workspace,
         };
       }
-      const session = await new AgentSessionManager(store, fetchImpl, dependencies.now).getSession();
+      let session;
+      try {
+        session = await new AgentSessionManager(store, fetchImpl, dependencies.now).getSession();
+      } catch (error) {
+        if (await store.load()) throw error;
+        return {
+          state: 'logged_out', connectionKey: profile.connectionKey,
+          ...(profile.alias ? { connectionName: profile.alias } : {}), workspace: profile.workspace,
+        };
+      }
       return {
         state: 'authorized', connectionKey: profile.connectionKey,
         ...(profile.alias ? { connectionName: profile.alias } : {}),

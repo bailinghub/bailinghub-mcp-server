@@ -245,6 +245,31 @@ test('factory login/status/workspaces never expose credentials and keep a readab
   ]);
 });
 
+test('factory removes remotely revoked credentials and converges status to logged_out', async (t) => {
+  const { connectionStore, registry, transport } = await setup(t);
+  await transport.login();
+  const profile = await registry.getByAlias('development');
+  const revoked = createAgentClientTransport({
+    hubUrl: profile.baseUrl, clientAppId: profile.clientAppId,
+    workspace: profile.workspace, connectionName: 'development',
+  }, {
+    connectionStore,
+    fetchImpl: async () => new Response('{}', { status: 401 }),
+  });
+
+  await assert.rejects(
+    revoked.workspaces({ connectionName: 'development' }),
+    /login could not be refreshed/,
+  );
+  assert.equal(await connectionStore.credentialStore(profile.connectionKey).load(), undefined);
+  assert.equal((await revoked.status({ connectionName: 'development' })).state, 'logged_out');
+
+  await connectionStore.credentialStore(profile.connectionKey).save(credentials());
+  const status = await revoked.status({ connectionName: 'development' });
+  assert.equal(status.state, 'logged_out');
+  assert.equal(await connectionStore.credentialStore(profile.connectionKey).load(), undefined);
+});
+
 test('factory uses startTurn(input, options) and searchCapabilities(input, options) canonical signatures', async (t) => {
   const { calls, transport } = await setup(t);
   await transport.login();
