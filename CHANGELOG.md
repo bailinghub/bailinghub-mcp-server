@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add secret-free `connectionsList`, `connectionsAdd`, `connectionsUse`, and
+  `connectionsRemove` host APIs across multiple Hub/client/workspace bindings.
+- Keep connection selection host-controlled and require remote Agent Session revocation before
+  local removal; failed revocation preserves the connection and credential for retry.
+
 ## 0.2.0 - 2026-08-26
 
 - Added a host-neutral Agent Client SDK factory and isolated multi-connection credential registry.

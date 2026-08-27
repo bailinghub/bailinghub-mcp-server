@@ -111,6 +111,10 @@ export type AgentClientHostDependencies = {
 };
 
 export type AgentClientHostTransport = {
+  connectionsList(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  connectionsAdd(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  connectionsUse(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
+  connectionsRemove(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
   login(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
   status(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
   logout(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -161,14 +165,6 @@ function stableDigest(...parts: string[]): string {
 
 function normalizedConnectionName(value: unknown): string {
   return optionalHostText(value, 'connectionName', 128) ?? 'default';
-}
-
-function profileMatches(
-  profile: AgentConnectionProfile,
-  baseUrl: string,
-  clientAppId: string,
-): boolean {
-  return profile.baseUrl === baseUrl && profile.clientAppId === clientAppId;
 }
 
 function modelRuntimeText(value: unknown): string | undefined {
@@ -250,13 +246,41 @@ export function createAgentClientTransport(
     if (!profile) {
       throw new Error('No Agent connection was found. Run BailingHub login with a workspace first.');
     }
-    if (!profileMatches(profile, baseUrl, clientAppId)) {
-      throw new Error('The selected Agent connection belongs to a different BailingHub or client_app_id.');
-    }
     if (workspace && profile.workspace !== workspace) {
       throw new Error(`Workspace ${workspace} is not selected for this Agent connection. Run use() first.`);
     }
     return profile;
+  }
+
+  async function connectionBySelector(selectorValue: unknown): Promise<AgentConnectionProfile> {
+    const selector = normalizedConnectionName(selectorValue);
+    const profile = CONNECTION_KEY_PATTERN.test(selector)
+      ? await connections.registry.get(selector)
+      : await connections.registry.getByAlias(selector);
+    if (!profile) throw new Error('The Agent connection is not registered.');
+    return profile;
+  }
+
+  async function publicConnection(
+    profile: AgentConnectionProfile,
+    currentConnectionKey?: string,
+  ): Promise<Record<string, unknown>> {
+    const store = connections.credentialStore(profile.connectionKey);
+    const stored = await store.load();
+    if (stored) await connections.load(profile.connectionKey);
+    const loggedIn = Boolean(stored);
+    return {
+      connectionKey: profile.connectionKey,
+      ...(profile.alias ? { connectionName: profile.alias } : {}),
+      hubUrl: profile.baseUrl,
+      clientAppId: profile.clientAppId,
+      workspace: profile.workspace,
+      allowInsecureHttp: profile.allowInsecureHttp,
+      current: profile.connectionKey === currentConnectionKey,
+      state: loggedIn ? 'authorized' : 'logged_out',
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+    };
   }
 
   async function sessionFor(profile: AgentConnectionProfile): Promise<AgentSessionManager> {
@@ -283,25 +307,95 @@ export function createAgentClientTransport(
   }
 
   return {
+    async connectionsList(inputValue = {}) {
+      hostRecord(inputValue, 'connectionsList input');
+      const [profiles, current] = await Promise.all([
+        connections.registry.list(),
+        connections.registry.current(),
+      ]);
+      return {
+        currentConnectionKey: current?.connectionKey ?? null,
+        connections: await Promise.all(
+          profiles.map((profile) => publicConnection(profile, current?.connectionKey)),
+        ),
+      };
+    },
+
+    async connectionsAdd(inputValue) {
+      const input = hostRecord(inputValue, 'connectionsAdd input');
+      const connectionName = normalizedConnectionName(input.connectionName ?? input.alias);
+      const connectionBaseUrl = normalizeBaseUrl(
+        hostText(input.hubUrl ?? input.baseUrl, 'hubUrl', 2_048),
+        input.allowInsecureHttp === true,
+      );
+      const connectionClientAppId = normalizeClientAppId(
+        hostText(input.clientAppId, 'clientAppId', 64),
+      );
+      const workspace = normalizeAgentRoute(hostText(input.workspace ?? input.route, 'workspace', 64));
+      const profile = await connections.register({
+        baseUrl: connectionBaseUrl,
+        clientAppId: connectionClientAppId,
+        workspace,
+        allowInsecureHttp: input.allowInsecureHttp === true,
+      }, { alias: connectionName, makeCurrent: true, migrateLegacy: true });
+      return {
+        state: 'registered',
+        connection: await publicConnection(profile, profile.connectionKey),
+      };
+    },
+
+    async connectionsUse(inputValue) {
+      const input = typeof inputValue === 'string'
+        ? { connectionName: inputValue }
+        : hostRecord(inputValue, 'connectionsUse input');
+      const profile = await connectionBySelector(input.connectionName ?? input.connectionKey);
+      await connections.registry.setCurrent(profile.connectionKey);
+      return {
+        state: 'selected',
+        connection: await publicConnection(profile, profile.connectionKey),
+      };
+    },
+
+    async connectionsRemove(inputValue) {
+      const input = typeof inputValue === 'string'
+        ? { connectionName: inputValue }
+        : hostRecord(inputValue, 'connectionsRemove input');
+      const profile = await connectionBySelector(input.connectionName ?? input.connectionKey);
+      const store = connections.credentialStore(profile.connectionKey);
+      if (await store.load()) await connections.load(profile.connectionKey);
+      const result = await new AgentSessionManager(
+        store,
+        fetchImpl,
+        dependencies.now,
+      ).logout();
+      await connections.registry.remove(profile.connectionKey);
+      const current = await connections.registry.current();
+      return {
+        state: 'removed',
+        connectionKey: profile.connectionKey,
+        ...(profile.alias ? { connectionName: profile.alias } : {}),
+        hadCredentials: result.hadCredentials,
+        remoteRevoked: result.remoteRevoked,
+        currentConnectionKey: current?.connectionKey ?? null,
+      };
+    },
+
     async login(inputValue = {}) {
       const input = hostRecord(inputValue, 'login input');
-      const loginBaseUrl = normalizeBaseUrl(
-        optionalHostText(input.hubUrl ?? input.baseUrl, 'hubUrl', 2_048) ?? baseUrl,
-        input.allowInsecureHttp === true || allowInsecureHttp,
-      );
-      const loginClientAppId = normalizeClientAppId(
-        optionalHostText(input.clientAppId, 'clientAppId', 64) ?? clientAppId,
-      );
       const alias = normalizedConnectionName(
         input.connectionKey ?? input.connectionName ?? defaultConnectionName,
       );
-      let workspaceValue = input.workspace ?? input.route ?? defaultWorkspace;
-      if (workspaceValue === undefined) {
-        const existing = CONNECTION_KEY_PATTERN.test(alias)
-          ? await connections.registry.get(alias)
-          : await connections.registry.getByAlias(alias);
-        workspaceValue = existing?.workspace;
-      }
+      const existing = CONNECTION_KEY_PATTERN.test(alias)
+        ? await connections.registry.get(alias)
+        : await connections.registry.getByAlias(alias);
+      const loginBaseUrl = normalizeBaseUrl(
+        optionalHostText(input.hubUrl ?? input.baseUrl, 'hubUrl', 2_048) ?? existing?.baseUrl ?? baseUrl,
+        input.allowInsecureHttp === true || existing?.allowInsecureHttp === true || allowInsecureHttp,
+      );
+      const loginClientAppId = normalizeClientAppId(
+        optionalHostText(input.clientAppId, 'clientAppId', 64) ?? existing?.clientAppId ?? clientAppId,
+      );
+      const workspaceValue = input.workspace ?? input.route ?? existing?.workspace ?? defaultWorkspace;
       if (workspaceValue === undefined) {
         throw new Error('workspace is required for the first Agent authorization.');
       }
@@ -310,7 +404,7 @@ export function createAgentClientTransport(
         baseUrl: loginBaseUrl,
         clientAppId: loginClientAppId,
         workspace,
-        allowInsecureHttp: input.allowInsecureHttp === true || allowInsecureHttp,
+        allowInsecureHttp: input.allowInsecureHttp === true || existing?.allowInsecureHttp === true || allowInsecureHttp,
       }, { makeCurrent: true });
       if (CONNECTION_KEY_PATTERN.test(alias) && profile.connectionKey !== alias) {
         throw new Error('The requested Agent connection key does not match this Hub-client-workspace binding.');

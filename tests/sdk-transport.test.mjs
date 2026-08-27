@@ -54,7 +54,7 @@ async function setup(t) {
   const fetchImpl = async (url, init) => {
     const path = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
-    calls.push({ path, method: init.method, body });
+    calls.push({ url: String(url), path, method: init.method, body });
     if (path === '/agent-auth/v1/session') {
       return new Response(JSON.stringify({
         session_id: 'session-1', client_app_id: 'example-agent-client',
@@ -116,7 +116,11 @@ async function setup(t) {
     connectionStore,
     fetchImpl,
     loginImpl: async (config, dependencies) => {
-      const value = credentials(config.route);
+      const value = {
+        ...credentials(config.route),
+        base_url: config.baseUrl,
+        client_app_id: config.clientAppId,
+      };
       await dependencies.store.save(value);
       return value;
     },
@@ -128,6 +132,7 @@ test('SDK subpath exports a dynamic-import factory with the DSH canonical method
   const module = await import('bailinghub-mcp-server/sdk');
   assert.equal(typeof module.createAgentClientTransport, 'function');
   const required = [
+    'connectionsList', 'connectionsAdd', 'connectionsUse', 'connectionsRemove',
     'login', 'status', 'logout', 'workspaces', 'use', 'startTurn',
     'searchCapabilities', 'invoke', 'resume', 'completeRun',
   ];
@@ -146,6 +151,78 @@ test('SDK subpath exports a dynamic-import factory with the DSH canonical method
     }),
   });
   assert.deepEqual(required.filter((name) => typeof transport[name] !== 'function'), []);
+});
+
+test('factory manages multiple public connections without exposing credentials', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t);
+  await transport.login();
+  const added = await transport.connectionsAdd({
+    connectionName: 'second hub', hubUrl: 'https://other.example.com',
+    clientAppId: 'other-agent-client', workspace: 'staff',
+  });
+  assert.equal(added.state, 'registered');
+  assert.equal(added.connection.connectionName, 'second hub');
+  assert.equal(added.connection.state, 'logged_out');
+  assert.equal(added.connection.current, true);
+
+  const listed = await transport.connectionsList();
+  assert.deepEqual(listed.connections.map((entry) => entry.connectionName).sort(), [
+    'development', 'second hub',
+  ]);
+  assert.equal(JSON.stringify(listed).includes('access-secret'), false);
+  assert.equal(JSON.stringify(listed).includes('refresh-secret'), false);
+
+  const selected = await transport.connectionsUse('development');
+  assert.equal(selected.connection.connectionName, 'development');
+  assert.equal((await registry.current()).alias, 'development');
+
+  const second = await registry.getByAlias('second hub');
+  await connectionStore.credentialStore(second.connectionKey).save({
+    ...credentials('staff'), base_url: 'https://other.example.com',
+    client_app_id: 'other-agent-client', session_id: 'session-2',
+  });
+  const removed = await transport.connectionsRemove('second hub');
+  assert.equal(removed.hadCredentials, true);
+  assert.equal(removed.remoteRevoked, true);
+  assert.equal(await registry.getByAlias('second hub'), undefined);
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
+});
+
+test('factory keeps a connection and credentials when remote revoke fails during removal', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-remove-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
+  const connectionStore = new AgentConnectionStore({
+    environment: { BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE: 'true' }, platform: 'linux', registry,
+    credentialPathFor: (key) => join(directory, `${key}.json`),
+  });
+  const profile = await connectionStore.save(credentials(), { alias: 'protected', makeCurrent: true });
+  const transport = createAgentClientTransport({
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client',
+    workspace: 'orders', connectionName: 'protected',
+  }, {
+    connectionStore,
+    fetchImpl: async () => new Response('{}', { status: 503 }),
+  });
+  await assert.rejects(transport.connectionsRemove('protected'), /could not be revoked/);
+  assert.equal((await registry.get(profile.connectionKey)).alias, 'protected');
+  assert.equal((await connectionStore.load(profile.connectionKey)).credentials.refresh_token, 'refresh-secret');
+});
+
+test('factory runs against an explicitly selected connection from a different Hub and client app', async (t) => {
+  const { calls, transport } = await setup(t);
+  await transport.connectionsAdd({
+    connectionName: 'other', hubUrl: 'https://other.example.com',
+    clientAppId: 'other-agent-client', workspace: 'staff',
+  });
+  await transport.login({ connectionName: 'other' });
+  const turn = await transport.startTurn({
+    clientConversationId: 'conversation_other', clientTurnId: 'turn_other',
+    userMessageId: 'message_other', userInput: 'Read staff',
+  }, { workspace: 'staff', connectionName: 'other' });
+  assert.equal(turn.run_id, RUN_ID);
+  const request = calls.find((entry) => entry.path === '/agent-api/v1/workspaces/staff/turns');
+  assert.equal(new URL(request.url).origin, 'https://other.example.com');
 });
 
 test('factory login/status/workspaces never expose credentials and keep a readable alias', async (t) => {

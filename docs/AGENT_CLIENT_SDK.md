@@ -55,6 +55,40 @@ Do not add BailingHub Client Tokens, admin tokens, business passwords/cookies, T
 Secrets, business API URLs, model API keys, or Agent access/refresh tokens to host configuration.
 The model provider and key remain in the host's own credential system.
 
+## Multiple connection lifecycle
+
+> **Unreleased candidate:** the APIs in this section are implemented on the current development
+> branch and require a matching SDK/host candidate. They are not part of the public `0.2.0`
+> package. Align exact versions in the order Core -> SDK -> host adapter before release.
+
+The SDK registry can retain public metadata for multiple `Hub + clientAppId + workspace`
+bindings. Credentials remain isolated, and none of these methods returns access or refresh tokens:
+
+```js
+await transport.connectionsAdd({
+  connectionName: 'shop-a',
+  hubUrl: 'https://hub-a.example.com',
+  clientAppId: 'merchant-agent',
+  workspace: 'order-assistant',
+});
+
+await transport.connectionsList();
+await transport.connectionsUse('shop-a');
+await transport.login({ connectionName: 'shop-a' });
+await transport.connectionsRemove('shop-a');
+```
+
+`connectionsAdd()` registers public metadata and selects it; it does not fabricate a login.
+Browser authorization is still required. Hosts must expose add/use only through user commands or
+settings, never as model tools or model-controlled selectors. Existing conversations and runs stay
+pinned to the connection captured when they were created; a selection affects new sessions only.
+
+When credentials exist, `connectionsRemove()` revokes the remote Agent Session before deleting
+local credentials and public metadata. A failed remote revoke keeps both intact for retry. This is
+different from `use(workspace)`: connection lifecycle selects a complete Hub/client/workspace
+binding, while `use()` moves only within the workspaces already granted to the current business
+authorization.
+
 ## Login lifecycle
 
 ```js
@@ -72,7 +106,7 @@ mode-`0600` file fallback. Agent Session fails closed on Windows until a native 
 available. Never implement a host-specific plaintext token field as a workaround.
 
 The standard v1 factory login requests one workspace. Treat a connection as
-`Hub + clientAppId + workspace`; use a different alias and a new browser authorization for another
+`Hub + clientAppId + workspace`; register another connection and complete a new browser authorization for another
 Hub or route. `use()` succeeds only when the existing Agent Session explicitly includes that
 workspace; do not advertise unrestricted cross-route switching.
 

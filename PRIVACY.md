@@ -24,6 +24,11 @@ restricted to a current-user-owned mode-0600 file. Windows Agent Session credent
 is not yet supported and fails closed. Logout removes local credentials only after the remote
 revocation endpoint confirms success; otherwise it keeps them so revocation can be retried.
 
+The multi-connection registry stores only public connection name, normalized Hub URL, public
+client app id, workspace, insecure-HTTP opt-in, timestamps, and current selection. Credentials are
+stored separately per binding. Connection listing never returns access or refresh tokens, and
+connection removal follows the same remote-revoke-before-local-delete rule as logout.
+
 The adapter filters top-level job responses before returning them to the MCP host. Arbitrary
 server metadata and dispatch configuration are not included. Public business results inside
 the Client API's `result`, `report`, `usage`, and `raw_result` fields may be returned and are
