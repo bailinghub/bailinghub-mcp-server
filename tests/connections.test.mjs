@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -9,8 +9,15 @@ import {
   AgentConnectionStore,
   agentConnectionInstanceKey,
   agentConnectionKey,
+  defaultConnectionCredentialPath,
+  defaultConnectionKeychainAccount,
+  defaultConnectionRegistryPath,
 } from '../dist/connections.js';
-import { FileCredentialStore } from '../dist/credential-store.js';
+import {
+  AGENT_CLIENT_STORAGE_NAMESPACE_ENV,
+  agentStorageNamespaceSegment,
+  FileCredentialStore,
+} from '../dist/credential-store.js';
 
 function credentials(overrides = {}) {
   return {
@@ -50,6 +57,111 @@ test('connection keys bind Hub, client_app_id, and workspace deterministically',
   assert.notEqual(agentConnectionKey(base), agentConnectionKey({ ...base, clientAppId: 'other-agent' }));
   assert.notEqual(agentConnectionKey(base), agentConnectionKey({ ...base, baseUrl: 'https://other.example.com' }));
   assert.match(agentConnectionKey(base), /^conn_[a-f0-9]{32}$/);
+});
+
+test('host namespace isolates default registry, credentials, Keychain account, and registry lock', () => {
+  const connectionKey = 'conn_0123456789abcdef0123456789abcdef';
+  assert.equal(
+    defaultConnectionRegistryPath(),
+    join(homedir(), '.config', 'bailinghub', 'agent-connections.json'),
+  );
+  assert.equal(
+    defaultConnectionCredentialPath(connectionKey),
+    join(homedir(), '.config', 'bailinghub', 'agent-connections', `${connectionKey}.json`),
+  );
+  assert.equal(defaultConnectionKeychainAccount(connectionKey), `connection-${connectionKey}`);
+
+  const namespace = 'product-desktop';
+  const segment = agentStorageNamespaceSegment(namespace);
+  const registryPath = defaultConnectionRegistryPath(namespace);
+  const credentialPath = defaultConnectionCredentialPath(connectionKey, namespace);
+  const keychainAccount = defaultConnectionKeychainAccount(connectionKey, namespace);
+  assert.equal(
+    registryPath,
+    join(homedir(), '.config', 'bailinghub', 'hosts', segment, 'agent-connections.json'),
+  );
+  assert.equal(
+    credentialPath,
+    join(
+      homedir(), '.config', 'bailinghub', 'hosts', segment,
+      'agent-connections', `${connectionKey}.json`,
+    ),
+  );
+  assert.equal(keychainAccount, `${segment}-connection-${connectionKey}`);
+  assert.equal(`${registryPath}\n${credentialPath}\n${keychainAccount}`.includes(namespace), false);
+
+  const legacyRegistry = new AgentConnectionRegistry(defaultConnectionRegistryPath());
+  const namespacedRegistry = new AgentConnectionRegistry(registryPath);
+  assert.notEqual(legacyRegistry.operationScope, namespacedRegistry.operationScope);
+});
+
+test('connection store accepts a host environment namespace and keeps it out of Keychain calls', async () => {
+  const namespace = 'product-desktop';
+  const calls = [];
+  const store = new AgentConnectionStore({
+    environment: { [AGENT_CLIENT_STORAGE_NAMESPACE_ENV]: namespace },
+    platform: 'darwin',
+    commandRunner: async (_executable, args) => {
+      calls.push(args);
+      return { exitCode: 44, stdout: '' };
+    },
+  });
+  const connectionKey = 'conn_0123456789abcdef0123456789abcdef';
+
+  assert.equal(store.storageNamespace, namespace);
+  assert.equal(await store.credentialStore(connectionKey).load(), undefined);
+  assert.equal(JSON.stringify(calls).includes(namespace), false);
+  assert.equal(
+    calls[0][calls[0].indexOf('-a') + 1],
+    defaultConnectionKeychainAccount(connectionKey, namespace),
+  );
+});
+
+test('host namespace isolates same-binding locks even with an injected shared registry', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-host-lock-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const registryPath = join(directory, 'shared-registry.json');
+  const environment = { BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE: 'true' };
+  const first = new AgentConnectionStore({
+    storageNamespace: 'product-one', environment, platform: 'linux',
+    registry: new AgentConnectionRegistry(registryPath),
+    credentialPathFor: (key) => join(directory, 'one', `${key}.json`),
+  });
+  const second = new AgentConnectionStore({
+    storageNamespace: 'product-two', environment, platform: 'linux',
+    registry: new AgentConnectionRegistry(registryPath),
+    credentialPathFor: (key) => join(directory, 'two', `${key}.json`),
+  });
+  const descriptor = {
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+
+  let releaseFirst;
+  let markFirstEntered;
+  const firstEntered = new Promise((resolve) => { markFirstEntered = resolve; });
+  const firstLock = first.withBindingLock(descriptor, () => new Promise((resolve) => {
+    releaseFirst = resolve;
+    markFirstEntered();
+  }));
+  await firstEntered;
+  const secondLock = second.withBindingLock(descriptor, async () => 'second-entered');
+  const secondResult = await Promise.race([
+    secondLock,
+    new Promise((resolve) => setTimeout(() => resolve('timed-out'), 500)),
+  ]);
+  releaseFirst();
+  await firstLock;
+  assert.equal(secondResult, 'second-entered');
+});
+
+test('connection store rejects conflicting host environment and option namespaces', () => {
+  assert.throws(
+    () => new AgentConnectionStore({
+      environment: { [AGENT_CLIENT_STORAGE_NAMESPACE_ENV]: 'product-two' },
+      storageNamespace: 'product-one',
+    }),
+    /conflicts with the host environment/u,
+  );
 });
 
 test('aliases select isolated credentials while registry metadata never contains tokens', async (t) => {

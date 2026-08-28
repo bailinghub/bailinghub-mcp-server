@@ -185,6 +185,53 @@ test('SDK subpath exports a dynamic-import factory with the DSH canonical method
   assert.deepEqual(required.filter((name) => typeof transport[name] !== 'function'), []);
 });
 
+test('factory accepts a host-owned storage namespace without adding a connection field', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-namespace-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const baseConfig = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client',
+    workspace: 'orders', connectionName: 'development',
+  };
+  const connectionStore = new AgentConnectionStore({
+    storageNamespace: 'product-one',
+    environment: { BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE: 'true' },
+    platform: 'linux',
+    registry: new AgentConnectionRegistry(join(directory, 'registry.json')),
+    credentialPathFor: (key) => join(directory, 'credentials', `${key}.json`),
+  });
+  const transport = createAgentClientTransport(baseConfig, {
+    storageNamespace: 'product-one',
+    connectionStore,
+  });
+
+  assert.deepEqual(await transport.connectionsList(), {
+    currentConnectionKey: null,
+    connections: [],
+  });
+  assert.equal(Object.hasOwn(baseConfig, 'storageNamespace'), false);
+
+  assert.throws(
+    () => createAgentClientTransport(baseConfig, {
+      storageNamespace: 'product-two',
+      connectionStore,
+    }),
+    (error) => /does not match the requested storage namespace/u.test(error.message) &&
+      !error.message.includes('product-one') && !error.message.includes('product-two'),
+  );
+  assert.throws(
+    () => createAgentClientTransport(baseConfig, {
+      storageNamespace: 'product-two',
+      connectionStoreOptions: {
+        storageNamespace: 'product-one',
+        environment: { BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE: 'true' },
+        platform: 'linux',
+        registry: new AgentConnectionRegistry(join(directory, 'other-registry.json')),
+      },
+    }),
+    /configured more than once with different values/u,
+  );
+});
+
 test('factory manages multiple public connections without exposing credentials', async (t) => {
   const { calls, connectionStore, registry, transport } = await setup(t);
   await transport.login();

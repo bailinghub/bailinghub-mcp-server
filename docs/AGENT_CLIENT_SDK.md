@@ -56,6 +56,41 @@ Do not add BailingHub Client Tokens, admin tokens, business passwords/cookies, T
 Secrets, business API or authorization-page URLs, model API keys, or Agent access/refresh tokens
 to host configuration. The model provider and key remain in the host's own credential system.
 
+### Host-owned local storage namespace
+
+A product-specific host that can run beside another Agent Client host under the same operating-
+system user should assign one fixed local storage namespace in the SDK dependency options:
+
+```js
+const transport = createAgentClientTransport({
+  hubUrl: 'https://hub.example.com',
+  clientAppId: 'merchant-agent',
+  workspace: 'order-assistant',
+  connectionName: 'default',
+}, {
+  storageNamespace: 'my-product-desktop',
+});
+```
+
+The equivalent host-process setting is
+`BAILINGHUB_AGENT_CLIENT_STORAGE_NAMESPACE=my-product-desktop`. If both are present, they must be
+identical or startup fails closed. The namespace is a non-secret host constant, not a fifth user
+connection field, business identity, model input, or value sent to Core. Host adapters must not
+let a model or conversation change it.
+
+Accepted values are lowercase identifiers of 1 to 64 characters using `a-z`, `0-9`, `.`, `_`, and
+`-`, starting with a letter or number. The SDK hashes the value before using it and isolates the
+connection registry, POSIX credential files, macOS Keychain accounts, and local lock scopes.
+When the namespace is unset, every historical path and Keychain account stays exactly unchanged
+for backward compatibility.
+
+Namespaces do not copy or migrate credentials between hosts. The first run after a host adopts a
+new namespace therefore starts with an empty local registry and requires normal browser
+authorization. Do not copy credential files or Keychain records to bypass that boundary; revoke
+and remove an obsolete host connection through the matching host when retiring it. Advanced hosts
+that inject custom registry or credential paths are responsible for keeping those overrides inside
+the same namespace boundary.
+
 ## Multiple connection lifecycle
 
 > **Unreleased candidate:** the APIs in this section are implemented on the current development

@@ -24,7 +24,10 @@ import {
   type AgentConnectionStoreOptions,
 } from './connections.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
-import { LocalAgentOperationLockTimeoutError } from './credential-store.js';
+import {
+  LocalAgentOperationLockTimeoutError,
+  normalizeAgentStorageNamespace,
+} from './credential-store.js';
 
 export {
   AgentClientTransport,
@@ -49,6 +52,7 @@ export {
   agentConnectionInstanceKey,
   agentConnectionKey,
   defaultConnectionCredentialPath,
+  defaultConnectionKeychainAccount,
   defaultConnectionRegistryPath,
   type AgentConnectionDescriptor,
   type AgentConnectionProfile,
@@ -71,7 +75,13 @@ export {
   FileCredentialStore,
   MacOsKeychainCredentialStore,
   MemoryCredentialStore,
+  AGENT_CLIENT_STORAGE_NAMESPACE_ENV,
+  agentStorageNamespaceSegment,
+  defaultFileCredentialPath,
+  defaultKeychainCredentialAccount,
+  normalizeAgentStorageNamespace,
   parseAgentCredentials,
+  resolveAgentStorageNamespace,
   selectCredentialStore,
   type AgentCredentials,
   type CredentialStore,
@@ -104,6 +114,11 @@ export type AgentClientHostConfig = {
 };
 
 export type AgentClientHostDependencies = {
+  /**
+   * Host-owned local storage namespace. This dependency setting is not a user connection field,
+   * business identity, or secret and never enters a Core request.
+   */
+  storageNamespace?: string;
   connectionStore?: AgentConnectionStore;
   connectionStoreOptions?: AgentConnectionStoreOptions;
   fetchImpl?: typeof fetch;
@@ -236,8 +251,31 @@ export function createAgentClientTransport(
   const defaultConnectionName = normalizedConnectionName(
     configValue.connectionKey ?? configValue.connectionName,
   );
-  const connections = dependencies.connectionStore ??
-    new AgentConnectionStore(dependencies.connectionStoreOptions);
+  let connections: AgentConnectionStore;
+  if (dependencies.connectionStore) {
+    if (dependencies.storageNamespace !== undefined) {
+      const requestedNamespace = normalizeAgentStorageNamespace(dependencies.storageNamespace);
+      if (requestedNamespace && requestedNamespace !== dependencies.connectionStore.storageNamespace) {
+        throw new Error(
+          'The supplied Agent connection store does not match the requested storage namespace.',
+        );
+      }
+    }
+    connections = dependencies.connectionStore;
+  } else {
+    const options = { ...(dependencies.connectionStoreOptions ?? {}) };
+    if (dependencies.storageNamespace !== undefined) {
+      const requestedNamespace = normalizeAgentStorageNamespace(dependencies.storageNamespace);
+      const nestedNamespace = normalizeAgentStorageNamespace(options.storageNamespace);
+      if (requestedNamespace && nestedNamespace && nestedNamespace !== requestedNamespace) {
+        throw new Error(
+          'The Agent Client dependency storage namespace is configured more than once with different values.',
+        );
+      }
+      if (requestedNamespace) options.storageNamespace = requestedNamespace;
+    }
+    connections = new AgentConnectionStore(options);
+  }
   const fetchImpl = dependencies.fetchImpl ?? fetch;
 
   async function resolveProfile(

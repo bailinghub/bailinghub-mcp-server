@@ -5,10 +5,12 @@ import { dirname, join, resolve } from 'node:path';
 
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import {
+  agentStorageNamespaceSegment,
   FileCredentialStore,
   LocalAgentOperationLock,
   MacOsKeychainCredentialStore,
   parseAgentCredentials,
+  resolveAgentStorageNamespace,
   runCommand,
   selectCredentialStore,
   type AgentCredentials,
@@ -230,13 +232,38 @@ function parseRegistry(value: unknown): {
   };
 }
 
-export function defaultConnectionRegistryPath(): string {
-  return join(homedir(), '.config', 'bailinghub', 'agent-connections.json');
+function defaultConnectionStorageRoot(storageNamespace?: string): string {
+  const segment = agentStorageNamespaceSegment(storageNamespace);
+  return segment
+    ? join(homedir(), '.config', 'bailinghub', 'hosts', segment)
+    : join(homedir(), '.config', 'bailinghub');
 }
 
-export function defaultConnectionCredentialPath(connectionKey: string): string {
+export function defaultConnectionRegistryPath(storageNamespace?: string): string {
+  return join(defaultConnectionStorageRoot(storageNamespace), 'agent-connections.json');
+}
+
+export function defaultConnectionCredentialPath(
+  connectionKey: string,
+  storageNamespace?: string,
+): string {
   if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
-  return join(homedir(), '.config', 'bailinghub', 'agent-connections', `${connectionKey}.json`);
+  return join(
+    defaultConnectionStorageRoot(storageNamespace),
+    'agent-connections',
+    `${connectionKey}.json`,
+  );
+}
+
+export function defaultConnectionKeychainAccount(
+  connectionKey: string,
+  storageNamespace?: string,
+): string {
+  if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
+  const segment = agentStorageNamespaceSegment(storageNamespace);
+  return segment
+    ? `${segment}-connection-${connectionKey}`
+    : `connection-${connectionKey}`;
 }
 
 /** Public connection metadata only. Tokens are always stored by a separate CredentialStore. */
@@ -608,6 +635,8 @@ export type AgentConnectionStoreOptions = {
   environment?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   commandRunner?: CommandRunner;
+  /** Host-owned local state namespace; not a user connection field or identity claim. */
+  storageNamespace?: string;
   registry?: AgentConnectionRegistry;
   credentialPathFor?: (connectionKey: string) => string;
 };
@@ -618,6 +647,7 @@ export type AgentConnectionStoreOptions = {
  */
 export class AgentConnectionStore {
   readonly registry: AgentConnectionRegistry;
+  readonly storageNamespace: string | undefined;
   private readonly environment: NodeJS.ProcessEnv;
   private readonly platform: NodeJS.Platform;
   private readonly commandRunner: CommandRunner;
@@ -627,14 +657,24 @@ export class AgentConnectionStore {
     this.environment = options.environment ?? process.env;
     this.platform = options.platform ?? process.platform;
     this.commandRunner = options.commandRunner ?? runCommand;
-    this.registry = options.registry ?? new AgentConnectionRegistry();
-    this.credentialPathFor = options.credentialPathFor ?? defaultConnectionCredentialPath;
+    this.storageNamespace = resolveAgentStorageNamespace(
+      options.storageNamespace,
+      this.environment,
+    );
+    this.registry = options.registry ?? new AgentConnectionRegistry(
+      defaultConnectionRegistryPath(this.storageNamespace),
+    );
+    this.credentialPathFor = options.credentialPathFor ?? ((connectionKey) =>
+      defaultConnectionCredentialPath(connectionKey, this.storageNamespace));
   }
 
   credentialStore(connectionKey: string): CredentialStore {
     if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
     if (this.platform === 'darwin') {
-      return new MacOsKeychainCredentialStore(this.commandRunner, `connection-${connectionKey}`);
+      return new MacOsKeychainCredentialStore(
+        this.commandRunner,
+        defaultConnectionKeychainAccount(connectionKey, this.storageNamespace),
+      );
     }
     if (this.platform === 'win32') {
       throw new Error('Agent Session credential storage is not supported on Windows yet.');
@@ -675,10 +715,13 @@ export class AgentConnectionStore {
     work: () => Promise<T>,
   ): Promise<T> {
     const descriptor = normalizedDescriptor(descriptorValue);
-    const digest = createHash('sha256')
+    const hash = createHash('sha256')
       .update('bailinghub.agent-binding-operation.v1\0')
       .update(this.registry.operationScope)
-      .update('\0')
+      .update('\0');
+    const namespaceSegment = agentStorageNamespaceSegment(this.storageNamespace);
+    if (namespaceSegment) hash.update(namespaceSegment).update('\0');
+    const digest = hash
       .update(descriptor.baseUrl)
       .update('\0')
       .update(descriptor.clientAppId)
@@ -736,7 +779,12 @@ export class AgentConnectionStore {
   async migrateLegacy(profile: AgentConnectionProfile): Promise<LegacyCredentialMigrationResult> {
     const target = this.credentialStore(profile.connectionKey);
     if (await target.load()) return 'target_already_exists';
-    const legacy = selectCredentialStore(this.environment, this.platform, this.commandRunner);
+    const legacy = selectCredentialStore(
+      this.environment,
+      this.platform,
+      this.commandRunner,
+      this.storageNamespace,
+    );
     const credentials = await legacy.load();
     if (!credentials) return 'no_legacy_credentials';
     const legacyKey = agentConnectionKey({

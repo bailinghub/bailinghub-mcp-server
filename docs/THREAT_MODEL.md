@@ -72,6 +72,12 @@ It must not be able to:
     same-binding reconciliation are cross-process locked; no token or `on_behalf_of` is persisted
     in registry or lock metadata. A Session 401 deletes local credentials only after a lock-held
     comparison confirms the observed Session and tokens are still current.
+15. A product host may set one fixed, non-secret local storage namespace through the SDK dependency
+    option or host-process environment, never through model or connection input. The namespace is
+    strictly validated and hashed before use, and separates the default registry, POSIX credential
+    paths, macOS Keychain accounts, and lock scopes from other hosts. An unset namespace preserves
+    the exact historical locations. Conflicting settings fail closed, and the SDK never copies
+    credentials across namespace boundaries.
 
 ## Non-Guarantees
 
@@ -96,4 +102,6 @@ Automated tests cover:
 - identity-aware multi-connection reconciliation, safe staged reauthorization, cross-process
   registry locking, compare-before-delete 401 cleanup, secret-free listing, and
   revoke-before-remove failure behavior;
+- strict host namespace validation, exact legacy defaults, opaque namespaced registry/credential/
+  Keychain locations, conflict rejection, and independent binding locks;
 - an end-to-end stdio MCP call against a no-side-effect mock BailingHub.

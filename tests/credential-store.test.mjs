@@ -2,15 +2,21 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, mkdtemp, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  AGENT_CLIENT_STORAGE_NAMESPACE_ENV,
+  agentStorageNamespaceSegment,
   createCommandRunner,
+  defaultFileCredentialPath,
+  defaultKeychainCredentialAccount,
   FileCredentialStore,
   MacOsKeychainCredentialStore,
+  normalizeAgentStorageNamespace,
   parseAgentCredentials,
+  resolveAgentStorageNamespace,
   selectCredentialStore,
 } from '../dist/credential-store.js';
 
@@ -35,6 +41,62 @@ test('credential parser fails closed without exposing malformed secret fields', 
   assert.throws(
     () => parseAgentCredentials({ ...CREDENTIALS, access_token: '' }),
     (error) => !error.message.includes('refresh-secret'),
+  );
+});
+
+test('host storage namespace is strict, opaque, and preserves legacy defaults when unset', () => {
+  assert.equal(normalizeAgentStorageNamespace(undefined), undefined);
+  assert.equal(normalizeAgentStorageNamespace(''), undefined);
+  assert.equal(normalizeAgentStorageNamespace('product-desktop'), 'product-desktop');
+  for (const value of [
+    '../product', 'product/desktop', 'product\\desktop', 'Product', ' product',
+    'product ', '.', 'a'.repeat(65),
+  ]) {
+    assert.throws(
+      () => normalizeAgentStorageNamespace(value),
+      /storage namespace must be a lowercase identifier/u,
+    );
+  }
+
+  assert.equal(
+    defaultFileCredentialPath(),
+    join(homedir(), '.config', 'bailinghub', 'agent-credentials.json'),
+  );
+  assert.equal(defaultKeychainCredentialAccount(), 'default');
+
+  const segment = agentStorageNamespaceSegment('product-desktop');
+  assert.match(segment, /^host-[a-f0-9]{32}$/u);
+  assert.equal(segment.includes('product-desktop'), false);
+  assert.equal(defaultFileCredentialPath('product-desktop').includes(segment), true);
+  assert.equal(defaultKeychainCredentialAccount('product-desktop'), `${segment}-default`);
+});
+
+test('host environment namespaces Keychain account without placing raw input in arguments', async () => {
+  const calls = [];
+  const runner = async (_executable, args) => {
+    calls.push(args);
+    return { exitCode: 44, stdout: '' };
+  };
+  const namespace = 'product-desktop';
+  const store = selectCredentialStore({
+    [AGENT_CLIENT_STORAGE_NAMESPACE_ENV]: namespace,
+  }, 'darwin', runner);
+
+  assert.equal(await store.load(), undefined);
+  assert.equal(store.description.includes(namespace), false);
+  assert.equal(JSON.stringify(calls).includes(namespace), false);
+  assert.equal(
+    calls[0][calls[0].indexOf('-a') + 1],
+    defaultKeychainCredentialAccount(namespace),
+  );
+});
+
+test('conflicting host environment and SDK namespace fail closed', () => {
+  assert.throws(
+    () => resolveAgentStorageNamespace('product-one', {
+      [AGENT_CLIENT_STORAGE_NAMESPACE_ENV]: 'product-two',
+    }),
+    /conflicts with the host environment/u,
   );
 });
 

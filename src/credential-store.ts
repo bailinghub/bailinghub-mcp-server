@@ -22,6 +22,9 @@ import {
 
 const KEYCHAIN_SERVICE = 'io.github.bailinghub.bailinghub-mcp-server.agent-session';
 const KEYCHAIN_ACCOUNT = 'default';
+export const AGENT_CLIENT_STORAGE_NAMESPACE_ENV =
+  'BAILINGHUB_AGENT_CLIENT_STORAGE_NAMESPACE';
+const STORAGE_NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
 const REFRESH_LOCK_WAIT_MILLISECONDS = 20_000;
 const REFRESH_LOCK_POLL_MILLISECONDS = 50;
@@ -46,6 +49,56 @@ export interface CredentialStore {
   delete(): Promise<void>;
   withRefreshLock?<T>(work: () => Promise<T>): Promise<T>;
   readonly description: string;
+}
+
+/**
+ * Validates an optional host-owned local-storage namespace.
+ *
+ * This value is not a connection field or a business identity. It is deliberately constrained
+ * to a short lowercase identifier and is hashed before it reaches a path, Keychain account, or
+ * lock key. Empty input preserves the historical unnamespaced storage locations exactly.
+ */
+export function normalizeAgentStorageNamespace(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || value !== value.trim() ||
+      !STORAGE_NAMESPACE_PATTERN.test(value)) {
+    throw new Error(
+      'The Agent Client storage namespace must be a lowercase identifier of 1 to 64 characters.',
+    );
+  }
+  return value;
+}
+
+export function resolveAgentStorageNamespace(
+  explicitValue: unknown,
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const explicit = normalizeAgentStorageNamespace(explicitValue);
+  const environmentValue = normalizeAgentStorageNamespace(
+    environment[AGENT_CLIENT_STORAGE_NAMESPACE_ENV],
+  );
+  if (explicit && environmentValue && explicit !== environmentValue) {
+    throw new Error(
+      'The Agent Client storage namespace conflicts with the host environment.',
+    );
+  }
+  return explicit ?? environmentValue;
+}
+
+/** Opaque filesystem/Keychain-safe segment; never contains the host's raw namespace. */
+export function agentStorageNamespaceSegment(value: unknown): string | undefined {
+  const namespace = normalizeAgentStorageNamespace(value);
+  if (!namespace) return undefined;
+  return `host-${createHash('sha256')
+    .update('bailinghub.agent-client-storage.v1\0')
+    .update(namespace, 'utf8')
+    .digest('hex')
+    .slice(0, 32)}`;
+}
+
+export function defaultKeychainCredentialAccount(storageNamespace?: string): string {
+  const segment = agentStorageNamespaceSegment(storageNamespace);
+  return segment ? `${segment}-default` : KEYCHAIN_ACCOUNT;
 }
 
 function sleep(milliseconds: number): Promise<void> {
@@ -475,16 +528,26 @@ export class MemoryCredentialStore implements CredentialStore {
   }
 }
 
-export function defaultFileCredentialPath(): string {
-  return join(homedir(), '.config', 'bailinghub', 'agent-credentials.json');
+export function defaultFileCredentialPath(storageNamespace?: string): string {
+  const segment = agentStorageNamespaceSegment(storageNamespace);
+  return segment
+    ? join(homedir(), '.config', 'bailinghub', 'hosts', segment, 'agent-credentials.json')
+    : join(homedir(), '.config', 'bailinghub', 'agent-credentials.json');
 }
 
 export function selectCredentialStore(
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   commandRunner: CommandRunner = runCommand,
+  storageNamespace?: string,
 ): CredentialStore {
-  if (platform === 'darwin') return new MacOsKeychainCredentialStore(commandRunner);
+  const namespace = resolveAgentStorageNamespace(storageNamespace, environment);
+  if (platform === 'darwin') {
+    return new MacOsKeychainCredentialStore(
+      commandRunner,
+      defaultKeychainCredentialAccount(namespace),
+    );
+  }
   if (platform === 'win32') {
     throw new Error(
       'Agent Session credential storage is not supported on Windows yet. ' +
@@ -504,5 +567,5 @@ export function selectCredentialStore(
     );
   }
   const path = String(environment.BAILINGHUB_CREDENTIAL_FILE ?? '').trim();
-  return new FileCredentialStore(path || defaultFileCredentialPath());
+  return new FileCredentialStore(path || defaultFileCredentialPath(namespace));
 }

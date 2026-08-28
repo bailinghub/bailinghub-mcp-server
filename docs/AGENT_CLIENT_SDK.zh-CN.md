@@ -50,6 +50,36 @@ const transport = createAgentClientTransport({
 业务 API 地址、业务授权页地址、模型 API Key 或 Agent access/refresh token。模型和模型 Key 仍由宿主
 自己的凭据系统管理。
 
+### 宿主拥有的本机存储命名空间
+
+同一个操作系统用户下，如果某个产品专属宿主可能和其他 Agent Client 宿主同时运行，应在 SDK
+dependency options 中设置一个固定的本机存储命名空间：
+
+```js
+const transport = createAgentClientTransport({
+  hubUrl: 'https://hub.example.com',
+  clientAppId: 'merchant-agent',
+  workspace: 'order-assistant',
+  connectionName: 'default',
+}, {
+  storageNamespace: 'my-product-desktop',
+});
+```
+
+等价的宿主进程环境变量是
+`BAILINGHUB_AGENT_CLIENT_STORAGE_NAMESPACE=my-product-desktop`。两处同时设置时必须完全一致，
+否则启动失败关闭。这个值是非秘密的宿主常量，不是第五个用户连接字段、业务身份、模型输入，也不会
+发给 Core。宿主适配器不得允许模型或会话修改它。
+
+命名空间必须是 1 至 64 位小写标识，只能使用 `a-z`、`0-9`、`.`、`_`、`-`，并以字母或数字开头。
+SDK 会先哈希再使用，并同时隔离连接注册表、POSIX 凭据文件、macOS Keychain account 和本机锁作用域。
+未设置时，历史路径与 Keychain account 保持完全不变，以保证向后兼容。
+
+命名空间不会在宿主之间复制或迁移凭据。因此宿主首次采用新命名空间时，会从空的本机注册表开始，
+并需要正常完成一次浏览器授权。不要通过复制凭据文件或 Keychain 记录绕过边界；停用旧宿主连接时，
+应由匹配的旧宿主正常撤销并删除。注入自定义注册表或凭据路径的高级宿主，需要自行确保这些覆盖路径
+仍位于同一个命名空间边界内。
+
 ## 多连接生命周期
 
 > **未发布候选能力：**本节 API 已在当前开发分支实现，需要配套的 SDK 与宿主候选版本，
