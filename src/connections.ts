@@ -16,6 +16,7 @@ import {
 } from './credential-store.js';
 
 const CONNECTION_KEY_PATTERN = /^conn_[a-f0-9]{32}$/;
+const CONNECTION_INSTANCE_PATTERN = /^instance_[a-f0-9]{32}$/;
 const MAX_CONNECTIONS = 256;
 const MAX_METADATA_BYTES = 256 * 1024;
 
@@ -28,6 +29,7 @@ export type AgentConnectionDescriptor = {
 
 export type AgentConnectionProfile = Omit<AgentConnectionDescriptor, 'allowInsecureHttp'> & {
   connectionKey: string;
+  connectionInstanceId?: string;
   alias?: string;
   allowInsecureHttp: boolean;
   createdAt: string;
@@ -36,6 +38,7 @@ export type AgentConnectionProfile = Omit<AgentConnectionDescriptor, 'allowInsec
 
 type StoredConnection = {
   connection_key: string;
+  connection_instance_id?: string;
   base_url: string;
   client_app_id: string;
   workspace: string;
@@ -46,7 +49,7 @@ type StoredConnection = {
 };
 
 type ConnectionRegistryDocument = {
-  schema_version: 1;
+  schema_version: 1 | 2;
   current_connection_key?: string;
   connections: StoredConnection[];
 };
@@ -77,16 +80,41 @@ function connectionAlias(value: unknown): string {
 }
 
 export function agentConnectionKey(value: AgentConnectionDescriptor): string {
+  return agentConnectionKeyFor(value);
+}
+
+/** Derives the isolated credential key for one named instance of a public connection binding. */
+export function agentConnectionInstanceKey(
+  value: AgentConnectionDescriptor,
+  connectionInstanceId: string,
+): string {
+  return agentConnectionKeyFor(value, connectionInstanceId);
+}
+
+function agentConnectionKeyFor(
+  value: AgentConnectionDescriptor,
+  connectionInstanceId?: string,
+): string {
   const descriptor = normalizedDescriptor(value);
+  if (connectionInstanceId !== undefined && !CONNECTION_INSTANCE_PATTERN.test(connectionInstanceId)) {
+    throw new Error('The Agent connection instance id is invalid.');
+  }
   return `conn_${createHash('sha256')
-    .update('bailinghub.agent-connection.v1\0')
+    .update(connectionInstanceId === undefined
+      ? 'bailinghub.agent-connection.v1\0'
+      : 'bailinghub.agent-connection.v2\0')
     .update(descriptor.baseUrl)
     .update('\0')
     .update(descriptor.clientAppId)
     .update('\0')
     .update(descriptor.workspace)
+    .update(connectionInstanceId === undefined ? '' : `\0${connectionInstanceId}`)
     .digest('hex')
     .slice(0, 32)}`;
+}
+
+function newConnectionInstanceId(): string {
+  return `instance_${randomBytes(16).toString('hex')}`;
 }
 
 function timestamp(value: unknown, label: string): string {
@@ -96,19 +124,22 @@ function timestamp(value: unknown, label: string): string {
   return value;
 }
 
-function parseStoredConnection(value: unknown): AgentConnectionProfile {
+function parseStoredConnection(value: unknown, schemaVersion: 1 | 2): AgentConnectionProfile {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Stored Agent connection metadata is invalid.');
   }
   const item = value as Record<string, unknown>;
   const allowedFields = new Set([
-    'connection_key', 'base_url', 'client_app_id', 'workspace', 'alias',
+    'connection_key', 'connection_instance_id', 'base_url', 'client_app_id', 'workspace', 'alias',
     'allow_insecure_http', 'created_at', 'updated_at',
   ]);
   if (
     Object.keys(item).some((key) => !allowedFields.has(key)) ||
     typeof item.connection_key !== 'string' ||
     !CONNECTION_KEY_PATTERN.test(item.connection_key) ||
+    (item.connection_instance_id !== undefined &&
+      (schemaVersion !== 2 || typeof item.connection_instance_id !== 'string' ||
+        !CONNECTION_INSTANCE_PATTERN.test(item.connection_instance_id))) ||
     typeof item.base_url !== 'string' ||
     typeof item.client_app_id !== 'string' ||
     typeof item.workspace !== 'string' ||
@@ -122,12 +153,16 @@ function parseStoredConnection(value: unknown): AgentConnectionProfile {
     workspace: item.workspace,
     allowInsecureHttp: item.allow_insecure_http === true,
   });
-  if (agentConnectionKey(descriptor) !== item.connection_key) {
+  const connectionInstanceId = typeof item.connection_instance_id === 'string'
+    ? item.connection_instance_id
+    : undefined;
+  if (agentConnectionKeyFor(descriptor, connectionInstanceId) !== item.connection_key) {
     throw new Error('Stored Agent connection metadata has an invalid binding.');
   }
   return {
     ...descriptor,
     connectionKey: item.connection_key,
+    ...(connectionInstanceId ? { connectionInstanceId } : {}),
     ...(item.alias !== undefined ? { alias: connectionAlias(item.alias) } : {}),
     allowInsecureHttp: descriptor.allowInsecureHttp === true,
     createdAt: timestamp(item.created_at, 'created_at'),
@@ -138,6 +173,7 @@ function parseStoredConnection(value: unknown): AgentConnectionProfile {
 function serializeProfile(profile: AgentConnectionProfile): StoredConnection {
   return {
     connection_key: profile.connectionKey,
+    ...(profile.connectionInstanceId ? { connection_instance_id: profile.connectionInstanceId } : {}),
     base_url: profile.baseUrl,
     client_app_id: profile.clientAppId,
     workspace: profile.workspace,
@@ -146,6 +182,10 @@ function serializeProfile(profile: AgentConnectionProfile): StoredConnection {
     created_at: profile.createdAt,
     updated_at: profile.updatedAt,
   };
+}
+
+function registrySchemaVersion(connections: AgentConnectionProfile[]): 1 | 2 {
+  return connections.some((profile) => profile.connectionInstanceId !== undefined) ? 2 : 1;
 }
 
 function parseRegistry(value: unknown): {
@@ -158,15 +198,20 @@ function parseRegistry(value: unknown): {
   const record = value as Record<string, unknown>;
   if (
     Object.keys(record).some((key) => !['schema_version', 'current_connection_key', 'connections'].includes(key)) ||
-    record.schema_version !== 1 ||
+    (record.schema_version !== 1 && record.schema_version !== 2) ||
     !Array.isArray(record.connections) ||
     record.connections.length > MAX_CONNECTIONS
   ) {
     throw new Error('Stored Agent connection registry is invalid.');
   }
-  const connections = record.connections.map(parseStoredConnection);
+  const schemaVersion = record.schema_version as 1 | 2;
+  const connections = record.connections.map((item) => parseStoredConnection(item, schemaVersion));
   if (new Set(connections.map((item) => item.connectionKey)).size !== connections.length) {
     throw new Error('Stored Agent connection registry contains duplicates.');
+  }
+  const instanceIds = connections.flatMap((item) => item.connectionInstanceId ? [item.connectionInstanceId] : []);
+  if (new Set(instanceIds).size !== instanceIds.length) {
+    throw new Error('Stored Agent connection registry contains duplicate instances.');
   }
   const aliases = connections.flatMap((item) => item.alias ? [item.alias] : []);
   if (new Set(aliases).size !== aliases.length) {
@@ -245,12 +290,97 @@ export class AgentConnectionRegistry {
     ].sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
     if (connections.length > MAX_CONNECTIONS) throw new Error('The Agent connection registry is full.');
     await this.write({
-      schema_version: 1,
+      schema_version: registrySchemaVersion(connections),
       ...((options.makeCurrent || registry.currentConnectionKey === connectionKey)
         ? { current_connection_key: connectionKey }
         : registry.currentConnectionKey
           ? { current_connection_key: registry.currentConnectionKey }
           : {}),
+      connections: connections.map(serializeProfile),
+    });
+    return profile;
+  }
+
+  async createInstance(
+    descriptorValue: AgentConnectionDescriptor,
+    options: { alias: string; makeCurrent?: boolean; now?: () => Date; instanceId?: string },
+  ): Promise<AgentConnectionProfile> {
+    const descriptor = normalizedDescriptor(descriptorValue);
+    const alias = connectionAlias(options.alias);
+    const registry = await this.read();
+    if (registry.connections.some((item) => item.alias === alias)) {
+      throw new Error('The Agent connection alias is already in use.');
+    }
+    let connectionInstanceId = options.instanceId ?? newConnectionInstanceId();
+    let connectionKey = agentConnectionKeyFor(descriptor, connectionInstanceId);
+    if (options.instanceId !== undefined && !CONNECTION_INSTANCE_PATTERN.test(options.instanceId)) {
+      throw new Error('The Agent connection instance id is invalid.');
+    }
+    for (let attempt = 0; registry.connections.some((item) =>
+      item.connectionKey === connectionKey || item.connectionInstanceId === connectionInstanceId
+    ); attempt += 1) {
+      if (options.instanceId !== undefined || attempt >= 3) {
+        throw new Error('Could not allocate a unique Agent connection instance.');
+      }
+      connectionInstanceId = newConnectionInstanceId();
+      connectionKey = agentConnectionKeyFor(descriptor, connectionInstanceId);
+    }
+    const now = (options.now ?? (() => new Date()))().toISOString();
+    const profile: AgentConnectionProfile = {
+      ...descriptor,
+      connectionKey,
+      connectionInstanceId,
+      alias,
+      allowInsecureHttp: descriptor.allowInsecureHttp === true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const connections = [...registry.connections, profile]
+      .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
+    if (connections.length > MAX_CONNECTIONS) throw new Error('The Agent connection registry is full.');
+    await this.write({
+      schema_version: registrySchemaVersion(connections),
+      ...((options.makeCurrent || !registry.currentConnectionKey)
+        ? { current_connection_key: connectionKey }
+        : { current_connection_key: registry.currentConnectionKey }),
+      connections: connections.map(serializeProfile),
+    });
+    return profile;
+  }
+
+  async rebind(
+    connectionKey: string,
+    descriptorValue: AgentConnectionDescriptor,
+    options: { now?: () => Date } = {},
+  ): Promise<AgentConnectionProfile> {
+    if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
+    const registry = await this.read();
+    const current = registry.connections.find((item) => item.connectionKey === connectionKey);
+    if (!current) throw new Error('The Agent connection is not registered.');
+    const descriptor = normalizedDescriptor(descriptorValue);
+    const nextConnectionKey = agentConnectionKeyFor(descriptor, current.connectionInstanceId);
+    if (registry.connections.some((item) => item.connectionKey === nextConnectionKey && item.connectionKey !== connectionKey)) {
+      throw new Error('The target Agent connection binding already exists.');
+    }
+    const profile: AgentConnectionProfile = {
+      ...descriptor,
+      connectionKey: nextConnectionKey,
+      ...(current.connectionInstanceId ? { connectionInstanceId: current.connectionInstanceId } : {}),
+      ...(current.alias ? { alias: current.alias } : {}),
+      allowInsecureHttp: descriptor.allowInsecureHttp === true,
+      createdAt: current.createdAt,
+      updatedAt: (options.now ?? (() => new Date()))().toISOString(),
+    };
+    const connections = registry.connections
+      .map((item) => item.connectionKey === connectionKey ? profile : item)
+      .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
+    await this.write({
+      schema_version: registrySchemaVersion(connections),
+      ...(registry.currentConnectionKey
+        ? { current_connection_key: registry.currentConnectionKey === connectionKey
+            ? nextConnectionKey
+            : registry.currentConnectionKey }
+        : {}),
       connections: connections.map(serializeProfile),
     });
     return profile;
@@ -263,7 +393,7 @@ export class AgentConnectionRegistry {
       throw new Error('The Agent connection is not registered.');
     }
     await this.write({
-      schema_version: 1,
+      schema_version: registrySchemaVersion(registry.connections),
       current_connection_key: connectionKey,
       connections: registry.connections.map(serializeProfile),
     });
@@ -285,7 +415,7 @@ export class AgentConnectionRegistry {
       return item;
     });
     await this.write({
-      schema_version: 1,
+      schema_version: registrySchemaVersion(connections),
       ...(registry.currentConnectionKey ? { current_connection_key: registry.currentConnectionKey } : {}),
       connections: connections.map(serializeProfile),
     });
@@ -301,7 +431,7 @@ export class AgentConnectionRegistry {
       ? undefined
       : registry.currentConnectionKey;
     await this.write({
-      schema_version: 1,
+      schema_version: registrySchemaVersion(connections),
       ...(nextCurrent ? { current_connection_key: nextCurrent } : {}),
       connections: connections.map(serializeProfile),
     });
@@ -414,6 +544,13 @@ export class AgentConnectionStore {
     return profile;
   }
 
+  async registerInstance(
+    descriptor: AgentConnectionDescriptor,
+    options: { alias: string; makeCurrent?: boolean },
+  ): Promise<AgentConnectionProfile> {
+    return this.registry.createInstance(descriptor, options);
+  }
+
   async save(
     credentialsValue: AgentCredentials,
     options: { alias?: string; allowInsecureHttp?: boolean; makeCurrent?: boolean } = {},
@@ -445,12 +582,12 @@ export class AgentConnectionStore {
     const store = this.credentialStore(profile.connectionKey);
     const credentials = await store.load();
     if (!credentials) throw new Error('The selected Agent connection has no login.');
-    const expected = agentConnectionKey({
+    const expected = agentConnectionKeyFor({
       baseUrl: credentials.base_url,
       clientAppId: credentials.client_app_id,
       workspace: credentials.route,
       allowInsecureHttp: profile.allowInsecureHttp,
-    });
+    }, profile.connectionInstanceId);
     if (expected !== profile.connectionKey) {
       throw new Error('The selected Agent credentials do not match their connection binding.');
     }
@@ -469,7 +606,7 @@ export class AgentConnectionStore {
       workspace: credentials.route,
       allowInsecureHttp: profile.allowInsecureHttp,
     });
-    if (legacyKey !== profile.connectionKey) return 'legacy_connection_mismatch';
+    if (profile.connectionInstanceId || legacyKey !== profile.connectionKey) return 'legacy_connection_mismatch';
     await target.save(credentials);
     const persisted = await target.load();
     if (!persisted || JSON.stringify(persisted) !== JSON.stringify(credentials)) {

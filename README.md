@@ -212,9 +212,10 @@ Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
 The `bailinghub-mcp-server/sdk` subpath additionally exposes a host-neutral Agent
-Client factory. It owns browser login, connection aliases, per-Hub/client/workspace credential
-isolation, token refresh, and Core DTO mapping; host adapters such as DSH do not own credentials
-or BailingHub HTTP endpoint details.
+Client factory. It owns browser login, named connection instances (including independently
+authorized instances on the same Hub/client/workspace binding), isolated credentials, token
+refresh, and Core DTO mapping; host adapters such as DSH do not own credentials or BailingHub HTTP
+endpoint details.
 
 No administrator, executor, approval-decision, tool-proxy, configuration, or direct business
 API is called by this adapter.

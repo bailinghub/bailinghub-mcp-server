@@ -61,10 +61,11 @@ It must not be able to:
     native secure store is implemented.
 12. Agent API requests use only the approved session route, retry one 401 after rotating the
     refresh token, and never fall back to the Client API.
-13. Multi-connection registry entries contain only public Hub/client/workspace metadata. A host
-    may expose connection selection only through user-controlled UI or commands, never as a model
-    tool. Removing an authorized connection revokes remotely before local deletion and preserves
-    local state when revocation fails.
+13. Multi-connection registry entries contain only public Hub/client/workspace metadata and an
+    opaque local instance id. Same-binding instances use separate credential stores and Agent
+    Sessions. A host may expose selection only through user-controlled UI or commands, never as a
+    model tool. Removing one authorized instance revokes only its remote session before local
+    deletion and preserves that local state when revocation fails.
 
 ## Non-Guarantees
 

@@ -43,7 +43,7 @@ const transport = createAgentClientTransport({
 | `hubUrl` | 部署者自己的 BailingHub 公开 HTTPS 根地址 | 否 |
 | `clientAppId` | 中枢管理员登记的公开 `app_id` | 否 |
 | `workspace` | 初始 BailingHub route key | 否 |
-| `connectionName` | 本机可读别名 | 否 |
+| `connectionName` | 选择一个连接实例的本机可读名称 | 否 |
 
 宿主配置不得新增 BailingHub Client Token、管理 Token、业务密码/Cookie、Tool Provider Secret、
 业务 API 地址、模型 API Key 或 Agent access/refresh token。模型和模型 Key 仍由宿主自己的凭据系统管理。
@@ -53,8 +53,9 @@ const transport = createAgentClientTransport({
 > **未发布候选能力：**本节 API 已在当前开发分支实现，需要配套的 SDK 与宿主候选版本，
 > 不属于公开 `0.2.0` 包。正式发布前必须按 Core -> SDK -> 宿主适配器顺序对齐精确版本。
 
-SDK 注册表可以同时保存多套 `Hub + clientAppId + workspace` 公开元数据。每套凭据仍隔离保存，
-注册表和这些方法都不会返回 access/refresh token：
+SDK 注册表可以同时保存多个具名连接实例。两个实例可以使用完全相同的
+`Hub + clientAppId + workspace` 公开绑定，但分别完成浏览器授权、持有不同 Agent Session、
+隔离存储凭据，并且可以独立撤销。注册表和这些方法都不会返回 access/refresh token：
 
 ```js
 await transport.connectionsAdd({
@@ -70,14 +71,21 @@ await transport.login({ connectionName: 'shop-a' });
 await transport.connectionsRemove('shop-a');
 ```
 
-`connectionsAdd()` 只登记公开连接并选为当前项，不会伪造登录；随后仍需浏览器授权。
-`connectionsUse()` 只切换本机当前选择。宿主必须把这两个入口放在用户命令或设置界面中，不能
-投影为模型工具，也不能接受模型生成的连接选择。已经开始的会话或 run 必须继续使用创建时固定的
-连接，切换只影响新会话。
+`connectionsAdd()` 在名称尚不存在时创建一个新的本机实例，只登记公开元数据并选为当前项，
+不会伪造、复制登录。相同名称与相同绑定重复添加是幂等选择；相同名称改绑其他公开元数据会失败。
+每个新实例都必须单独完成浏览器授权。`connectionsUse()` 只切换本机当前选择。宿主必须把这些入口
+放在用户命令或设置界面中，不能投影为模型工具，也不能接受模型生成的连接选择。已经开始的会话
+或 run 必须继续使用创建时固定的实例，切换只影响新会话。
 
 `connectionsRemove()` 在有登录时先撤销远端 Agent Session，成功后才删除本地凭据与公开元数据。
 远端撤销失败时，连接与凭据原样保留以便重试。它不同于 `use(workspace)`：前者选择或删除一整套
-Hub/client/workspace 连接，后者只在当前业务授权已经允许的范围内移动到另一个 workspace。
+连接实例，后者让同一个实例在当前业务授权已经允许的范围内改绑另一个 workspace；它不会把一套
+已授权身份变成另一套身份。
+
+已有确定性 v1 注册表连接继续可读，并保持原凭据 key。只有至少存在一个独立具名实例时，注册表
+才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。
+旧版 SDK 遇到 schema v2 会失败关闭。降级前必须使用匹配候选版逐一撤销并删除候选实例；最后一个
+实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件或 Keychain 记录。
 
 ## 登录生命周期
 
@@ -93,8 +101,9 @@ const workspaces = await transport.workspaces();
 macOS 使用 Keychain。Linux 与其他 POSIX 系统必须显式启用当前用户所有、权限为 `0600` 的文件
 回退。Windows 在具备原生安全存储前失败关闭；不得用宿主明文 Token 字段绕过。
 
-标准 v1 factory 登录一次申请一个 workspace。一条连接按 `Hub + clientAppId + workspace` 绑定；
-连接另一套 Hub 或 route 时应登记另一个连接并重新完成浏览器授权。`use()` 只有在现有 Agent
+标准 v1 factory 登录一次申请一个 workspace。公开绑定是 `Hub + clientAppId + workspace`，本机
+实例则是“公开绑定 + connectionName”。同一公开绑定需要另一业务身份时，应创建新的具名实例并
+重新完成浏览器授权；连接另一套 Hub 或 route 时也应登记另一个连接。`use()` 只有在所选 Agent
 Session 明确包含目标 workspace 时才成功，不能宣传成无限制跨路由切换。
 
 退出时先撤销远端会话，再删除本地凭据：

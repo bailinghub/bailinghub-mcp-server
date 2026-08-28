@@ -49,7 +49,7 @@ const transport = createAgentClientTransport({
 | `hubUrl` | public HTTPS origin of the deployer's BailingHub | no |
 | `clientAppId` | public `app_id` registered by the Hub administrator | no |
 | `workspace` | initial BailingHub route key | no |
-| `connectionName` | local readable alias | no |
+| `connectionName` | local readable name selecting one connection instance | no |
 
 Do not add BailingHub Client Tokens, admin tokens, business passwords/cookies, Tool Provider
 Secrets, business API URLs, model API keys, or Agent access/refresh tokens to host configuration.
@@ -61,8 +61,10 @@ The model provider and key remain in the host's own credential system.
 > branch and require a matching SDK/host candidate. They are not part of the public `0.2.0`
 > package. Align exact versions in the order Core -> SDK -> host adapter before release.
 
-The SDK registry can retain public metadata for multiple `Hub + clientAppId + workspace`
-bindings. Credentials remain isolated, and none of these methods returns access or refresh tokens:
+The SDK registry can retain multiple named connection instances. Two instances may intentionally
+share the same public `Hub + clientAppId + workspace` binding while keeping separate browser
+authorizations, Agent Sessions, credentials, and revocation lifecycles. None of these methods
+returns access or refresh tokens:
 
 ```js
 await transport.connectionsAdd({
@@ -78,16 +80,26 @@ await transport.login({ connectionName: 'shop-a' });
 await transport.connectionsRemove('shop-a');
 ```
 
-`connectionsAdd()` registers public metadata and selects it; it does not fabricate a login.
-Browser authorization is still required. Hosts must expose add/use only through user commands or
-settings, never as model tools or model-controlled selectors. Existing conversations and runs stay
-pinned to the connection captured when they were created; a selection affects new sessions only.
+`connectionsAdd()` creates a new local instance for a new `connectionName`, registers only its
+public metadata, and selects it; it does not fabricate or copy a login. Repeating the exact same
+name and binding is idempotent, while reusing that name for different public metadata fails.
+Browser authorization is required separately for every new instance. Hosts must expose add/use
+only through user commands or settings, never as model tools or model-controlled selectors.
+Existing conversations and runs stay pinned to the connection captured when they were created;
+a selection affects new sessions only.
 
 When credentials exist, `connectionsRemove()` revokes the remote Agent Session before deleting
 local credentials and public metadata. A failed remote revoke keeps both intact for retry. This is
 different from `use(workspace)`: connection lifecycle selects a complete Hub/client/workspace
-binding, while `use()` moves only within the workspaces already granted to the current business
-authorization.
+instance, while `use()` rebinds the same instance within the workspaces already granted to its
+current business authorization. It never turns one authorized identity into another.
+
+Existing deterministic v1 registry entries remain readable and keep their credential key. The
+registry is written as schema v2 only while at least one independently named instance exists; the
+instance id is opaque local metadata, not a credential or an identity assertion sent to Core.
+An older SDK fails closed on schema v2. Before downgrading, use the matching candidate to revoke
+and remove every candidate-only instance; after the last one is removed, the registry is written
+back as schema v1. Do not delete credential files or Keychain entries manually.
 
 ## Login lifecycle
 
@@ -105,10 +117,12 @@ macOS uses Keychain. Linux and other POSIX systems require explicit opt-in to th
 mode-`0600` file fallback. Agent Session fails closed on Windows until a native secure store is
 available. Never implement a host-specific plaintext token field as a workaround.
 
-The standard v1 factory login requests one workspace. Treat a connection as
-`Hub + clientAppId + workspace`; register another connection and complete a new browser authorization for another
-Hub or route. `use()` succeeds only when the existing Agent Session explicitly includes that
-workspace; do not advertise unrestricted cross-route switching.
+The standard v1 factory login requests one workspace. Treat the public binding as
+`Hub + clientAppId + workspace` and the local instance as `binding + connectionName`. Register a
+new named instance and complete a new browser authorization when another business identity must
+use the same binding. Register another connection for another Hub or route. `use()` succeeds only
+when the selected Agent Session explicitly includes that workspace; do not advertise unrestricted
+cross-route switching.
 
 Logout revokes the remote session before removing local credentials:
 

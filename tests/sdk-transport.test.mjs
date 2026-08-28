@@ -51,14 +51,17 @@ async function setup(t) {
     credentialPathFor: (key) => join(directory, 'credentials', `${key}.json`),
   });
   const calls = [];
+  let loginCount = 0;
   const fetchImpl = async (url, init) => {
     const path = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
-    calls.push({ url: String(url), path, method: init.method, body });
+    const authorization = new Headers(init.headers).get('authorization');
+    calls.push({ url: String(url), path, method: init.method, body, authorization });
     if (path === '/agent-auth/v1/session') {
+      const identity = authorization?.endsWith('-2') ? '2' : '1';
       return new Response(JSON.stringify({
-        session_id: 'session-1', client_app_id: 'example-agent-client',
-        device_label: 'test', principal: { id: 'user-1' }, on_behalf_of: 'tenant:user-1',
+        session_id: `session-${identity}`, client_app_id: 'example-agent-client',
+        device_label: 'test', principal: { id: `user-${identity}` }, on_behalf_of: `tenant:user-${identity}`,
         allowed_routes: ['orders', 'staff'], created_at: '2026-01-01T00:00:00.000Z',
         expires_at: '2099-01-01T00:00:00.000Z', refresh_expires_at: '2099-02-01T00:00:00.000Z',
       }), { status: 200 });
@@ -116,8 +119,11 @@ async function setup(t) {
     connectionStore,
     fetchImpl,
     loginImpl: async (config, dependencies) => {
+      loginCount += 1;
       const value = {
-        ...credentials(config.route),
+        ...credentials(config.route), session_id: `session-${loginCount}`,
+        access_token: `access-secret-${loginCount}`,
+        refresh_token: `refresh-secret-${loginCount}`,
         base_url: config.baseUrl,
         client_app_id: config.clientAppId,
       };
@@ -191,6 +197,46 @@ test('factory manages multiple public connections without exposing credentials',
   assert.equal(removed.hadCredentials, true);
   assert.equal(removed.remoteRevoked, true);
   assert.equal(await registry.getByAlias('second hub'), undefined);
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
+});
+
+test('factory authorizes, switches, rebinds, and revokes same-binding identities independently', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t);
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+
+  const firstAdded = await transport.connectionsAdd({ connectionName: 'identity one', ...binding });
+  await transport.login({ connectionName: 'identity one' });
+  const secondAdded = await transport.connectionsAdd({ connectionName: 'identity two', ...binding });
+  await transport.login({ connectionName: 'identity two' });
+  assert.notEqual(firstAdded.connection.connectionKey, secondAdded.connection.connectionKey);
+
+  const first = await registry.getByAlias('identity one');
+  const second = await registry.getByAlias('identity two');
+  assert.equal(first.baseUrl, second.baseUrl);
+  assert.equal(first.clientAppId, second.clientAppId);
+  assert.equal(first.workspace, second.workspace);
+  assert.notEqual(first.connectionInstanceId, second.connectionInstanceId);
+  assert.equal((await connectionStore.load(first.connectionKey)).credentials.session_id, 'session-1');
+  assert.equal((await connectionStore.load(second.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal((await transport.status({ connectionName: 'identity one' })).onBehalfOf, 'tenant:user-1');
+  assert.equal((await transport.status({ connectionName: 'identity two' })).onBehalfOf, 'tenant:user-2');
+
+  const repeated = await transport.connectionsAdd({ connectionName: 'identity one', ...binding });
+  assert.equal(repeated.state, 'selected');
+  assert.equal(repeated.connection.connectionKey, first.connectionKey);
+
+  await transport.use({ connectionName: 'identity one', workspace: 'staff' });
+  const rebound = await registry.getByAlias('identity one');
+  assert.equal(rebound.connectionInstanceId, first.connectionInstanceId);
+  assert.equal(rebound.workspace, 'staff');
+  assert.equal((await registry.getByAlias('identity two')).workspace, 'orders');
+  assert.equal((await connectionStore.load(rebound.connectionKey)).credentials.session_id, 'session-1');
+
+  await transport.connectionsRemove('identity one');
+  assert.equal(await registry.getByAlias('identity one'), undefined);
+  assert.equal((await transport.status({ connectionName: 'identity two' })).onBehalfOf, 'tenant:user-2');
   assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
 });
 

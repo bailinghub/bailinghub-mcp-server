@@ -18,6 +18,8 @@ import {
 } from './agent-auth.js';
 import {
   AgentConnectionStore,
+  agentConnectionInstanceKey,
+  agentConnectionKey,
   type AgentConnectionProfile,
   type AgentConnectionStoreOptions,
 } from './connections.js';
@@ -43,6 +45,7 @@ export {
 export {
   AgentConnectionRegistry,
   AgentConnectionStore,
+  agentConnectionInstanceKey,
   agentConnectionKey,
   defaultConnectionCredentialPath,
   defaultConnectionRegistryPath,
@@ -165,6 +168,16 @@ function stableDigest(...parts: string[]): string {
 
 function normalizedConnectionName(value: unknown): string {
   return optionalHostText(value, 'connectionName', 128) ?? 'default';
+}
+
+function profileMatches(
+  profile: AgentConnectionProfile,
+  descriptor: { baseUrl: string; clientAppId: string; workspace: string; allowInsecureHttp: boolean },
+): boolean {
+  return profile.baseUrl === descriptor.baseUrl &&
+    profile.clientAppId === descriptor.clientAppId &&
+    profile.workspace === descriptor.workspace &&
+    profile.allowInsecureHttp === descriptor.allowInsecureHttp;
 }
 
 function modelRuntimeText(value: unknown): string | undefined {
@@ -333,14 +346,23 @@ export function createAgentClientTransport(
         hostText(input.clientAppId, 'clientAppId', 64),
       );
       const workspace = normalizeAgentRoute(hostText(input.workspace ?? input.route, 'workspace', 64));
-      const profile = await connections.register({
+      const descriptor = {
         baseUrl: connectionBaseUrl,
         clientAppId: connectionClientAppId,
         workspace,
         allowInsecureHttp: input.allowInsecureHttp === true,
-      }, { alias: connectionName, makeCurrent: true, migrateLegacy: true });
+      };
+      const existing = await connections.registry.getByAlias(connectionName);
+      if (existing && !profileMatches(existing, descriptor)) {
+        throw new Error('The Agent connection alias is already bound to different public metadata.');
+      }
+      const profile = existing ?? await connections.registerInstance(
+        descriptor,
+        { alias: connectionName, makeCurrent: true },
+      );
+      if (existing) await connections.registry.setCurrent(existing.connectionKey);
       return {
-        state: 'registered',
+        state: existing ? 'selected' : 'registered',
         connection: await publicConnection(profile, profile.connectionKey),
       };
     },
@@ -401,19 +423,22 @@ export function createAgentClientTransport(
         throw new Error('workspace is required for the first Agent authorization.');
       }
       const workspace = normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
-      let profile = await connections.register({
+      const descriptor = {
         baseUrl: loginBaseUrl,
         clientAppId: loginClientAppId,
         workspace,
         allowInsecureHttp: input.allowInsecureHttp === true || existing?.allowInsecureHttp === true || allowInsecureHttp,
-      }, { makeCurrent: true });
-      if (CONNECTION_KEY_PATTERN.test(alias) && profile.connectionKey !== alias) {
-        throw new Error('The requested Agent connection key does not match this Hub-client-workspace binding.');
+      };
+      if (existing && !profileMatches(existing, descriptor)) {
+        throw new Error('The selected Agent connection does not match the requested Hub-client-workspace binding.');
       }
-      if (!CONNECTION_KEY_PATTERN.test(alias) && profile.alias && profile.alias !== alias) {
-        throw new Error('This Hub-client-workspace binding already has a different connection alias.');
+      if (!existing && CONNECTION_KEY_PATTERN.test(alias)) {
+        throw new Error('The requested Agent connection key is not registered.');
       }
-      await connections.migrateLegacy(profile);
+      let profile = existing ?? (alias === defaultConnectionName
+        ? await connections.register(descriptor, { makeCurrent: true })
+        : await connections.registerInstance(descriptor, { alias, makeCurrent: true }));
+      if (!profile.connectionInstanceId) await connections.migrateLegacy(profile);
       const store = connections.credentialStore(profile.connectionKey);
       const credentials = await (dependencies.loginImpl ?? performAgentLogin)({
         baseUrl: profile.baseUrl,
@@ -429,7 +454,7 @@ export function createAgentClientTransport(
         ...(dependencies.randomBytesImpl ? { randomBytesImpl: dependencies.randomBytesImpl } : {}),
         ...(dependencies.now ? { now: dependencies.now } : {}),
       });
-      if (!CONNECTION_KEY_PATTERN.test(alias)) {
+      if (!CONNECTION_KEY_PATTERN.test(alias) && !profile.alias) {
         profile = await connections.registry.assignAlias(profile.connectionKey, alias);
       }
       await connections.registry.setCurrent(profile.connectionKey);
@@ -513,27 +538,34 @@ export function createAgentClientTransport(
         throw new Error(`The current Agent authorization does not include workspace ${workspace}.`);
       }
       const credentials = await manager.loadRequired();
-      let target = await connections.register({
+      const descriptor = {
         baseUrl: current.baseUrl,
         clientAppId: current.clientAppId,
         workspace,
         allowInsecureHttp: current.allowInsecureHttp,
-      });
-      const targetStore = connections.credentialStore(target.connectionKey);
-      const alias = CONNECTION_KEY_PATTERN.test(String(selector))
-        ? current.alias
-        : normalizedConnectionName(selector);
-      if (target.alias && alias && target.alias !== alias) {
-        throw new Error('The target workspace is already bound to a different connection alias.');
+      };
+      const targetKey = current.connectionInstanceId
+        ? agentConnectionInstanceKey(descriptor, current.connectionInstanceId)
+        : agentConnectionKey(descriptor);
+      const conflicting = await connections.registry.get(targetKey);
+      if (conflicting && conflicting.connectionKey !== current.connectionKey) {
+        throw new Error('The target workspace already belongs to another Agent connection instance.');
       }
+      const targetStore = connections.credentialStore(targetKey);
       const existingTarget = await targetStore.load();
       if (existingTarget && existingTarget.session_id !== credentials.session_id) {
         throw new Error('The target workspace already has a different Agent login. Select that connection instead.');
       }
       await targetStore.save({ ...credentials, route: workspace });
-      if (alias) target = await connections.registry.assignAlias(target.connectionKey, alias);
+      let target;
+      try {
+        target = await connections.registry.rebind(current.connectionKey, descriptor);
+      } catch (error) {
+        if (!existingTarget) await targetStore.delete().catch(() => undefined);
+        throw error;
+      }
       await connections.registry.setCurrent(target.connectionKey);
-      await currentStore.delete();
+      if (target.connectionKey !== current.connectionKey) await currentStore.delete();
       return {
         state: 'selected', connectionKey: target.connectionKey,
         ...(target.alias ? { connectionName: target.alias } : {}), workspace,

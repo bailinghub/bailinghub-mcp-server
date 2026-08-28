@@ -3,9 +3,13 @@
 ## Unreleased
 
 - Add secret-free `connectionsList`, `connectionsAdd`, `connectionsUse`, and
-  `connectionsRemove` host APIs across multiple Hub/client/workspace bindings.
+  `connectionsRemove` host APIs across multiple named connection instances, including separate
+  authorizations on the same Hub/client/workspace binding.
+- Add a backward-readable registry migration that preserves deterministic v1 profiles and uses an
+  opaque v2 instance id only for independently authorized named instances.
 - Keep connection selection host-controlled and require remote Agent Session revocation before
-  local removal; failed revocation preserves the connection and credential for retry.
+  local removal; removing one same-binding instance does not revoke another, while failed
+  revocation preserves the selected connection and credential for retry.
 
 ## 0.2.0 - 2026-08-26
 

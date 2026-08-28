@@ -18,17 +18,20 @@ optional peer or local path.
 8. Run the Agent Session SDK seam against the matching Core: login, status, turn, search,
    invocation, resume, visible completion, logout, and business-side revoke.
 9. Verify macOS Keychain and the explicit mode-0600 POSIX fallback; confirm Windows fails closed.
-10. `npm pack --dry-run --json`, unpack the tarball, and inspect the exact contents.
-11. Confirm `dist/sdk.js`, `dist/sdk.d.ts`, Agent Auth/Runtime modules, and both Agent Client SDK
+10. Create two names on the same Hub/client/workspace binding, authorize them as two independent
+    fixtures, switch between them, and prove their credentials, sessions, subjects, and revocation
+    are isolated. Confirm a legacy schema-v1 profile remains readable.
+11. `npm pack --dry-run --json`, unpack the tarball, and inspect the exact contents.
+12. Confirm `dist/sdk.js`, `dist/sdk.d.ts`, Agent Auth/Runtime modules, and both Agent Client SDK
     guides are present.
-12. Scan source and the unpacked tarball for credentials, private URLs/IPs, business identifiers,
+13. Scan source and the unpacked tarball for credentials, private URLs/IPs, business identifiers,
     absolute paths, private keys, raw tool arguments/results, and hidden reasoning.
-13. Install the tarball into a clean project and dynamically import
+14. Install the tarball into a clean project and dynamically import
     `bailinghub-mcp-server/sdk`; no repository path or build tree may be visible.
-14. Publish the npm package with provenance and verify the exact version through npm.
-15. Validate `mcpName` against `server.json`, publish metadata with the official
+15. Publish the npm package with provenance and verify the exact version through npm.
+16. Validate `mcpName` against `server.json`, publish metadata with the official
     `mcp-publisher`, and verify it through the Registry API.
-16. Only after this package is publicly resolvable may a host adapter publish with an exact normal
+17. Only after this package is publicly resolvable may a host adapter publish with an exact normal
     dependency on this version.
 
 `server.json` is deliberately the standalone stdio/Client Token Registry descriptor. Its required

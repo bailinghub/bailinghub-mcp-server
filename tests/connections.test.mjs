@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   AgentConnectionRegistry,
   AgentConnectionStore,
+  agentConnectionInstanceKey,
   agentConnectionKey,
 } from '../dist/connections.js';
 import { FileCredentialStore } from '../dist/credential-store.js';
@@ -76,6 +77,48 @@ test('aliases select isolated credentials while registry metadata never contains
   assert.equal(moved.alias, 'main shop');
   assert.equal((await registry.get(orders.connectionKey)).alias, undefined);
   assert.equal((await registry.getByAlias('main shop')).connectionKey, staff.connectionKey);
+});
+
+test('named instances isolate multiple identities under the same public binding', async (t) => {
+  const { directory, registry, store } = await fixture(t);
+  const descriptor = {
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  const legacy = await store.register(descriptor, { alias: 'legacy', makeCurrent: true });
+  assert.equal(JSON.parse(await readFile(join(directory, 'registry.json'), 'utf8')).schema_version, 1);
+
+  const first = await store.registerInstance(descriptor, { alias: 'identity one' });
+  const second = await store.registerInstance(descriptor, { alias: 'identity two' });
+  assert.notEqual(first.connectionInstanceId, second.connectionInstanceId);
+  assert.notEqual(first.connectionKey, second.connectionKey);
+  assert.equal(first.connectionKey, agentConnectionInstanceKey(descriptor, first.connectionInstanceId));
+  assert.equal(second.connectionKey, agentConnectionInstanceKey(descriptor, second.connectionInstanceId));
+  assert.notEqual(first.connectionKey, legacy.connectionKey);
+  await assert.rejects(registry.createInstance(
+    { ...descriptor, workspace: 'staff' },
+    { alias: 'duplicate instance', instanceId: first.connectionInstanceId },
+  ), /unique Agent connection instance/);
+
+  await store.credentialStore(first.connectionKey).save(credentials({
+    session_id: 'session-identity-one', access_token: 'access-identity-one',
+    refresh_token: 'refresh-identity-one',
+  }));
+  await store.credentialStore(second.connectionKey).save(credentials({
+    session_id: 'session-identity-two', access_token: 'access-identity-two',
+    refresh_token: 'refresh-identity-two',
+  }));
+  assert.equal((await store.load(first.connectionKey)).credentials.session_id, 'session-identity-one');
+  assert.equal((await store.load(second.connectionKey)).credentials.session_id, 'session-identity-two');
+
+  const registryText = await readFile(join(directory, 'registry.json'), 'utf8');
+  assert.equal(JSON.parse(registryText).schema_version, 2);
+  assert.equal(registryText.includes('access-identity'), false);
+  assert.equal(registryText.includes('refresh-identity'), false);
+
+  await registry.remove(first.connectionKey);
+  assert.equal((await registry.getByAlias('identity two')).connectionKey, second.connectionKey);
+  await registry.remove(second.connectionKey);
+  assert.equal(JSON.parse(await readFile(join(directory, 'registry.json'), 'utf8')).schema_version, 1);
 });
 
 test('legacy default file credentials migrate once into their bound isolated connection', async (t) => {
