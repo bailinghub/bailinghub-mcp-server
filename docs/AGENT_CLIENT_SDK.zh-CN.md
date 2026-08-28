@@ -114,6 +114,9 @@ await transport.connectionsRemove('shop-a');
 远端撤销失败时，连接与凭据原样保留以便重试。它不同于 `use(workspace)`：前者选择或删除一整套
 连接实例，后者让同一个实例在当前业务授权已经允许的范围内改绑另一个 workspace；它不会把一套
 已授权身份变成另一套身份。
+如果删除的是 current 连接，同一次原子注册表变更会选择剩余条目中不透明 connection key
+按字典序最小的一项。只有删除最后一项时才返回 `currentConnectionKey: null`。fallback 只影响
+新会话；已经开始的会话与 run 仍固定使用创建时捕获的连接。
 
 已有确定性 v1 注册表连接继续可读，并保持原凭据 key。只有至少存在一个具名实例时，注册表
 才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。

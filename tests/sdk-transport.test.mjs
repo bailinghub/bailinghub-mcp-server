@@ -269,7 +269,15 @@ test('factory manages multiple public connections without exposing credentials',
   const removed = await transport.connectionsRemove('second hub');
   assert.equal(removed.hadCredentials, true);
   assert.equal(removed.remoteRevoked, true);
+  assert.equal(removed.currentConnectionKey, selected.connection.connectionKey);
   assert.equal(await registry.getByAlias('second hub'), undefined);
+  assert.equal((await registry.current()).connectionKey, selected.connection.connectionKey);
+  assert.equal(
+    (await transport.connectionsList()).connections.find(
+      (connection) => connection.connectionName === 'development',
+    ).current,
+    true,
+  );
   assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
 });
 
@@ -307,10 +315,37 @@ test('factory authorizes, switches, rebinds, and revokes same-binding identities
   assert.equal((await registry.getByAlias('identity two')).workspace, 'orders');
   assert.equal((await connectionStore.load(rebound.connectionKey)).credentials.session_id, 'session-1');
 
-  await transport.connectionsRemove('identity one');
+  const removed = await transport.connectionsRemove('identity one');
+  assert.equal(removed.currentConnectionKey, second.connectionKey);
   assert.equal(await registry.getByAlias('identity one'), undefined);
+  assert.equal((await registry.current()).connectionKey, second.connectionKey);
+  assert.equal(
+    (await transport.connectionsList()).connections.find(
+      (connection) => connection.connectionName === 'identity two',
+    ).current,
+    true,
+  );
   assert.equal((await transport.status({ connectionName: 'identity two' })).onBehalfOf, 'tenant:user-2');
   assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
+});
+
+test('factory reports no current connection only after removing the final entry', async (t) => {
+  const { registry, transport } = await setup(t);
+  const added = await transport.connectionsAdd({
+    connectionName: 'only connection', hubUrl: 'https://hub.example.com',
+    clientAppId: 'example-agent-client', workspace: 'orders',
+  });
+
+  const removed = await transport.connectionsRemove('only connection');
+  assert.equal(removed.connectionKey, added.connection.connectionKey);
+  assert.equal(removed.hadCredentials, false);
+  assert.equal(removed.remoteRevoked, true);
+  assert.equal(removed.currentConnectionKey, null);
+  assert.equal(await registry.current(), undefined);
+  assert.deepEqual(await transport.connectionsList(), {
+    currentConnectionKey: null,
+    connections: [],
+  });
 });
 
 test('factory replaces an earlier local connection after the same trusted identity authorizes again', async (t) => {

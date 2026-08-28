@@ -472,10 +472,12 @@ export class AgentConnectionRegistry {
     await this.mutationLock.withLock(async () => {
       if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
       const registry = await this.read();
-      const connections = registry.connections.filter((item) => item.connectionKey !== connectionKey);
+      const connections = registry.connections
+        .filter((item) => item.connectionKey !== connectionKey)
+        .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
       if (connections.length === registry.connections.length) return;
       const nextCurrent = registry.currentConnectionKey === connectionKey
-        ? undefined
+        ? connections[0]?.connectionKey
         : registry.currentConnectionKey;
       await this.write({
         schema_version: registrySchemaVersion(connections),

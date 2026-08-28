@@ -233,6 +233,43 @@ test('named instances isolate multiple identities under the same public binding'
   assert.equal(JSON.parse(await readFile(join(directory, 'registry.json'), 'utf8')).schema_version, 1);
 });
 
+test('registry removal atomically keeps or deterministically adopts a remaining current', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-remove-current-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'registry.json');
+  const registry = new AgentConnectionRegistry(path);
+  const descriptor = {
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  const profiles = [
+    await registry.createInstance(descriptor, { alias: 'identity-a' }),
+    await registry.createInstance(descriptor, { alias: 'identity-b' }),
+    await registry.createInstance(descriptor, { alias: 'identity-c' }),
+  ];
+  const ordered = profiles.sort((left, right) =>
+    left.connectionKey.localeCompare(right.connectionKey)
+  );
+  await registry.setCurrent(ordered[1].connectionKey);
+
+  await registry.remove(ordered[2].connectionKey);
+  assert.equal((await registry.current()).connectionKey, ordered[1].connectionKey);
+
+  await registry.remove(ordered[1].connectionKey);
+  assert.equal((await registry.current()).connectionKey, ordered[0].connectionKey);
+  let persisted = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(persisted.current_connection_key, ordered[0].connectionKey);
+  assert.deepEqual(persisted.connections.map((item) => item.connection_key), [
+    ordered[0].connectionKey,
+  ]);
+
+  await registry.remove(ordered[0].connectionKey);
+  assert.equal(await registry.current(), undefined);
+  persisted = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(Object.hasOwn(persisted, 'current_connection_key'), false);
+  assert.equal(persisted.schema_version, 1);
+  assert.deepEqual(persisted.connections, []);
+});
+
 test('registry mutation lock prevents lost updates across instances sharing one metadata file', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-registry-lock-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

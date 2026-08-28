@@ -131,6 +131,10 @@ local credentials and public metadata. A failed remote revoke keeps both intact 
 different from `use(workspace)`: connection lifecycle selects a complete Hub/client/workspace
 instance, while `use()` rebinds the same instance within the workspaces already granted to its
 current business authorization. It never turns one authorized identity into another.
+If the removed connection was current, the same atomic registry mutation selects the remaining
+entry with the lexicographically smallest opaque connection key. Only removing the final entry
+returns `currentConnectionKey: null`. The fallback selection affects new sessions only; existing
+conversations and runs remain pinned to their captured connection.
 
 Existing deterministic v1 registry entries remain readable and keep their credential key. The
 registry is written as schema v2 only while at least one named instance exists; the
