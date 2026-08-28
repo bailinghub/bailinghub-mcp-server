@@ -176,6 +176,12 @@ test('factory manages multiple public connections without exposing credentials',
   assert.equal(selected.connection.connectionName, 'development');
   assert.equal((await registry.current()).alias, 'development');
 
+  await transport.connectionsUse('second hub');
+  const secondStatus = await transport.status({ connectionName: 'second hub' });
+  assert.equal(secondStatus.state, 'logged_out');
+  assert.equal(secondStatus.workspace, 'staff');
+  await transport.connectionsUse('development');
+
   const second = await registry.getByAlias('second hub');
   await connectionStore.credentialStore(second.connectionKey).save({
     ...credentials('staff'), base_url: 'https://other.example.com',

@@ -230,12 +230,13 @@ export function createAgentClientTransport(
     selectorValue: unknown,
     workspaceValue?: unknown,
   ): Promise<AgentConnectionProfile> {
+    const hasExplicitSelector = typeof selectorValue === 'string' && selectorValue.trim().length > 0;
     const selector = normalizedConnectionName(selectorValue ?? defaultConnectionName);
     let profile = CONNECTION_KEY_PATTERN.test(selector)
       ? await connections.registry.get(selector)
       : await connections.registry.getByAlias(selector);
     const workspace = workspaceValue === undefined
-      ? defaultWorkspace
+      ? (hasExplicitSelector ? undefined : defaultWorkspace)
       : normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
     if (!profile && workspace && !CONNECTION_KEY_PATTERN.test(selector)) {
       profile = await connections.register(
