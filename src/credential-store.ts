@@ -63,16 +63,17 @@ function closeNetServer(server: NetServer): Promise<void> {
 }
 
 /**
- * A loopback listen socket is an OS-released, crash-safe cross-process mutex. The lock key is
- * hashed to a stable local port and never contains credentials. A rare unrelated port
- * collision fails closed after a bounded wait.
+ * Crash-safe, cross-process mutex for short local Agent state transitions.
+ * The key is hashed before it is mapped to a loopback TCP port and must never contain credentials.
+ * The OS releases the listener after a crash; a rare unrelated hash/port collision only serializes
+ * the operation or fails closed after the bounded wait.
  */
-class LoopbackRefreshLock {
+export class LocalAgentOperationLock {
   private readonly port: number;
 
   constructor(key: string) {
-    const value = createHash('sha256').update(key).digest().readUInt32BE(0);
-    this.port = 40_000 + (value % 10_000);
+    const digest = createHash('sha256').update(key).digest();
+    this.port = 10_000 + (digest.readUInt32BE(0) % 30_000);
   }
 
   async withLock<T>(work: () => Promise<T>): Promise<T> {
@@ -82,9 +83,7 @@ class LoopbackRefreshLock {
       server = await this.tryAcquire();
       if (server) break;
       if (Date.now() >= deadline) {
-        throw new Error(
-          'Timed out waiting for another BailingHub process to finish a credential operation.',
-        );
+        throw new LocalAgentOperationLockTimeoutError();
       }
       await sleep(REFRESH_LOCK_POLL_MILLISECONDS);
     }
@@ -103,13 +102,17 @@ class LoopbackRefreshLock {
           resolve(undefined);
           return;
         }
-        reject(new Error('Could not acquire the local Agent refresh lock.'));
+        reject(new Error('Could not acquire the local Agent operation lock.'));
       });
-      server.listen(
-        { host: '127.0.0.1', port: this.port, exclusive: true },
-        () => resolve(server),
-      );
+      server.listen({ host: '127.0.0.1', port: this.port, exclusive: true }, () => resolve(server));
     });
+  }
+}
+
+export class LocalAgentOperationLockTimeoutError extends Error {
+  constructor() {
+    super('Timed out waiting for another BailingHub process to finish a local Agent operation.');
+    this.name = 'LocalAgentOperationLockTimeoutError';
   }
 }
 
@@ -266,7 +269,7 @@ export const runCommand = createCommandRunner();
 
 export class MacOsKeychainCredentialStore implements CredentialStore {
   readonly description = 'macOS Keychain';
-  private readonly refreshLock: LoopbackRefreshLock;
+  private readonly refreshLock: LocalAgentOperationLock;
 
   constructor(
     private readonly commandRunner: CommandRunner = runCommand,
@@ -275,7 +278,7 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
     if (!/^[A-Za-z0-9._-]{1,128}$/.test(account)) {
       throw new Error('The Keychain credential account is invalid.');
     }
-    this.refreshLock = new LoopbackRefreshLock(
+    this.refreshLock = new LocalAgentOperationLock(
       `keychain:${process.getuid?.() ?? 'user'}:${KEYCHAIN_SERVICE}:${account}`,
     );
   }
@@ -356,11 +359,11 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
 
 export class FileCredentialStore implements CredentialStore {
   readonly description: string;
-  private readonly refreshLock: LoopbackRefreshLock;
+  private readonly refreshLock: LocalAgentOperationLock;
 
   constructor(private readonly path: string) {
     this.description = 'explicit mode-0600 file store';
-    this.refreshLock = new LoopbackRefreshLock(`file:${path}`);
+    this.refreshLock = new LocalAgentOperationLock(`file:${path}`);
   }
 
   async load(): Promise<AgentCredentials | undefined> {

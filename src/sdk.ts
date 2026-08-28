@@ -24,6 +24,7 @@ import {
   type AgentConnectionStoreOptions,
 } from './connections.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
+import { LocalAgentOperationLockTimeoutError } from './credential-store.js';
 
 export {
   AgentClientTransport,
@@ -303,6 +304,275 @@ export function createAgentClientTransport(
     return new AgentSessionManager(store, fetchImpl, dependencies.now);
   }
 
+  function connectionReference(profile: AgentConnectionProfile): Record<string, unknown> {
+    return {
+      connectionKey: profile.connectionKey,
+      ...(profile.alias ? { connectionName: profile.alias } : {}),
+    };
+  }
+
+  async function reconcileSameIdentityConnections(
+    profileValue: AgentConnectionProfile,
+    options: { replacementConnectionKey?: string; replacementAlias?: string } = {},
+  ): Promise<{
+    profile: AgentConnectionProfile;
+    identityReconciliation: 'not_needed' | 'distinct' | 'replaced' | 'deferred' | 'cleanup_required';
+    cleanupRequired: boolean;
+    replacedConnections: Record<string, unknown>[];
+    cleanupConnections: Record<string, unknown>[];
+    warning?: string;
+  }> {
+    return connections.withBindingLock(profileValue, async () => {
+      let profile = await connections.registry.get(profileValue.connectionKey);
+      if (!profile) {
+        throw new Error('The newly authorized Agent connection is no longer registered.');
+      }
+      const profileStore = connections.credentialStore(profile.connectionKey);
+      let currentSession;
+      try {
+        currentSession = await new AgentSessionManager(
+          profileStore,
+          fetchImpl,
+          dependencies.now,
+        ).getSession();
+      } catch {
+        if (!await profileStore.load()) {
+          throw new Error('The newly authorized Agent Session became invalid and its local login was removed.');
+        }
+        try {
+          profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+            ...(options.replacementAlias
+              ? { allocateAliasFrom: options.replacementAlias }
+              : {}),
+          });
+        } catch {
+          return {
+            profile,
+            identityReconciliation: 'cleanup_required',
+            cleanupRequired: true,
+            replacedConnections: [],
+            cleanupConnections: [connectionReference(profile)],
+            warning: 'Authorization succeeded, but identity inspection and local connection promotion both need retry. Do not authorize again.',
+          };
+        }
+        return {
+          profile,
+          identityReconciliation: 'deferred',
+          cleanupRequired: true,
+          replacedConnections: [],
+          cleanupConnections: [],
+          warning: 'Authorization succeeded, but same-identity reconciliation was deferred. Do not authorize again; retry status or cleanup later.',
+        };
+      }
+
+      const activeProfile = profile;
+      const candidates = (await connections.registry.list()).filter((candidate) =>
+        candidate.connectionKey !== activeProfile.connectionKey &&
+        profileMatches(candidate, activeProfile),
+      );
+      let replacementTarget: AgentConnectionProfile | undefined;
+      if (options.replacementAlias) {
+        const aliasOwner = await connections.registry.getByAlias(options.replacementAlias);
+        if (aliasOwner && aliasOwner.connectionKey !== activeProfile.connectionKey && profileMatches(aliasOwner, activeProfile)) {
+          replacementTarget = aliasOwner;
+        }
+      } else if (options.replacementConnectionKey) {
+        const selected = await connections.registry.get(options.replacementConnectionKey);
+        if (selected && selected.connectionKey !== activeProfile.connectionKey && profileMatches(selected, activeProfile)) {
+          replacementTarget = selected;
+        }
+      }
+
+      const sameIdentity: AgentConnectionProfile[] = [];
+      const deferred: AgentConnectionProfile[] = [];
+      const inspectedConnectionKeys = new Set<string>();
+      let invalidReplacementTarget: AgentConnectionProfile | undefined;
+      let inspectedActiveConnection = false;
+      const reconcileMissingReplacement = async (
+        candidate: AgentConnectionProfile,
+        store: ReturnType<AgentConnectionStore['credentialStore']>,
+      ): Promise<'retired' | 'present' | 'deferred'> => {
+        if (!store.withRefreshLock) return 'deferred';
+        try {
+          return await store.withRefreshLock(async () => {
+            if (await store.load()) return 'present';
+            try {
+              profile = await connections.registry.reconcileToSurvivor(activeProfile.connectionKey, {
+                retiredConnectionKeys: [candidate.connectionKey],
+                ...(options.replacementAlias ? { alias: options.replacementAlias } : {}),
+              });
+            } catch {
+              return 'deferred';
+            }
+            return 'retired';
+          });
+        } catch {
+          return 'deferred';
+        }
+      };
+      for (const candidate of candidates) {
+        const store = connections.credentialStore(candidate.connectionKey);
+        let storedCredentials;
+        try {
+          storedCredentials = await store.load();
+        } catch {
+          deferred.push(candidate);
+          continue;
+        }
+        if (!storedCredentials) {
+          if (candidate.connectionKey !== replacementTarget?.connectionKey) continue;
+          const missingState = await reconcileMissingReplacement(candidate, store);
+          if (missingState === 'retired') {
+            invalidReplacementTarget = candidate;
+            continue;
+          }
+          if (missingState === 'deferred') {
+            deferred.push(candidate);
+            continue;
+          }
+        }
+        try {
+          const session = await new AgentSessionManager(store, fetchImpl, dependencies.now).getSession();
+          inspectedActiveConnection = true;
+          inspectedConnectionKeys.add(candidate.connectionKey);
+          if (session.on_behalf_of === currentSession.on_behalf_of) sameIdentity.push(candidate);
+        } catch {
+          // Definitively invalid Sessions delete their local credential and do not participate.
+          // Transient failures keep the credential and defer all destructive reconciliation.
+          let remainingCredentials;
+          try {
+            remainingCredentials = await store.load();
+          } catch {
+            deferred.push(candidate);
+            continue;
+          }
+          if (remainingCredentials) {
+            deferred.push(candidate);
+          } else if (candidate.connectionKey === replacementTarget?.connectionKey) {
+            const missingState = await reconcileMissingReplacement(candidate, store);
+            if (missingState === 'retired') {
+              invalidReplacementTarget = candidate;
+            } else {
+              deferred.push(candidate);
+            }
+          }
+        }
+      }
+
+      if (deferred.length > 0) {
+        try {
+          profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+            ...(invalidReplacementTarget
+              ? { retiredConnectionKeys: [invalidReplacementTarget.connectionKey] }
+              : {}),
+            ...(invalidReplacementTarget && options.replacementAlias
+              ? { alias: options.replacementAlias }
+              : options.replacementAlias
+              ? { allocateAliasFrom: options.replacementAlias }
+              : {}),
+          });
+        } catch {
+          return {
+            profile,
+            identityReconciliation: 'cleanup_required',
+            cleanupRequired: true,
+            replacedConnections: [],
+            cleanupConnections: [
+              ...deferred.map(connectionReference),
+              ...(invalidReplacementTarget ? [connectionReference(invalidReplacementTarget)] : []),
+              connectionReference(profile),
+            ],
+            warning: 'Authorization succeeded, but an existing login could not be inspected and local promotion needs retry. Do not authorize again.',
+          };
+        }
+        return {
+          profile,
+          identityReconciliation: 'deferred',
+          cleanupRequired: true,
+          replacedConnections: invalidReplacementTarget
+            ? [connectionReference(invalidReplacementTarget)]
+            : [],
+          cleanupConnections: deferred.map(connectionReference),
+          warning: 'Authorization succeeded, but at least one existing login could not be inspected. No old Session was revoked; do not authorize again.',
+        };
+      }
+
+      const duplicateByKey = new Map<string, AgentConnectionProfile>();
+      for (const candidate of sameIdentity) duplicateByKey.set(candidate.connectionKey, candidate);
+      const revoked: AgentConnectionProfile[] = [];
+      const cleanup: AgentConnectionProfile[] = [];
+      for (const duplicate of duplicateByKey.values()) {
+        const manager = new AgentSessionManager(
+          connections.credentialStore(duplicate.connectionKey),
+          fetchImpl,
+          dependencies.now,
+        );
+        try {
+          await manager.logout();
+          revoked.push(duplicate);
+        } catch {
+          cleanup.push(duplicate);
+        }
+      }
+
+      const replacementWasRevoked = replacementTarget !== undefined &&
+        revoked.some((item) => item.connectionKey === replacementTarget.connectionKey);
+      const replacementWasInspected = replacementTarget !== undefined &&
+        inspectedConnectionKeys.has(replacementTarget.connectionKey);
+      const retired = [
+        ...revoked,
+        ...(invalidReplacementTarget ? [invalidReplacementTarget] : []),
+      ];
+      try {
+        profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+          retiredConnectionKeys: retired.map((item) => item.connectionKey),
+          ...((replacementWasRevoked || invalidReplacementTarget) && options.replacementAlias
+            ? { alias: options.replacementAlias }
+            : replacementWasInspected && options.replacementAlias
+              ? { allocateAliasFrom: options.replacementAlias }
+            : {}),
+        });
+      } catch {
+        const cleanupConnections = [...cleanup, ...retired].map(connectionReference);
+        return {
+          profile,
+          identityReconciliation: 'cleanup_required',
+          cleanupRequired: true,
+          replacedConnections: [],
+          cleanupConnections,
+          warning: 'Authorization succeeded and some old Sessions may already be revoked, but local connection cleanup needs retry. Do not authorize again.',
+        };
+      }
+
+      if (cleanup.length > 0) {
+        return {
+          profile,
+          identityReconciliation: 'cleanup_required',
+          cleanupRequired: true,
+          replacedConnections: retired.map(connectionReference),
+          cleanupConnections: cleanup.map(connectionReference),
+          warning: 'Authorization succeeded, but at least one earlier Session could not be revoked. Use connection removal to retry cleanup; do not authorize again.',
+        };
+      }
+      if (retired.length > 0) {
+        return {
+          profile,
+          identityReconciliation: 'replaced',
+          cleanupRequired: false,
+          replacedConnections: retired.map(connectionReference),
+          cleanupConnections: [],
+        };
+      }
+      return {
+        profile,
+        identityReconciliation: inspectedActiveConnection ? 'distinct' : 'not_needed',
+        cleanupRequired: false,
+        replacedConnections: [],
+        cleanupConnections: [],
+      };
+    });
+  }
+
   async function clientFor(
     workspaceValue: unknown,
     options: Record<string, unknown> = {},
@@ -439,25 +709,79 @@ export function createAgentClientTransport(
         ? await connections.register(descriptor, { makeCurrent: true })
         : await connections.registerInstance(descriptor, { alias, makeCurrent: true }));
       if (!profile.connectionInstanceId) await connections.migrateLegacy(profile);
-      const store = connections.credentialStore(profile.connectionKey);
-      const credentials = await (dependencies.loginImpl ?? performAgentLogin)({
-        baseUrl: profile.baseUrl,
-        clientAppId: profile.clientAppId,
-        route: profile.workspace,
-        deviceLabel: optionalHostText(input.deviceLabel, 'deviceLabel', 128) ??
-          configValue.deviceLabel ?? 'BailingHub Agent Client',
-      }, {
-        store,
-        fetchImpl,
-        ...(dependencies.createLoopbackReceiver ? { createLoopbackReceiver: dependencies.createLoopbackReceiver } : {}),
-        ...(dependencies.openBrowser ? { openBrowser: dependencies.openBrowser } : {}),
-        ...(dependencies.randomBytesImpl ? { randomBytesImpl: dependencies.randomBytesImpl } : {}),
-        ...(dependencies.now ? { now: dependencies.now } : {}),
-      });
-      if (!CONNECTION_KEY_PATTERN.test(alias) && !profile.alias) {
-        profile = await connections.registry.assignAlias(profile.connectionKey, alias);
+      let replacementConnectionKey: string | undefined;
+      let replacementAlias: string | undefined;
+      if (await connections.credentialStore(profile.connectionKey).load()) {
+        // Reauthorization is staged in a fresh credential slot. Cancelling the browser flow can
+        // therefore never destroy the selected working Session.
+        replacementConnectionKey = profile.connectionKey;
+        replacementAlias = profile.alias ?? (!CONNECTION_KEY_PATTERN.test(alias) ? alias : undefined);
+        profile = await connections.registerStagingInstance(descriptor);
       }
-      await connections.registry.setCurrent(profile.connectionKey);
+      const store = connections.credentialStore(profile.connectionKey);
+      let credentials;
+      try {
+        credentials = await (dependencies.loginImpl ?? performAgentLogin)({
+          baseUrl: profile.baseUrl,
+          clientAppId: profile.clientAppId,
+          route: profile.workspace,
+          deviceLabel: optionalHostText(input.deviceLabel, 'deviceLabel', 128) ??
+            configValue.deviceLabel ?? 'BailingHub Agent Client',
+        }, {
+          store,
+          fetchImpl,
+          ...(dependencies.createLoopbackReceiver ? { createLoopbackReceiver: dependencies.createLoopbackReceiver } : {}),
+          ...(dependencies.openBrowser ? { openBrowser: dependencies.openBrowser } : {}),
+          ...(dependencies.randomBytesImpl ? { randomBytesImpl: dependencies.randomBytesImpl } : {}),
+          ...(dependencies.now ? { now: dependencies.now } : {}),
+        });
+      } catch (error) {
+        if (replacementConnectionKey && !await store.load()) {
+          await connections.registry.remove(profile.connectionKey).catch(() => undefined);
+        }
+        throw error;
+      }
+      if (!CONNECTION_KEY_PATTERN.test(alias) && !profile.alias) {
+        if (!replacementConnectionKey) {
+          profile = await connections.registry.assignAlias(profile.connectionKey, alias);
+        }
+      }
+      if (replacementConnectionKey && replacementAlias && !profile.alias) {
+        try {
+          // Give a safely persisted staged Session a readable selector before network-bound
+          // reconciliation. This never steals the selected connection's existing alias.
+          profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+            allocateAliasFrom: replacementAlias,
+          });
+        } catch {
+          // This promotion is best-effort. The binding-locked reconciliation below retries the
+          // same atomic registry write and reports cleanup_required if persistence still fails.
+        }
+      }
+      let reconciliation;
+      try {
+        reconciliation = await reconcileSameIdentityConnections(profile, {
+          ...(replacementConnectionKey ? { replacementConnectionKey } : {}),
+          ...(replacementAlias ? { replacementAlias } : {}),
+        });
+      } catch (error) {
+        if (!(error instanceof LocalAgentOperationLockTimeoutError)) throw error;
+        const persisted = await store.load();
+        const registered = await connections.registry.get(profile.connectionKey);
+        if (!persisted || !registered) throw error;
+        profile = registered;
+        reconciliation = {
+          profile,
+          identityReconciliation: 'cleanup_required' as const,
+          cleanupRequired: true,
+          replacedConnections: [],
+          cleanupConnections: [],
+          warning: 'Authorization succeeded, but same-binding reconciliation is still running in another local process. Do not authorize again; retry status or cleanup later.',
+        };
+      }
+      profile = reconciliation.profile;
+      const replacedConnectionNames = reconciliation.replacedConnections
+        .flatMap((item) => typeof item.connectionName === 'string' ? [item.connectionName] : []);
       return {
         state: 'authorized',
         connectionKey: profile.connectionKey,
@@ -466,6 +790,12 @@ export function createAgentClientTransport(
         sessionId: credentials.session_id,
         expiresAt: credentials.access_expires_at,
         refreshExpiresAt: credentials.refresh_expires_at,
+        identityReconciliation: reconciliation.identityReconciliation,
+        cleanupRequired: reconciliation.cleanupRequired,
+        replacedConnections: reconciliation.replacedConnections,
+        cleanupConnections: reconciliation.cleanupConnections,
+        ...(reconciliation.warning ? { warning: reconciliation.warning } : {}),
+        ...(replacedConnectionNames.length > 0 ? { replacedConnectionNames } : {}),
       };
     },
 

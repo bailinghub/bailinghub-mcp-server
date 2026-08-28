@@ -9,6 +9,7 @@ import {
   AgentConnectionStore,
   createAgentClientTransport,
 } from '../dist/sdk.js';
+import { LocalAgentOperationLockTimeoutError } from '../dist/credential-store.js';
 
 const RUN_ID = '22222222-2222-4222-8222-222222222222';
 const CAPABILITY_REVISION = 'a'.repeat(64);
@@ -37,7 +38,7 @@ function tool() {
   };
 }
 
-async function setup(t) {
+async function setup(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-host-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
@@ -52,21 +53,35 @@ async function setup(t) {
   });
   const calls = [];
   let loginCount = 0;
+  const sessionByAccessToken = new Map();
+  const sessionCallsByAccessToken = new Map();
   const fetchImpl = async (url, init) => {
     const path = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
     const authorization = new Headers(init.headers).get('authorization');
     calls.push({ url: String(url), path, method: init.method, body, authorization });
     if (path === '/agent-auth/v1/session') {
-      const identity = authorization?.endsWith('-2') ? '2' : '1';
+      const accessToken = authorization?.replace(/^Bearer\s+/u, '') ?? '';
+      const sessionCall = (sessionCallsByAccessToken.get(accessToken) ?? 0) + 1;
+      sessionCallsByAccessToken.set(accessToken, sessionCall);
+      const forcedStatus = options.sessionStatusSequences?.[accessToken]?.[sessionCall - 1];
+      if (forcedStatus && forcedStatus !== 200) {
+        return new Response('{}', { status: forcedStatus });
+      }
+      const issued = sessionByAccessToken.get(accessToken);
+      const identity = issued?.identity ?? (authorization?.endsWith('-2') ? '2' : '1');
+      const sessionId = issued?.sessionId ?? `session-${identity}`;
       return new Response(JSON.stringify({
-        session_id: `session-${identity}`, client_app_id: 'example-agent-client',
-        device_label: 'test', principal: { id: `user-${identity}` }, on_behalf_of: `tenant:user-${identity}`,
+        session_id: sessionId, client_app_id: 'example-agent-client',
+        device_label: 'test', principal: { id: issued?.principalId ?? `user-${identity}` },
+        on_behalf_of: issued?.onBehalfOf ?? `tenant:user-${identity}`,
         allowed_routes: ['orders', 'staff'], created_at: '2026-01-01T00:00:00.000Z',
         expires_at: '2099-01-01T00:00:00.000Z', refresh_expires_at: '2099-02-01T00:00:00.000Z',
       }), { status: 200 });
     }
-    if (path === '/agent-auth/v1/revoke') return new Response('{}', { status: 200 });
+    if (path === '/agent-auth/v1/revoke') {
+      return new Response('{}', { status: options.revokeStatus ?? 200 });
+    }
     if (path === '/agent-api/v1/workspaces') {
       return new Response(JSON.stringify({
         schema_version: 'bailing.agent-workspaces.v1',
@@ -120,14 +135,25 @@ async function setup(t) {
     fetchImpl,
     loginImpl: async (config, dependencies) => {
       loginCount += 1;
+      const loginError = options.loginErrors?.[loginCount - 1];
+      if (loginError) throw loginError;
+      const identity = options.loginIdentities?.[loginCount - 1] ?? String(loginCount);
+      const loginSession = options.loginSessions?.[loginCount - 1] ?? {};
+      const accessToken = `access-secret-${loginCount}`;
+      sessionByAccessToken.set(accessToken, {
+        identity,
+        sessionId: `session-${loginCount}`,
+        ...loginSession,
+      });
       const value = {
         ...credentials(config.route), session_id: `session-${loginCount}`,
-        access_token: `access-secret-${loginCount}`,
+        access_token: accessToken,
         refresh_token: `refresh-secret-${loginCount}`,
         base_url: config.baseUrl,
         client_app_id: config.clientAppId,
       };
       await dependencies.store.save(value);
+      await options.afterLoginSave?.({ loginCount, credentials: value });
       return value;
     },
   });
@@ -240,6 +266,416 @@ test('factory authorizes, switches, rebinds, and revokes same-binding identities
   assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
 });
 
+test('factory replaces an earlier local connection after the same trusted identity authorizes again', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '1'],
+  });
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+
+  await transport.connectionsAdd({ connectionName: 'older account', ...binding });
+  await transport.login({ connectionName: 'older account' });
+  const older = await registry.getByAlias('older account');
+  await transport.connectionsAdd({ connectionName: 'reauthorized account', ...binding });
+  const result = await transport.login({ connectionName: 'reauthorized account' });
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'replaced');
+  assert.equal(result.cleanupRequired, false);
+  assert.deepEqual(result.replacedConnectionNames, ['older account']);
+  assert.equal(await registry.getByAlias('older account'), undefined);
+  assert.equal(await connectionStore.credentialStore(older.connectionKey).load(), undefined);
+  assert.equal((await registry.getByAlias('reauthorized account')).connectionKey, result.connectionKey);
+  assert.equal((await transport.status({ connectionName: 'reauthorized account' })).onBehalfOf, 'tenant:user-1');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
+  assert.equal(JSON.stringify(result).includes('access-secret'), false);
+  assert.equal(JSON.stringify(result).includes('refresh-secret'), false);
+});
+
+test('factory reconciles only trusted on_behalf_of, not the display principal', async (t) => {
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  const samePrincipal = await setup(t, {
+    loginSessions: [
+      { principalId: 'shared-user', onBehalfOf: 'tenant-a:shared-user' },
+      { principalId: 'shared-user', onBehalfOf: 'tenant-b:shared-user' },
+    ],
+  });
+  await samePrincipal.transport.connectionsAdd({ connectionName: 'tenant-a', ...binding });
+  await samePrincipal.transport.login({ connectionName: 'tenant-a' });
+  await samePrincipal.transport.connectionsAdd({ connectionName: 'tenant-b', ...binding });
+  const distinct = await samePrincipal.transport.login({ connectionName: 'tenant-b' });
+  assert.equal(distinct.identityReconciliation, 'distinct');
+  assert.equal((await samePrincipal.registry.list()).length, 2);
+
+  const sameSubject = await setup(t, {
+    loginSessions: [
+      { principalId: 'user-a', onBehalfOf: 'tenant-shared:actor' },
+      { principalId: 'user-b', onBehalfOf: 'tenant-shared:actor' },
+    ],
+  });
+  await sameSubject.transport.connectionsAdd({ connectionName: 'older', ...binding });
+  await sameSubject.transport.login({ connectionName: 'older' });
+  await sameSubject.transport.connectionsAdd({ connectionName: 'newer', ...binding });
+  const replaced = await sameSubject.transport.login({ connectionName: 'newer' });
+  assert.equal(replaced.identityReconciliation, 'replaced');
+  assert.equal((await sameSubject.registry.list()).length, 1);
+});
+
+test('factory keeps both same-identity connections when replacement revocation fails', async (t) => {
+  const { connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '1'],
+    revokeStatus: 503,
+  });
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+
+  await transport.connectionsAdd({ connectionName: 'protected older account', ...binding });
+  await transport.login({ connectionName: 'protected older account' });
+  const older = await registry.getByAlias('protected older account');
+  await transport.connectionsAdd({ connectionName: 'new account login', ...binding });
+  const result = await transport.login({ connectionName: 'new account login' });
+
+  const newer = await registry.getByAlias('new account login');
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'cleanup_required');
+  assert.equal(result.cleanupRequired, true);
+  assert.match(result.warning, /Authorization succeeded.*do not authorize again/u);
+  assert.deepEqual(result.cleanupConnections, [{
+    connectionKey: older.connectionKey,
+    connectionName: 'protected older account',
+  }]);
+  assert.ok(await connectionStore.credentialStore(older.connectionKey).load());
+  assert.ok(await connectionStore.credentialStore(newer.connectionKey).load());
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+});
+
+test('factory stages same-alias reauthorization so cancellation preserves the working Session', async (t) => {
+  const { connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+    loginErrors: [undefined, new Error('browser authorization cancelled')],
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+
+  await assert.rejects(transport.login(), /browser authorization cancelled/u);
+
+  assert.equal((await registry.getByAlias('development')).connectionKey, original.connectionKey);
+  assert.equal((await transport.status()).onBehalfOf, 'tenant:user-1');
+  assert.ok(await connectionStore.credentialStore(original.connectionKey).load());
+  assert.equal((await registry.list()).length, 1);
+});
+
+test('factory stages same-alias same-identity reauthorization and replaces the earlier Session', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '1'],
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+
+  const result = await transport.login();
+  const current = await registry.getByAlias('development');
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'replaced');
+  assert.notEqual(current.connectionKey, original.connectionKey);
+  assert.equal(result.connectionKey, current.connectionKey);
+  assert.equal((await transport.status()).onBehalfOf, 'tenant:user-1');
+  assert.equal(await connectionStore.credentialStore(original.connectionKey).load(), undefined);
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
+});
+
+test('factory keeps the original alias identity when same-alias reauthorization confirms a different identity', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+
+  const result = await transport.login();
+  const current = await registry.current();
+  const retained = await registry.getByAlias('development');
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'distinct');
+  assert.equal(result.cleanupRequired, false);
+  assert.equal(result.connectionName, 'development-2');
+  assert.equal(retained.connectionKey, original.connectionKey);
+  assert.equal(current.connectionKey, result.connectionKey);
+  assert.notEqual(current.connectionKey, original.connectionKey);
+  assert.equal((await registry.getByAlias('development-2')).connectionKey, result.connectionKey);
+  assert.equal((await registry.list()).length, 2);
+  assert.equal((await connectionStore.load(original.connectionKey)).credentials.session_id, 'session-1');
+  assert.equal((await connectionStore.load(result.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal((await transport.status({ connectionKey: original.connectionKey })).onBehalfOf, 'tenant:user-1');
+  assert.equal((await transport.status({ connectionKey: result.connectionKey })).onBehalfOf, 'tenant:user-2');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
+test('factory preserves the original alias when same-alias identity inspection is deferred', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+    sessionStatusSequences: {
+      'access-secret-1': [200, 503],
+    },
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+
+  const result = await transport.login();
+  const current = await registry.current();
+  const retained = await registry.getByAlias('development');
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'deferred');
+  assert.equal(result.cleanupRequired, true);
+  assert.equal(result.connectionName, 'development-2');
+  assert.deepEqual(result.cleanupConnections, [{
+    connectionKey: original.connectionKey,
+    connectionName: 'development',
+  }]);
+  assert.equal(retained.connectionKey, original.connectionKey);
+  assert.equal(current.connectionKey, result.connectionKey);
+  assert.notEqual(current.connectionKey, original.connectionKey);
+  assert.equal((await registry.getByAlias('development-2')).connectionKey, result.connectionKey);
+  assert.equal((await registry.list()).length, 2);
+  assert.equal((await connectionStore.load(original.connectionKey)).credentials.session_id, 'session-1');
+  assert.equal((await connectionStore.load(result.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal((await transport.status({ connectionName: 'development' })).onBehalfOf, 'tenant:user-1');
+  assert.equal((await transport.status({ connectionName: 'development-2' })).onBehalfOf, 'tenant:user-2');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
+test('factory retires a definitively invalid selected Session before transferring its alias', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+    sessionStatusSequences: {
+      'access-secret-1': [200, 401],
+    },
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+
+  const result = await transport.login();
+  const current = await registry.current();
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'replaced');
+  assert.equal(result.cleanupRequired, false);
+  assert.equal(result.connectionName, 'development');
+  assert.equal(result.connectionKey, current.connectionKey);
+  assert.notEqual(result.connectionKey, original.connectionKey);
+  assert.equal((await registry.getByAlias('development')).connectionKey, result.connectionKey);
+  assert.equal((await registry.list()).length, 1);
+  assert.equal(await connectionStore.credentialStore(original.connectionKey).load(), undefined);
+  assert.equal((await connectionStore.load(result.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal((await transport.status()).onBehalfOf, 'tenant:user-2');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
+test('factory transfers the alias when the selected credential disappears during browser authorization', async (t) => {
+  let selectedStore;
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+    afterLoginSave: async ({ loginCount }) => {
+      if (loginCount === 2) await selectedStore.delete();
+    },
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+  selectedStore = connectionStore.credentialStore(original.connectionKey);
+
+  const result = await transport.login();
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'replaced');
+  assert.equal(result.cleanupRequired, false);
+  assert.equal(result.connectionName, 'development');
+  assert.notEqual(result.connectionKey, original.connectionKey);
+  assert.equal((await registry.getByAlias('development')).connectionKey, result.connectionKey);
+  assert.equal((await registry.current()).connectionKey, result.connectionKey);
+  assert.equal((await registry.list()).length, 1);
+  assert.equal(await selectedStore.load(), undefined);
+  assert.equal((await connectionStore.load(result.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal((await transport.status()).onBehalfOf, 'tenant:user-2');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
+test('factory does not retire an alias during another credential operation temporary gap', async (t) => {
+  let exposeTemporaryGap = false;
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+    afterLoginSave: async ({ loginCount }) => {
+      if (loginCount === 2) exposeTemporaryGap = true;
+    },
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+  const originalCredentialStore = connectionStore.credentialStore.bind(connectionStore);
+  const persistedStore = originalCredentialStore(original.connectionKey);
+  let releaseCredentialOperation;
+  const credentialOperationReleased = new Promise((resolve) => {
+    releaseCredentialOperation = resolve;
+  });
+  let observeLockAttempt;
+  const lockAttempted = new Promise((resolve) => {
+    observeLockAttempt = resolve;
+  });
+  const temporarilyEmptyStore = {
+    description: persistedStore.description,
+    load: () => exposeTemporaryGap ? Promise.resolve(undefined) : persistedStore.load(),
+    save: (value) => persistedStore.save(value),
+    delete: () => persistedStore.delete(),
+    withRefreshLock: async (work) => {
+      observeLockAttempt();
+      await credentialOperationReleased;
+      exposeTemporaryGap = false;
+      return work();
+    },
+  };
+  connectionStore.credentialStore = (connectionKey) => connectionKey === original.connectionKey
+    ? temporarilyEmptyStore
+    : originalCredentialStore(connectionKey);
+
+  const loginPromise = transport.login();
+  await lockAttempted;
+  assert.equal((await registry.getByAlias('development')).connectionKey, original.connectionKey);
+  releaseCredentialOperation();
+  const result = await loginPromise;
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'distinct');
+  assert.equal(result.connectionName, 'development-2');
+  assert.equal((await registry.getByAlias('development')).connectionKey, original.connectionKey);
+  assert.equal((await registry.getByAlias('development-2')).connectionKey, result.connectionKey);
+  assert.equal((await registry.current()).connectionKey, result.connectionKey);
+  assert.equal((await registry.list()).length, 2);
+  assert.equal((await connectionStore.load(original.connectionKey)).credentials.session_id, 'session-1');
+  assert.equal((await connectionStore.load(result.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
+test('factory returns structured cleanup when the binding lock times out after credential persistence', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+  connectionStore.withBindingLock = async () => {
+    throw new LocalAgentOperationLockTimeoutError();
+  };
+
+  const result = await transport.login();
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'cleanup_required');
+  assert.equal(result.cleanupRequired, true);
+  assert.match(result.warning, /Authorization succeeded.*another local process.*Do not authorize again/u);
+  assert.equal(result.connectionName, 'development-2');
+  assert.equal((await registry.getByAlias('development')).connectionKey, original.connectionKey);
+  assert.equal((await registry.getByAlias('development-2')).connectionKey, result.connectionKey);
+  assert.equal((await registry.current()).connectionKey, result.connectionKey);
+  assert.equal((await registry.list()).length, 2);
+  assert.equal((await connectionStore.load(original.connectionKey)).credentials.session_id, 'session-1');
+  assert.equal((await connectionStore.load(result.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
+test('factory keeps the staged credential and reports cleanup when registry promotion fails', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+  });
+  await transport.login();
+  const original = await registry.getByAlias('development');
+  registry.reconcileToSurvivor = async () => {
+    throw new Error('simulated registry persistence failure');
+  };
+
+  const result = await transport.login();
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'cleanup_required');
+  assert.equal(result.cleanupRequired, true);
+  assert.match(result.warning, /Authorization succeeded.*local connection cleanup needs retry/u);
+  assert.equal((await registry.getByAlias('development')).connectionKey, original.connectionKey);
+  assert.equal((await registry.current()).connectionKey, original.connectionKey);
+  assert.equal((await registry.list()).length, 2);
+  assert.equal((await connectionStore.load(original.connectionKey)).credentials.session_id, 'session-1');
+  assert.equal((await connectionStore.load(result.connectionKey)).credentials.session_id, 'session-2');
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
+test('factory defers reconciliation without revoking old Sessions when identity inspection is transiently unavailable', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '1'],
+    sessionStatusSequences: {
+      'access-secret-1': [200, 503],
+    },
+  });
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  await transport.connectionsAdd({ connectionName: 'older', ...binding });
+  await transport.login({ connectionName: 'older' });
+  const older = await registry.getByAlias('older');
+  await transport.connectionsAdd({ connectionName: 'newer', ...binding });
+
+  const result = await transport.login({ connectionName: 'newer' });
+
+  assert.equal(result.state, 'authorized');
+  assert.equal(result.identityReconciliation, 'deferred');
+  assert.equal(result.cleanupRequired, true);
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+  assert.ok(await connectionStore.credentialStore(older.connectionKey).load());
+  assert.ok(await connectionStore.credentialStore((await registry.getByAlias('newer')).connectionKey).load());
+});
+
+test('factory binding lock converges concurrent same-identity authorizations to one live local connection', async (t) => {
+  const { calls, connectionStore, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '1'],
+  });
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  await transport.connectionsAdd({ connectionName: 'concurrent-a', ...binding });
+  await transport.connectionsAdd({ connectionName: 'concurrent-b', ...binding });
+
+  const results = await Promise.allSettled([
+    transport.login({ connectionName: 'concurrent-a' }),
+    transport.login({ connectionName: 'concurrent-b' }),
+  ]);
+
+  const profiles = await registry.list();
+  assert.equal(results.some((item) => item.status === 'fulfilled'), true);
+  assert.equal(profiles.length, 1);
+  assert.ok(await connectionStore.credentialStore(profiles[0].connectionKey).load());
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
+  assert.equal(JSON.stringify(results).includes('refresh-secret'), false);
+});
+
+test('factory binding lock preserves concurrent authorizations for different trusted identities', async (t) => {
+  const { calls, registry, transport } = await setup(t, {
+    loginIdentities: ['1', '2'],
+  });
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  await transport.connectionsAdd({ connectionName: 'different-a', ...binding });
+  await transport.connectionsAdd({ connectionName: 'different-b', ...binding });
+
+  const results = await Promise.all([
+    transport.login({ connectionName: 'different-a' }),
+    transport.login({ connectionName: 'different-b' }),
+  ]);
+
+  assert.equal((await registry.list()).length, 2);
+  assert.deepEqual(results.map((item) => item.identityReconciliation), ['distinct', 'distinct']);
+  assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 0);
+});
+
 test('factory keeps a connection and credentials when remote revoke fails during removal', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-remove-failure-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -293,7 +729,7 @@ test('factory login/status/workspaces never expose credentials and keep a readab
   const workspaces = await transport.workspaces({ connectionName: 'development' });
   assert.deepEqual(workspaces.workspaces.map((entry) => entry.route), ['orders', 'staff']);
   assert.deepEqual(calls.map((entry) => entry.path), [
-    '/agent-auth/v1/session', '/agent-api/v1/workspaces',
+    '/agent-auth/v1/session', '/agent-auth/v1/session', '/agent-api/v1/workspaces',
   ]);
 });
 

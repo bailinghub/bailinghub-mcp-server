@@ -3,13 +3,18 @@
 ## Unreleased
 
 - Add secret-free `connectionsList`, `connectionsAdd`, `connectionsUse`, and
-  `connectionsRemove` host APIs across multiple named connection instances, including separate
-  authorizations on the same Hub/client/workspace binding.
+  `connectionsRemove` host APIs across multiple named local selectors.
 - Add a backward-readable registry migration that preserves deterministic v1 profiles and uses an
-  opaque v2 instance id only for independently authorized named instances.
+  opaque v2 instance id only for named instances, plus cross-process mutation and binding locks.
+- Stage reauthorization so cancellation preserves the working Session, then reconcile the same
+  Hub/client/workspace binding by Core's trusted `on_behalf_of`: replace the same identity locally
+  and retain different identities.
+- Return `state: authorized` with `deferred` or `cleanup_required` reconciliation metadata when an
+  older connection cannot be inspected or revoked; do not induce a second login.
+- Compare the observed Session and access token under the credential lock before deleting a login
+  after HTTP 401, so a concurrent token rotation cannot lose the newer credential.
 - Keep connection selection host-controlled and require remote Agent Session revocation before
-  local removal; removing one same-binding instance does not revoke another, while failed
-  revocation preserves the selected connection and credential for retry.
+  local removal; failed revocation preserves the selected connection and credential for retry.
 
 ## 0.2.0 - 2026-08-26
 

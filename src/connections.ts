@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import {
   FileCredentialStore,
+  LocalAgentOperationLock,
   MacOsKeychainCredentialStore,
   parseAgentCredentials,
   runCommand,
@@ -240,7 +241,15 @@ export function defaultConnectionCredentialPath(connectionKey: string): string {
 
 /** Public connection metadata only. Tokens are always stored by a separate CredentialStore. */
 export class AgentConnectionRegistry {
-  constructor(private readonly path = defaultConnectionRegistryPath()) {}
+  private readonly path: string;
+  private readonly mutationLock: LocalAgentOperationLock;
+  readonly operationScope: string;
+
+  constructor(path = defaultConnectionRegistryPath()) {
+    this.path = resolve(path);
+    this.operationScope = `registry:${this.path}`;
+    this.mutationLock = new LocalAgentOperationLock(this.operationScope);
+  }
 
   async list(): Promise<AgentConnectionProfile[]> {
     return (await this.read()).connections;
@@ -267,85 +276,89 @@ export class AgentConnectionRegistry {
     descriptorValue: AgentConnectionDescriptor,
     options: { alias?: string; makeCurrent?: boolean; now?: () => Date } = {},
   ): Promise<AgentConnectionProfile> {
-    const descriptor = normalizedDescriptor(descriptorValue);
-    const connectionKey = agentConnectionKey(descriptor);
-    const registry = await this.read();
-    const old = registry.connections.find((item) => item.connectionKey === connectionKey);
-    const alias = options.alias !== undefined ? connectionAlias(options.alias) : old?.alias;
-    if (alias && registry.connections.some((item) => item.alias === alias && item.connectionKey !== connectionKey)) {
-      throw new Error('The Agent connection alias is already in use.');
-    }
-    const now = (options.now ?? (() => new Date()))().toISOString();
-    const profile: AgentConnectionProfile = {
-      ...descriptor,
-      connectionKey,
-      ...(alias ? { alias } : {}),
-      allowInsecureHttp: descriptor.allowInsecureHttp === true,
-      createdAt: old?.createdAt ?? now,
-      updatedAt: now,
-    };
-    const connections = [
-      ...registry.connections.filter((item) => item.connectionKey !== connectionKey),
-      profile,
-    ].sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
-    if (connections.length > MAX_CONNECTIONS) throw new Error('The Agent connection registry is full.');
-    await this.write({
-      schema_version: registrySchemaVersion(connections),
-      ...((options.makeCurrent || registry.currentConnectionKey === connectionKey)
-        ? { current_connection_key: connectionKey }
-        : registry.currentConnectionKey
-          ? { current_connection_key: registry.currentConnectionKey }
-          : {}),
-      connections: connections.map(serializeProfile),
+    return this.mutationLock.withLock(async () => {
+      const descriptor = normalizedDescriptor(descriptorValue);
+      const connectionKey = agentConnectionKey(descriptor);
+      const registry = await this.read();
+      const old = registry.connections.find((item) => item.connectionKey === connectionKey);
+      const alias = options.alias !== undefined ? connectionAlias(options.alias) : old?.alias;
+      if (alias && registry.connections.some((item) => item.alias === alias && item.connectionKey !== connectionKey)) {
+        throw new Error('The Agent connection alias is already in use.');
+      }
+      const now = (options.now ?? (() => new Date()))().toISOString();
+      const profile: AgentConnectionProfile = {
+        ...descriptor,
+        connectionKey,
+        ...(alias ? { alias } : {}),
+        allowInsecureHttp: descriptor.allowInsecureHttp === true,
+        createdAt: old?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const connections = [
+        ...registry.connections.filter((item) => item.connectionKey !== connectionKey),
+        profile,
+      ].sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
+      if (connections.length > MAX_CONNECTIONS) throw new Error('The Agent connection registry is full.');
+      await this.write({
+        schema_version: registrySchemaVersion(connections),
+        ...((options.makeCurrent || registry.currentConnectionKey === connectionKey)
+          ? { current_connection_key: connectionKey }
+          : registry.currentConnectionKey
+            ? { current_connection_key: registry.currentConnectionKey }
+            : {}),
+        connections: connections.map(serializeProfile),
+      });
+      return profile;
     });
-    return profile;
   }
 
   async createInstance(
     descriptorValue: AgentConnectionDescriptor,
-    options: { alias: string; makeCurrent?: boolean; now?: () => Date; instanceId?: string },
+    options: { alias?: string; makeCurrent?: boolean; now?: () => Date; instanceId?: string } = {},
   ): Promise<AgentConnectionProfile> {
-    const descriptor = normalizedDescriptor(descriptorValue);
-    const alias = connectionAlias(options.alias);
-    const registry = await this.read();
-    if (registry.connections.some((item) => item.alias === alias)) {
-      throw new Error('The Agent connection alias is already in use.');
-    }
-    let connectionInstanceId = options.instanceId ?? newConnectionInstanceId();
-    let connectionKey = agentConnectionKeyFor(descriptor, connectionInstanceId);
-    if (options.instanceId !== undefined && !CONNECTION_INSTANCE_PATTERN.test(options.instanceId)) {
-      throw new Error('The Agent connection instance id is invalid.');
-    }
-    for (let attempt = 0; registry.connections.some((item) =>
-      item.connectionKey === connectionKey || item.connectionInstanceId === connectionInstanceId
-    ); attempt += 1) {
-      if (options.instanceId !== undefined || attempt >= 3) {
-        throw new Error('Could not allocate a unique Agent connection instance.');
+    return this.mutationLock.withLock(async () => {
+      const descriptor = normalizedDescriptor(descriptorValue);
+      const alias = options.alias === undefined ? undefined : connectionAlias(options.alias);
+      const registry = await this.read();
+      if (alias && registry.connections.some((item) => item.alias === alias)) {
+        throw new Error('The Agent connection alias is already in use.');
       }
-      connectionInstanceId = newConnectionInstanceId();
-      connectionKey = agentConnectionKeyFor(descriptor, connectionInstanceId);
-    }
-    const now = (options.now ?? (() => new Date()))().toISOString();
-    const profile: AgentConnectionProfile = {
-      ...descriptor,
-      connectionKey,
-      connectionInstanceId,
-      alias,
-      allowInsecureHttp: descriptor.allowInsecureHttp === true,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const connections = [...registry.connections, profile]
-      .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
-    if (connections.length > MAX_CONNECTIONS) throw new Error('The Agent connection registry is full.');
-    await this.write({
-      schema_version: registrySchemaVersion(connections),
-      ...((options.makeCurrent || !registry.currentConnectionKey)
-        ? { current_connection_key: connectionKey }
-        : { current_connection_key: registry.currentConnectionKey }),
-      connections: connections.map(serializeProfile),
+      let connectionInstanceId = options.instanceId ?? newConnectionInstanceId();
+      let connectionKey = agentConnectionKeyFor(descriptor, connectionInstanceId);
+      if (options.instanceId !== undefined && !CONNECTION_INSTANCE_PATTERN.test(options.instanceId)) {
+        throw new Error('The Agent connection instance id is invalid.');
+      }
+      for (let attempt = 0; registry.connections.some((item) =>
+        item.connectionKey === connectionKey || item.connectionInstanceId === connectionInstanceId
+      ); attempt += 1) {
+        if (options.instanceId !== undefined || attempt >= 3) {
+          throw new Error('Could not allocate a unique Agent connection instance.');
+        }
+        connectionInstanceId = newConnectionInstanceId();
+        connectionKey = agentConnectionKeyFor(descriptor, connectionInstanceId);
+      }
+      const now = (options.now ?? (() => new Date()))().toISOString();
+      const profile: AgentConnectionProfile = {
+        ...descriptor,
+        connectionKey,
+        connectionInstanceId,
+        ...(alias ? { alias } : {}),
+        allowInsecureHttp: descriptor.allowInsecureHttp === true,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const connections = [...registry.connections, profile]
+        .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
+      if (connections.length > MAX_CONNECTIONS) throw new Error('The Agent connection registry is full.');
+      await this.write({
+        schema_version: registrySchemaVersion(connections),
+        ...((options.makeCurrent || !registry.currentConnectionKey)
+          ? { current_connection_key: connectionKey }
+          : { current_connection_key: registry.currentConnectionKey }),
+        connections: connections.map(serializeProfile),
+      });
+      return profile;
     });
-    return profile;
   }
 
   async rebind(
@@ -353,87 +366,187 @@ export class AgentConnectionRegistry {
     descriptorValue: AgentConnectionDescriptor,
     options: { now?: () => Date } = {},
   ): Promise<AgentConnectionProfile> {
-    if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
-    const registry = await this.read();
-    const current = registry.connections.find((item) => item.connectionKey === connectionKey);
-    if (!current) throw new Error('The Agent connection is not registered.');
-    const descriptor = normalizedDescriptor(descriptorValue);
-    const nextConnectionKey = agentConnectionKeyFor(descriptor, current.connectionInstanceId);
-    if (registry.connections.some((item) => item.connectionKey === nextConnectionKey && item.connectionKey !== connectionKey)) {
-      throw new Error('The target Agent connection binding already exists.');
-    }
-    const profile: AgentConnectionProfile = {
-      ...descriptor,
-      connectionKey: nextConnectionKey,
-      ...(current.connectionInstanceId ? { connectionInstanceId: current.connectionInstanceId } : {}),
-      ...(current.alias ? { alias: current.alias } : {}),
-      allowInsecureHttp: descriptor.allowInsecureHttp === true,
-      createdAt: current.createdAt,
-      updatedAt: (options.now ?? (() => new Date()))().toISOString(),
-    };
-    const connections = registry.connections
-      .map((item) => item.connectionKey === connectionKey ? profile : item)
-      .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
-    await this.write({
-      schema_version: registrySchemaVersion(connections),
-      ...(registry.currentConnectionKey
-        ? { current_connection_key: registry.currentConnectionKey === connectionKey
-            ? nextConnectionKey
-            : registry.currentConnectionKey }
-        : {}),
-      connections: connections.map(serializeProfile),
+    return this.mutationLock.withLock(async () => {
+      if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
+      const registry = await this.read();
+      const current = registry.connections.find((item) => item.connectionKey === connectionKey);
+      if (!current) throw new Error('The Agent connection is not registered.');
+      const descriptor = normalizedDescriptor(descriptorValue);
+      const nextConnectionKey = agentConnectionKeyFor(descriptor, current.connectionInstanceId);
+      if (registry.connections.some((item) => item.connectionKey === nextConnectionKey && item.connectionKey !== connectionKey)) {
+        throw new Error('The target Agent connection binding already exists.');
+      }
+      const profile: AgentConnectionProfile = {
+        ...descriptor,
+        connectionKey: nextConnectionKey,
+        ...(current.connectionInstanceId ? { connectionInstanceId: current.connectionInstanceId } : {}),
+        ...(current.alias ? { alias: current.alias } : {}),
+        allowInsecureHttp: descriptor.allowInsecureHttp === true,
+        createdAt: current.createdAt,
+        updatedAt: (options.now ?? (() => new Date()))().toISOString(),
+      };
+      const connections = registry.connections
+        .map((item) => item.connectionKey === connectionKey ? profile : item)
+        .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
+      await this.write({
+        schema_version: registrySchemaVersion(connections),
+        ...(registry.currentConnectionKey
+          ? { current_connection_key: registry.currentConnectionKey === connectionKey
+              ? nextConnectionKey
+              : registry.currentConnectionKey }
+          : {}),
+        connections: connections.map(serializeProfile),
+      });
+      return profile;
     });
-    return profile;
   }
 
   async setCurrent(connectionKey: string): Promise<void> {
-    if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
-    const registry = await this.read();
-    if (!registry.connections.some((item) => item.connectionKey === connectionKey)) {
-      throw new Error('The Agent connection is not registered.');
-    }
-    await this.write({
-      schema_version: registrySchemaVersion(registry.connections),
-      current_connection_key: connectionKey,
-      connections: registry.connections.map(serializeProfile),
+    await this.mutationLock.withLock(async () => {
+      if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
+      const registry = await this.read();
+      if (!registry.connections.some((item) => item.connectionKey === connectionKey)) {
+        throw new Error('The Agent connection is not registered.');
+      }
+      await this.write({
+        schema_version: registrySchemaVersion(registry.connections),
+        current_connection_key: connectionKey,
+        connections: registry.connections.map(serializeProfile),
+      });
     });
   }
 
   async assignAlias(connectionKey: string, aliasValue: string): Promise<AgentConnectionProfile> {
-    if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
-    const alias = connectionAlias(aliasValue);
-    const registry = await this.read();
-    const target = registry.connections.find((item) => item.connectionKey === connectionKey);
-    if (!target) throw new Error('The Agent connection is not registered.');
-    const now = new Date().toISOString();
-    const connections: AgentConnectionProfile[] = registry.connections.map((item) => {
-      if (item.connectionKey === connectionKey) return { ...item, alias, updatedAt: now };
-      if (item.alias === alias) {
-        const { alias: _removed, ...withoutAlias } = item;
-        return withoutAlias;
-      }
-      return item;
+    return this.mutationLock.withLock(async () => {
+      if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
+      const alias = connectionAlias(aliasValue);
+      const registry = await this.read();
+      const target = registry.connections.find((item) => item.connectionKey === connectionKey);
+      if (!target) throw new Error('The Agent connection is not registered.');
+      const now = new Date().toISOString();
+      const connections: AgentConnectionProfile[] = registry.connections.map((item) => {
+        if (item.connectionKey === connectionKey) return { ...item, alias, updatedAt: now };
+        if (item.alias === alias) {
+          const { alias: _removed, ...withoutAlias } = item;
+          return withoutAlias;
+        }
+        return item;
+      });
+      await this.write({
+        schema_version: registrySchemaVersion(connections),
+        ...(registry.currentConnectionKey ? { current_connection_key: registry.currentConnectionKey } : {}),
+        connections: connections.map(serializeProfile),
+      });
+      return connections.find((item) => item.connectionKey === connectionKey)!;
     });
-    await this.write({
-      schema_version: registrySchemaVersion(connections),
-      ...(registry.currentConnectionKey ? { current_connection_key: registry.currentConnectionKey } : {}),
-      connections: connections.map(serializeProfile),
-    });
-    return connections.find((item) => item.connectionKey === connectionKey)!;
   }
 
   async remove(connectionKey: string): Promise<void> {
-    if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
-    const registry = await this.read();
-    const connections = registry.connections.filter((item) => item.connectionKey !== connectionKey);
-    if (connections.length === registry.connections.length) return;
-    const nextCurrent = registry.currentConnectionKey === connectionKey
-      ? undefined
-      : registry.currentConnectionKey;
-    await this.write({
-      schema_version: registrySchemaVersion(connections),
-      ...(nextCurrent ? { current_connection_key: nextCurrent } : {}),
-      connections: connections.map(serializeProfile),
+    await this.mutationLock.withLock(async () => {
+      if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
+      const registry = await this.read();
+      const connections = registry.connections.filter((item) => item.connectionKey !== connectionKey);
+      if (connections.length === registry.connections.length) return;
+      const nextCurrent = registry.currentConnectionKey === connectionKey
+        ? undefined
+        : registry.currentConnectionKey;
+      await this.write({
+        schema_version: registrySchemaVersion(connections),
+        ...(nextCurrent ? { current_connection_key: nextCurrent } : {}),
+        connections: connections.map(serializeProfile),
+      });
+    });
+  }
+
+  /**
+   * Atomically promotes one already-authorized candidate and retires metadata for Sessions that
+   * were successfully revoked. Alias ownership may move only within the same public binding.
+   */
+  async reconcileToSurvivor(
+    survivorConnectionKey: string,
+    options: {
+      retiredConnectionKeys?: string[];
+      alias?: string;
+      allocateAliasFrom?: string;
+      makeCurrent?: boolean;
+    } = {},
+  ): Promise<AgentConnectionProfile> {
+    return this.mutationLock.withLock(async () => {
+      if (!CONNECTION_KEY_PATTERN.test(survivorConnectionKey)) {
+        throw new Error('The Agent connection key is invalid.');
+      }
+      const retiredConnectionKeys = [...new Set(options.retiredConnectionKeys ?? [])];
+      if (retiredConnectionKeys.some((key) =>
+        !CONNECTION_KEY_PATTERN.test(key) || key === survivorConnectionKey
+      )) {
+        throw new Error('The retired Agent connection keys are invalid.');
+      }
+      if (options.alias !== undefined && options.allocateAliasFrom !== undefined) {
+        throw new Error('The Agent connection alias options are mutually exclusive.');
+      }
+      let alias = options.alias === undefined ? undefined : connectionAlias(options.alias);
+      const aliasBase = options.allocateAliasFrom === undefined
+        ? undefined
+        : connectionAlias(options.allocateAliasFrom);
+      const registry = await this.read();
+      const survivor = registry.connections.find((item) => item.connectionKey === survivorConnectionKey);
+      if (!survivor) throw new Error('The surviving Agent connection is not registered.');
+      const sameBinding = (profile: AgentConnectionProfile) =>
+        profile.baseUrl === survivor.baseUrl &&
+        profile.clientAppId === survivor.clientAppId &&
+        profile.workspace === survivor.workspace &&
+        profile.allowInsecureHttp === survivor.allowInsecureHttp;
+      const retired = registry.connections.filter((item) =>
+        retiredConnectionKeys.includes(item.connectionKey)
+      );
+      if (retired.some((item) => !sameBinding(item))) {
+        throw new Error('A retired Agent connection belongs to a different public binding.');
+      }
+      if (aliasBase && !survivor.alias) {
+        for (let index = 2; index <= MAX_CONNECTIONS + 1; index += 1) {
+          const suffix = `-${index}`;
+          const candidate = `${aliasBase.slice(0, 128 - suffix.length)}${suffix}`;
+          if (!registry.connections.some((item) => item.alias === candidate)) {
+            alias = candidate;
+            break;
+          }
+        }
+        if (!alias) throw new Error('Could not allocate a unique Agent connection alias.');
+      }
+      if (alias) {
+        const aliasOwner = registry.connections.find((item) => item.alias === alias);
+        if (aliasOwner && aliasOwner.connectionKey !== survivorConnectionKey &&
+            !retiredConnectionKeys.includes(aliasOwner.connectionKey)) {
+          throw new Error('The Agent connection alias is already in use.');
+        }
+      }
+      const now = new Date().toISOString();
+      const connections = registry.connections
+        .filter((item) => !retiredConnectionKeys.includes(item.connectionKey))
+        .map((item): AgentConnectionProfile => {
+          if (item.connectionKey === survivorConnectionKey) {
+            return {
+              ...item,
+              ...(alias ? { alias } : {}),
+              updatedAt: now,
+            };
+          }
+          return item;
+        })
+        .sort((left, right) => left.connectionKey.localeCompare(right.connectionKey));
+      const nextSurvivor = connections.find((item) => item.connectionKey === survivorConnectionKey);
+      if (!nextSurvivor) throw new Error('The surviving Agent connection was removed unexpectedly.');
+      const currentConnectionKey = options.makeCurrent === false &&
+        registry.currentConnectionKey &&
+        connections.some((item) => item.connectionKey === registry.currentConnectionKey)
+        ? registry.currentConnectionKey
+        : survivorConnectionKey;
+      await this.write({
+        schema_version: registrySchemaVersion(connections),
+        current_connection_key: currentConnectionKey,
+        connections: connections.map(serializeProfile),
+      });
+      return nextSurvivor;
     });
   }
 
@@ -549,6 +662,32 @@ export class AgentConnectionStore {
     options: { alias: string; makeCurrent?: boolean },
   ): Promise<AgentConnectionProfile> {
     return this.registry.createInstance(descriptor, options);
+  }
+
+  async registerStagingInstance(
+    descriptor: AgentConnectionDescriptor,
+  ): Promise<AgentConnectionProfile> {
+    return this.registry.createInstance(descriptor, { makeCurrent: false });
+  }
+
+  withBindingLock<T>(
+    descriptorValue: AgentConnectionDescriptor,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const descriptor = normalizedDescriptor(descriptorValue);
+    const digest = createHash('sha256')
+      .update('bailinghub.agent-binding-operation.v1\0')
+      .update(this.registry.operationScope)
+      .update('\0')
+      .update(descriptor.baseUrl)
+      .update('\0')
+      .update(descriptor.clientAppId)
+      .update('\0')
+      .update(descriptor.workspace)
+      .update('\0')
+      .update(descriptor.allowInsecureHttp === true ? '1' : '0')
+      .digest('hex');
+    return new LocalAgentOperationLock(`binding:${digest}`).withLock(work);
   }
 
   async save(

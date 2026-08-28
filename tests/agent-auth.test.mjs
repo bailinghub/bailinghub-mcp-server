@@ -511,6 +511,38 @@ test('refresh rotation clears stale local credentials when the rotated token can
   assert.equal(revokeCount, 1);
 });
 
+test('session 401 does not delete credentials rotated after the observed access request', async () => {
+  const rotated = {
+    ...OLD_CREDENTIALS,
+    session_id: 'rotated-session',
+    access_token: 'rotated-access-secret',
+    refresh_token: 'rotated-refresh-secret',
+  };
+  const store = new MemoryCredentialStore(OLD_CREDENTIALS);
+  const observedTokens = [];
+  const manager = new AgentSessionManager(store, async (url, init) => {
+    assert.equal(String(url), 'https://old-hub.example.com/agent-auth/v1/session');
+    const authorization = init.headers.Authorization;
+    observedTokens.push(authorization);
+    if (authorization === 'Bearer old-access-secret') {
+      await store.save(rotated);
+      return jsonResponse({}, 401);
+    }
+    assert.equal(authorization, 'Bearer rotated-access-secret');
+    return jsonResponse({
+      ...SESSION_RESPONSE,
+      session_id: 'rotated-session',
+    });
+  });
+
+  assert.equal((await manager.getSession()).session_id, 'rotated-session');
+  assert.deepEqual(await store.load(), rotated);
+  assert.deepEqual(observedTokens, [
+    'Bearer old-access-secret',
+    'Bearer rotated-access-secret',
+  ]);
+});
+
 test('logout removes the local login only after remote revocation succeeds', async () => {
   const now = Date.parse('2026-08-25T00:00:00.000Z');
   const store = new MemoryCredentialStore({

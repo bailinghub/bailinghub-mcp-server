@@ -635,28 +635,32 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
   }
 
   async getSession(): Promise<AgentSessionView> {
-    const credentials = await this.loadRequired();
-    const token = await this.getAccessToken();
-    let session: AgentSessionView;
-    try {
-      session = await new AgentAuthHttpClient(
-        credentials.base_url,
-        this.fetchImpl,
-      ).getSession(token);
-    } catch (error) {
-      if (!isInvalidAgentSessionError(error)) throw error;
-      await this.deleteInvalidCredentials();
-      throw new Error(
-        'The BailingHub Agent Session is invalid or expired. The local login was removed; run login again.',
-      );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await this.getAccessToken();
+      const credentials = await this.loadRequired();
+      if (credentials.access_token !== token) continue;
+      let session: AgentSessionView;
+      try {
+        session = await new AgentAuthHttpClient(
+          credentials.base_url,
+          this.fetchImpl,
+        ).getSession(token);
+      } catch (error) {
+        if (!isInvalidAgentSessionError(error)) throw error;
+        if (!await this.deleteInvalidCredentialsIfCurrent(credentials)) continue;
+        throw new Error(
+          'The BailingHub Agent Session is invalid or expired. The local login was removed; run login again.',
+        );
+      }
+      if (
+        session.session_id !== credentials.session_id ||
+        session.client_app_id !== credentials.client_app_id
+      ) {
+        throw new Error('The remote Agent Session does not match the local login.');
+      }
+      return session;
     }
-    if (
-      session.session_id !== credentials.session_id ||
-      session.client_app_id !== credentials.client_app_id
-    ) {
-      throw new Error('The remote Agent Session does not match the local login.');
-    }
-    return session;
+    throw new Error('The Agent login changed during Session inspection. Retry status.');
   }
 
   async logout(): Promise<LogoutResult> {
@@ -762,5 +766,21 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
         'The remote Agent Session is invalid, but its local credentials could not be removed. Remove the local login before retrying.',
       );
     }
+  }
+
+  private deleteInvalidCredentialsIfCurrent(observed: AgentCredentials): Promise<boolean> {
+    return withCredentialRefreshLock(this.store, async () => {
+      const current = await this.store.load();
+      if (!current) return true;
+      if (
+        current.session_id !== observed.session_id ||
+        current.access_token !== observed.access_token ||
+        current.refresh_token !== observed.refresh_token
+      ) {
+        return false;
+      }
+      await this.deleteInvalidCredentials();
+      return true;
+    });
   }
 }

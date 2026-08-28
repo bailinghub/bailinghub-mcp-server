@@ -121,6 +121,77 @@ test('named instances isolate multiple identities under the same public binding'
   assert.equal(JSON.parse(await readFile(join(directory, 'registry.json'), 'utf8')).schema_version, 1);
 });
 
+test('registry mutation lock prevents lost updates across instances sharing one metadata file', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-registry-lock-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'registry.json');
+  const first = new AgentConnectionRegistry(path);
+  const second = new AgentConnectionRegistry(path);
+  const descriptor = {
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+
+  await Promise.all(Array.from({ length: 12 }, (_unused, index) =>
+    (index % 2 === 0 ? first : second).createInstance(descriptor, { alias: `identity-${index}` })
+  ));
+
+  const profiles = await first.list();
+  assert.equal(profiles.length, 12);
+  assert.equal(new Set(profiles.map((item) => item.alias)).size, 12);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).schema_version, 2);
+});
+
+test('registry reconciliation atomically promotes a survivor and retires only the same binding', async (t) => {
+  const { registry, store } = await fixture(t);
+  const descriptor = {
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  const old = await store.registerInstance(descriptor, { alias: 'selected', makeCurrent: true });
+  const survivor = await registry.createInstance(descriptor);
+  const unrelated = await store.registerInstance(
+    { ...descriptor, workspace: 'staff' },
+    { alias: 'unrelated' },
+  );
+
+  const promoted = await registry.reconcileToSurvivor(survivor.connectionKey, {
+    retiredConnectionKeys: [old.connectionKey],
+    alias: 'selected',
+  });
+
+  assert.equal(promoted.alias, 'selected');
+  assert.equal((await registry.current()).connectionKey, survivor.connectionKey);
+  assert.equal(await registry.get(old.connectionKey), undefined);
+  assert.equal((await registry.get(unrelated.connectionKey)).alias, 'unrelated');
+  await assert.rejects(
+    registry.reconcileToSurvivor(survivor.connectionKey, {
+      retiredConnectionKeys: [unrelated.connectionKey],
+    }),
+    /different public binding/u,
+  );
+});
+
+test('registry reconciliation allocates a readable alias without stealing an existing selector', async (t) => {
+  const { registry, store } = await fixture(t);
+  const descriptor = {
+    baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  const original = await store.registerInstance(descriptor, { alias: 'selected', makeCurrent: true });
+  await store.registerInstance(descriptor, { alias: 'selected-2' });
+  const survivor = await registry.createInstance(descriptor);
+
+  const promoted = await registry.reconcileToSurvivor(survivor.connectionKey, {
+    allocateAliasFrom: 'selected',
+  });
+
+  assert.equal(promoted.alias, 'selected-3');
+  assert.equal((await registry.getByAlias('selected')).connectionKey, original.connectionKey);
+  assert.equal((await registry.current()).connectionKey, survivor.connectionKey);
+  await assert.rejects(
+    registry.reconcileToSurvivor(survivor.connectionKey, { alias: 'selected' }),
+    /alias is already in use/u,
+  );
+});
+
 test('legacy default file credentials migrate once into their bound isolated connection', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-migration-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

@@ -62,10 +62,16 @@ It must not be able to:
 12. Agent API requests use only the approved session route, retry one 401 after rotating the
     refresh token, and never fall back to the Client API.
 13. Multi-connection registry entries contain only public Hub/client/workspace metadata and an
-    opaque local instance id. Same-binding instances use separate credential stores and Agent
-    Sessions. A host may expose selection only through user-controlled UI or commands, never as a
-    model tool. Removing one authorized instance revokes only its remote session before local
-    deletion and preserves that local state when revocation fails.
+    opaque local instance id; `connectionName` is not an identity assertion. The SDK compares only
+    Core's trusted `on_behalf_of`, replaces an older same-binding/same-identity local Session, and
+    preserves different identities. A host may expose selection only through user-controlled UI or
+    commands, never as a model tool.
+14. A newly stored Session remains `authorized` when old-connection inspection or revocation is
+    deferred. The SDK returns `cleanupRequired` and preserves unreconciled credentials instead of
+    reporting a failed login that could induce another authorization. Registry mutations and
+    same-binding reconciliation are cross-process locked; no token or `on_behalf_of` is persisted
+    in registry or lock metadata. A Session 401 deletes local credentials only after a lock-held
+    comparison confirms the observed Session and tokens are still current.
 
 ## Non-Guarantees
 
@@ -87,5 +93,7 @@ Automated tests cover:
 - loopback state and PKCE request projection;
 - secure credential-store selection and refresh-token rotation;
 - Agent API isolation and one bounded 401 refresh retry;
-- multi-connection isolation, secret-free listing, and revoke-before-remove failure behavior;
+- identity-aware multi-connection reconciliation, safe staged reauthorization, cross-process
+  registry locking, compare-before-delete 401 cleanup, secret-free listing, and
+  revoke-before-remove failure behavior;
 - an end-to-end stdio MCP call against a no-side-effect mock BailingHub.

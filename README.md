@@ -211,11 +211,12 @@ Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
-The `bailinghub-mcp-server/sdk` subpath additionally exposes a host-neutral Agent
-Client factory. It owns browser login, named connection instances (including independently
-authorized instances on the same Hub/client/workspace binding), isolated credentials, token
-refresh, and Core DTO mapping; host adapters such as DSH do not own credentials or BailingHub HTTP
-endpoint details.
+The `bailinghub-mcp-server/sdk` subpath additionally exposes a host-neutral Agent Client factory.
+It owns browser login, named local selectors, isolated credentials, token refresh, and Core DTO
+mapping. On the same Hub/client/workspace binding it replaces an older local connection only when
+Core reports the same trusted `on_behalf_of`; different business identities remain independently
+selectable. Core resolves the business authorization entry, so host adapters such as DSH never ask
+for a business URL and do not own credentials or BailingHub HTTP endpoint details.
 
 No administrator, executor, approval-decision, tool-proxy, configuration, or direct business
 API is called by this adapter.

@@ -8,7 +8,8 @@ and BailingHub Runtime DTO mapping. A host adapter owns its own lifecycle, model
 visible conversation IDs, and dynamic tool registration.
 
 The SDK does not embed BailingHub, register a business system, generate a business authorization
-page, or store model-provider credentials.
+page, or store model-provider credentials. The host never asks for a business-system URL: Core
+resolves the one authorization entry registered for `clientAppId`.
 
 ## Installation and compatibility
 
@@ -49,11 +50,11 @@ const transport = createAgentClientTransport({
 | `hubUrl` | public HTTPS origin of the deployer's BailingHub | no |
 | `clientAppId` | public `app_id` registered by the Hub administrator | no |
 | `workspace` | initial BailingHub route key | no |
-| `connectionName` | local readable name selecting one connection instance | no |
+| `connectionName` | local readable selector; not a business identity assertion | no |
 
 Do not add BailingHub Client Tokens, admin tokens, business passwords/cookies, Tool Provider
-Secrets, business API URLs, model API keys, or Agent access/refresh tokens to host configuration.
-The model provider and key remain in the host's own credential system.
+Secrets, business API or authorization-page URLs, model API keys, or Agent access/refresh tokens
+to host configuration. The model provider and key remain in the host's own credential system.
 
 ## Multiple connection lifecycle
 
@@ -61,10 +62,12 @@ The model provider and key remain in the host's own credential system.
 > branch and require a matching SDK/host candidate. They are not part of the public `0.2.0`
 > package. Align exact versions in the order Core -> SDK -> host adapter before release.
 
-The SDK registry can retain multiple named connection instances. Two instances may intentionally
-share the same public `Hub + clientAppId + workspace` binding while keeping separate browser
-authorizations, Agent Sessions, credentials, and revocation lifecycles. None of these methods
-returns access or refresh tokens:
+The SDK registry can retain multiple named connection instances. `connectionName` is only a local
+selector. After browser authorization, the SDK compares the same public
+`Hub + clientAppId + workspace` binding using Core's trusted `on_behalf_of`: the newly authorized
+Session replaces older local connections for that same identity, while different identities keep
+separate Agent Sessions, credentials, and revocation lifecycles. None of these methods returns
+access or refresh tokens:
 
 ```js
 await transport.connectionsAdd({
@@ -83,8 +86,8 @@ await transport.connectionsRemove('shop-a');
 `connectionsAdd()` creates a new local instance for a new `connectionName`, registers only its
 public metadata, and selects it; it does not fabricate or copy a login. Repeating the exact same
 name and binding is idempotent, while reusing that name for different public metadata fails.
-Browser authorization is required separately for every new instance. Hosts must expose add/use
-only through user commands or settings, never as model tools or model-controlled selectors.
+Browser authorization is required for every new, still-unauthorized selector. Hosts must expose
+add/use only through user commands or settings, never as model tools or model-controlled selectors.
 Existing conversations and runs stay pinned to the connection captured when they were created;
 a selection affects new sessions only.
 
@@ -95,7 +98,7 @@ instance, while `use()` rebinds the same instance within the workspaces already 
 current business authorization. It never turns one authorized identity into another.
 
 Existing deterministic v1 registry entries remain readable and keep their credential key. The
-registry is written as schema v2 only while at least one independently named instance exists; the
+registry is written as schema v2 only while at least one named instance exists; the
 instance id is opaque local metadata, not a credential or an identity assertion sent to Core.
 An older SDK fails closed on schema v2. Before downgrading, use the matching candidate to revoke
 and remove every candidate-only instance; after the last one is removed, the registry is written
@@ -109,20 +112,41 @@ const status = await transport.status();
 const workspaces = await transport.workspaces();
 ```
 
-`login()` binds a random loopback callback, creates a PKCE request, opens the business system's
-configured authorization page, and stores the returned Agent Session. The business system derives
-user, tenant, roles, and allowed route from its current authenticated backend session.
+`login()` binds a random loopback callback, creates a PKCE request, and asks Core to open the one
+stable authorization entry registered by the business system. That entry is not account-, tenant-,
+or store-specific. It handles sign-in, account switching, and tenant/store selection, then the
+business backend derives trusted user, tenant, roles, `principal`, and `on_behalf_of` from the
+confirmed server-side session. The plugin never receives the business URL or business credential.
 
 macOS uses Keychain. Linux and other POSIX systems require explicit opt-in to the current-user-owned
 mode-`0600` file fallback. Agent Session fails closed on Windows until a native secure store is
 available. Never implement a host-specific plaintext token field as a workaround.
 
 The standard v1 factory login requests one workspace. Treat the public binding as
-`Hub + clientAppId + workspace` and the local instance as `binding + connectionName`. Register a
-new named instance and complete a new browser authorization when another business identity must
-use the same binding. Register another connection for another Hub or route. `use()` succeeds only
-when the selected Agent Session explicitly includes that workspace; do not advertise unrestricted
-cross-route switching.
+`Hub + clientAppId + workspace`; `connectionName` merely selects where that local attempt starts.
+Register a new name and authorize in the business page when adding another identity. If the trusted
+`on_behalf_of` matches an older same-binding connection, the SDK revokes and removes the older
+local Session. If it differs, both remain independently selectable. Reauthorizing an existing name
+uses a staging credential slot, so cancelling the browser flow leaves the working Session intact.
+When that staged attempt confirms a different identity, the existing name remains attached to the
+older identity and the newly current connection receives a collision-safe local suffix such as
+`shop-2`; the suffix is derived only from the local selector, never from business identity. The
+SDK does not silently steal the older identity's name.
+Register another connection for another Hub or route. `use()` succeeds only when the selected
+Agent Session explicitly includes that workspace.
+
+`login()` always returns `state: "authorized"` after the new Session is safely stored. It also
+returns `identityReconciliation` as `not_needed`, `distinct`, `replaced`, `deferred`, or
+`cleanup_required`, plus `cleanupRequired`, `replacedConnections`, and `cleanupConnections`.
+`deferred` or `cleanup_required` means authorization succeeded but an older connection still needs
+inspection or cleanup. Show the warning and let the user retry status/removal; do **not** tell them
+to authorize again. Registry mutations and same-binding reconciliation use cross-process locks,
+and neither lock metadata nor the registry stores tokens or `on_behalf_of`. Lock keys are hashed
+onto OS-released loopback listeners, so a process crash releases ownership automatically. A rare
+unrelated port collision only serializes the operations or fails closed after a bounded wait.
+If that bounded wait expires after a staged Session is already stored, `login()` keeps its
+collision-safe local suffix and returns `cleanup_required`; show the warning instead of starting
+another authorization.
 
 Logout revokes the remote session before removing local credentials:
 

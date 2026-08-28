@@ -18,9 +18,12 @@ optional peer or local path.
 8. Run the Agent Session SDK seam against the matching Core: login, status, turn, search,
    invocation, resume, visible completion, logout, and business-side revoke.
 9. Verify macOS Keychain and the explicit mode-0600 POSIX fallback; confirm Windows fails closed.
-10. Create two names on the same Hub/client/workspace binding, authorize them as two independent
-    fixtures, switch between them, and prove their credentials, sessions, subjects, and revocation
-    are isolated. Confirm a legacy schema-v1 profile remains readable.
+10. On one Hub/client/workspace binding, prove that a second authorization with the same trusted
+    `on_behalf_of` revokes and removes the older local connection, while a different
+    `on_behalf_of` remains independently selectable. Cancel same-name reauthorization and prove the
+    working Session survives. Force inspection and revoke failures and prove `login()` still
+    returns `state: authorized` with `cleanupRequired`, preserves the relevant credentials, and
+    does not advise another login. Confirm a legacy schema-v1 profile remains readable.
 11. `npm pack --dry-run --json`, unpack the tarball, and inspect the exact contents.
 12. Confirm `dist/sdk.js`, `dist/sdk.d.ts`, Agent Auth/Runtime modules, and both Agent Client SDK
     guides are present.
