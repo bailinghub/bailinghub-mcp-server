@@ -122,8 +122,9 @@ bailinghub-mcp-server logout
 登录回调只监听 `127.0.0.1` 的随机端口，并同时校验 `state` 与 PKCE S256。access token
 和 refresh token 不会出现在 CLI 输出中。macOS 使用 Keychain；Linux 与其他 POSIX 平台
 目前只在显式设置 `BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE=true` 后才允许使用文件回退，
-且文件必须属于当前用户并为 `0600` 权限。Windows 暂不支持 Agent Session 凭据存储，
-仍可使用兼容的 Client Token 模式。
+且文件必须属于当前用户并为 `0600` 权限。Windows 使用当前用户范围的 DPAPI 加密文件，
+密文保存于该用户的 LocalAppData 目录；Windows PowerShell 或 DPAPI 不可用时失败关闭，
+不会自动降级为明文。所有受支持平台仍可使用兼容的 Client Token 模式。
 
 本机回环地址允许 HTTP。非回环 HTTP 默认拒绝；只有在 TLS 已由可信私有网络的其他边界
 终止时，才可显式设置 `BAILINGHUB_ALLOW_INSECURE_HTTP=true`。

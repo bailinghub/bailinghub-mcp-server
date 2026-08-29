@@ -80,13 +80,14 @@ let a model or conversation change it.
 
 Accepted values are lowercase identifiers of 1 to 64 characters using `a-z`, `0-9`, `.`, `_`, and
 `-`, starting with a letter or number. The SDK hashes the value before using it and isolates the
-connection registry, POSIX credential files, macOS Keychain accounts, and local lock scopes.
-When the namespace is unset, every historical path and Keychain account stays exactly unchanged
+connection registry, POSIX credential files, macOS Keychain accounts, Windows DPAPI paths and
+entropy, and local lock scopes. When the namespace is unset, every historical POSIX path and
+Keychain account stays exactly unchanged
 for backward compatibility.
 
 Namespaces do not copy or migrate credentials between hosts. The first run after a host adopts a
 new namespace therefore starts with an empty local registry and requires normal browser
-authorization. Do not copy credential files or Keychain records to bypass that boundary; revoke
+authorization. Do not copy credential files, DPAPI ciphertext, or Keychain records to bypass that boundary; revoke
 and remove an obsolete host connection through the matching host when retiring it. Advanced hosts
 that inject custom registry or credential paths are responsible for keeping those overrides inside
 the same namespace boundary.
@@ -158,8 +159,13 @@ business backend derives trusted user, tenant, roles, `principal`, and `on_behal
 confirmed server-side session. The plugin never receives the business URL or business credential.
 
 macOS uses Keychain. Linux and other POSIX systems require explicit opt-in to the current-user-owned
-mode-`0600` file fallback. Agent Session fails closed on Windows until a native secure store is
-available. Never implement a host-specific plaintext token field as a workaround.
+mode-`0600` file fallback. Windows stores each credential slot in a CurrentUser DPAPI-protected
+binary file under LocalAppData. The ciphertext is bound to the CurrentUser protection scope plus
+the host namespace and connection slot; copying it is not a supported login migration, while
+Windows profile and enterprise recovery policies determine any roaming exceptions. The SDK invokes
+the system Windows PowerShell 5.1 non-interactively with a fixed script and
+sends dynamic values only through stdin. If PowerShell or DPAPI is unavailable, login fails closed.
+Never implement a host-specific plaintext token field as a workaround.
 
 The standard v1 factory login requests one workspace. Treat the public binding as
 `Hub + clientAppId + workspace`; `connectionName` merely selects where that local attempt starts.

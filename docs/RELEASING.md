@@ -17,7 +17,9 @@ optional peer or local path.
 7. Run the stdio E2E against a no-side-effect mock.
 8. Run the Agent Session SDK seam against the matching Core: login, status, turn, search,
    invocation, resume, visible completion, logout, and business-side revoke.
-9. Verify macOS Keychain and the explicit mode-0600 POSIX fallback; confirm Windows fails closed.
+9. Verify macOS Keychain, the explicit mode-0600 POSIX fallback, and real Windows CurrentUser
+   DPAPI save, restart recovery, per-connection isolation, tamper rejection, and removal. Confirm
+   PowerShell/DPAPI failure closes without a plaintext fallback.
 10. On one Hub/client/workspace binding, prove that a second authorization with the same trusted
     `on_behalf_of` revokes and removes the older local connection, while a different
     `on_behalf_of` remains independently selectable. Cancel same-name reauthorization and prove the

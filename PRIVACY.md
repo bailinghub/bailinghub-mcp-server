@@ -20,8 +20,9 @@ result, or CLI status field.
 
 macOS Agent credentials are stored in Keychain. Linux and other POSIX platforms have no
 automatic plaintext fallback. If the operator explicitly enables the file store, it is
-restricted to a current-user-owned mode-0600 file. Windows Agent Session credential storage
-is not yet supported and fails closed. Logout removes local credentials only after the remote
+restricted to a current-user-owned mode-0600 file. Windows stores a CurrentUser DPAPI-protected
+binary file under LocalAppData; the file contains ciphertext rather than a portable login, and
+PowerShell/DPAPI failure does not enable plaintext storage. Logout removes local credentials only after the remote
 revocation endpoint confirms success; otherwise it keeps them so revocation can be retried.
 
 The multi-connection registry stores only public connection name, normalized Hub URL, public

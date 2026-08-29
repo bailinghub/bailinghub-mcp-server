@@ -44,6 +44,7 @@ Standard v1 login still requests one workspace, and another Hub or route require
 connection and authorization.
 
 Agent Session credential storage currently supports macOS Keychain and an explicitly enabled
-current-user-owned mode-0600 file on Linux and other POSIX platforms. Windows fails closed for
-Agent Session mode until a native secure credential store is implemented; Client Token mode
-remains compatible on Windows.
+current-user-owned mode-0600 file on Linux and other POSIX platforms. Windows uses CurrentUser
+DPAPI-protected files under LocalAppData through the system Windows PowerShell 5.1 runtime. DPAPI
+or PowerShell unavailability fails closed without a plaintext fallback. Client Token mode remains
+compatible on Windows.

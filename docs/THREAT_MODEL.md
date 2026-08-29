@@ -57,8 +57,9 @@ It must not be able to:
     places access or refresh tokens in CLI output or command arguments.
 11. macOS stores Agent credentials in Keychain. Linux and other POSIX platforms have no
     silent plaintext fallback; an explicitly enabled file store requires current-user
-    ownership and mode 0600. Windows Agent Session credential storage fails closed until a
-    native secure store is implemented.
+    ownership and mode 0600. Windows stores only CurrentUser DPAPI ciphertext under LocalAppData;
+    the fixed PowerShell program receives credentials through stdin, and DPAPI or PowerShell
+    failure never enables a plaintext fallback.
 12. Agent API requests use only the approved session route, retry one 401 after rotating the
     refresh token, and never fall back to the Client API.
 13. Multi-connection registry entries contain only public Hub/client/workspace metadata and an
@@ -75,7 +76,7 @@ It must not be able to:
 15. A product host may set one fixed, non-secret local storage namespace through the SDK dependency
     option or host-process environment, never through model or connection input. The namespace is
     strictly validated and hashed before use, and separates the default registry, POSIX credential
-    paths, macOS Keychain accounts, and lock scopes from other hosts. An unset namespace preserves
+    paths, macOS Keychain accounts, Windows DPAPI paths and entropy, and lock scopes from other hosts. An unset namespace preserves
     the exact historical locations. Conflicting settings fail closed, and the SDK never copies
     credentials across namespace boundaries.
 
@@ -85,6 +86,10 @@ This adapter cannot prove that a compromised MCP server process preserved creden
 BailingHub itself is uncompromised, or that an audit record authored by one runtime is
 independent cryptographic evidence. It also does not provide a delegation chain across
 multiple agents. Those require separate trust, attestation, and delegation protocols.
+CurrentUser DPAPI does not protect credentials from another compromised process already running
+as the same Windows user. DPAPI ciphertext is not a portable application backup; moving machines
+or losing the Windows user profile normally requires a browser reauthorization, subject to Windows
+profile and enterprise recovery policy.
 
 ## Validation
 

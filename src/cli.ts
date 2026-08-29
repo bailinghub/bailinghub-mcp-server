@@ -33,8 +33,7 @@ Login options:
 
 On macOS credentials are stored in Keychain. Linux and other POSIX platforms require
 the explicit BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE=true opt-in and use a mode-0600
-file. Agent Session credential storage is not yet supported on Windows; Client Token
-mode remains available there.
+file. Windows stores Agent Session credentials as CurrentUser DPAPI-protected files.
 `;
 
 type CliDependencies = {
