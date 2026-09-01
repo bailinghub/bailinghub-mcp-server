@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, win32 as windowsPath } from 'node:path';
 
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import {
   agentStorageNamespaceSegment,
+  defaultWindowsAgentStorageRoot,
   FileCredentialStore,
   LocalAgentOperationLock,
   MacOsKeychainCredentialStore,
@@ -13,6 +14,7 @@ import {
   resolveAgentStorageNamespace,
   runCommand,
   selectCredentialStore,
+  WindowsDpapiCredentialStore,
   type AgentCredentials,
   type CommandRunner,
   type CredentialStore,
@@ -232,27 +234,42 @@ function parseRegistry(value: unknown): {
   };
 }
 
-function defaultConnectionStorageRoot(storageNamespace?: string): string {
+function defaultConnectionStorageRoot(
+  storageNamespace?: string,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  if (platform === 'win32') {
+    return defaultWindowsAgentStorageRoot(storageNamespace, environment);
+  }
   const segment = agentStorageNamespaceSegment(storageNamespace);
   return segment
     ? join(homedir(), '.config', 'bailinghub', 'hosts', segment)
     : join(homedir(), '.config', 'bailinghub');
 }
 
-export function defaultConnectionRegistryPath(storageNamespace?: string): string {
-  return join(defaultConnectionStorageRoot(storageNamespace), 'agent-connections.json');
+export function defaultConnectionRegistryPath(
+  storageNamespace?: string,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const root = defaultConnectionStorageRoot(storageNamespace, platform, environment);
+  return platform === 'win32'
+    ? windowsPath.join(root, 'agent-connections.json')
+    : join(root, 'agent-connections.json');
 }
 
 export function defaultConnectionCredentialPath(
   connectionKey: string,
   storageNamespace?: string,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
 ): string {
   if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new Error('The Agent connection key is invalid.');
-  return join(
-    defaultConnectionStorageRoot(storageNamespace),
-    'agent-connections',
-    `${connectionKey}.json`,
-  );
+  const root = defaultConnectionStorageRoot(storageNamespace, platform, environment);
+  return platform === 'win32'
+    ? windowsPath.join(root, 'agent-connections', `${connectionKey}.dpapi`)
+    : join(root, 'agent-connections', `${connectionKey}.json`);
 }
 
 export function defaultConnectionKeychainAccount(
@@ -272,7 +289,10 @@ export class AgentConnectionRegistry {
   private readonly mutationLock: LocalAgentOperationLock;
   readonly operationScope: string;
 
-  constructor(path = defaultConnectionRegistryPath()) {
+  constructor(
+    path = defaultConnectionRegistryPath(),
+    private readonly platform: NodeJS.Platform = process.platform,
+  ) {
     this.path = resolve(path);
     this.operationScope = `registry:${this.path}`;
     this.mutationLock = new LocalAgentOperationLock(this.operationScope);
@@ -590,8 +610,16 @@ export class AgentConnectionRegistry {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { connections: [] };
       throw new Error('Could not inspect the Agent connection registry.');
     }
-    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o777) !== 0o600) {
-      throw new Error('The Agent connection registry must be a regular mode-0600 file.');
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      (this.platform !== 'win32' && (metadata.mode & 0o777) !== 0o600)
+    ) {
+      throw new Error(
+        this.platform === 'win32'
+          ? 'The Agent connection registry must be a regular file.'
+          : 'The Agent connection registry must be a regular mode-0600 file.',
+      );
     }
     if (process.getuid !== undefined && metadata.uid !== process.getuid()) {
       throw new Error('The Agent connection registry must be owned by the current user.');
@@ -613,18 +641,25 @@ export class AgentConnectionRegistry {
       throw new Error('The Agent connection registry exceeds the safety limit.');
     }
     const directory = dirname(this.path);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await mkdir(directory, {
+      recursive: true,
+      ...(this.platform === 'win32' ? {} : { mode: 0o700 }),
+    });
     const directoryMetadata = await lstat(directory);
     if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink() ||
         (process.getuid !== undefined && directoryMetadata.uid !== process.getuid())) {
       throw new Error('The Agent connection registry directory is not secure.');
     }
-    await chmod(directory, 0o700);
+    if (this.platform !== 'win32') await chmod(directory, 0o700);
     const temporaryPath = join(directory, `.agent-connections-${randomBytes(12).toString('hex')}.tmp`);
     try {
-      await writeFile(temporaryPath, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      await writeFile(temporaryPath, serialized, {
+        encoding: 'utf8',
+        ...(this.platform === 'win32' ? {} : { mode: 0o600 }),
+        flag: 'wx',
+      });
       await rename(temporaryPath, this.path);
-      await chmod(this.path, 0o600);
+      if (this.platform !== 'win32') await chmod(this.path, 0o600);
     } finally {
       await unlink(temporaryPath).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== 'ENOENT') throw error;
@@ -664,10 +699,20 @@ export class AgentConnectionStore {
       this.environment,
     );
     this.registry = options.registry ?? new AgentConnectionRegistry(
-      defaultConnectionRegistryPath(this.storageNamespace),
+      defaultConnectionRegistryPath(
+        this.storageNamespace,
+        this.platform,
+        this.environment,
+      ),
+      this.platform,
     );
     this.credentialPathFor = options.credentialPathFor ?? ((connectionKey) =>
-      defaultConnectionCredentialPath(connectionKey, this.storageNamespace));
+      defaultConnectionCredentialPath(
+        connectionKey,
+        this.storageNamespace,
+        this.platform,
+        this.environment,
+      ));
   }
 
   credentialStore(connectionKey: string): CredentialStore {
@@ -679,7 +724,12 @@ export class AgentConnectionStore {
       );
     }
     if (this.platform === 'win32') {
-      throw new Error('Agent Session credential storage is not supported on Windows yet.');
+      return new WindowsDpapiCredentialStore(
+        this.credentialPathFor(connectionKey),
+        this.commandRunner,
+        defaultConnectionKeychainAccount(connectionKey, this.storageNamespace),
+        this.environment,
+      );
     }
     if (String(this.environment.BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE ?? '').trim().toLowerCase() !== 'true') {
       throw new Error('Set BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE=true to use isolated mode-0600 connection files.');

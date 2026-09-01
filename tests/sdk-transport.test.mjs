@@ -163,6 +163,8 @@ async function setup(t, options = {}) {
 test('SDK subpath exports a dynamic-import factory with the DSH canonical method set', async () => {
   const module = await import('bailinghub-mcp-server/sdk');
   assert.equal(typeof module.createAgentClientTransport, 'function');
+  assert.equal(typeof module.WindowsDpapiCredentialStore, 'function');
+  assert.equal(typeof module.defaultWindowsDpapiCredentialPath, 'function');
   const required = [
     'connectionsList', 'connectionsAdd', 'connectionsUse', 'connectionsRemove',
     'login', 'status', 'logout', 'workspaces', 'use', 'startTurn',

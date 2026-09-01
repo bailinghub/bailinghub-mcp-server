@@ -20,8 +20,9 @@ system boundary must independently resolve any trusted acting subject and final 
 
 Agent Session login uses a random `127.0.0.1` callback, `state`, and PKCE S256. It stores the
 result in macOS Keychain, or on Linux and other POSIX platforms only after explicit opt-in in
-a current-user-owned mode-0600 file. Windows Agent Session credential storage fails closed
-until a native secure store is implemented; Client Token mode remains compatible. Agent
+a current-user-owned mode-0600 file. Windows stores only CurrentUser DPAPI-protected ciphertext
+under LocalAppData; DPAPI or Windows PowerShell failure closes without a plaintext fallback.
+Client Token mode remains compatible. Agent
 tokens and login parameters are process-side state and must never become MCP tool arguments.
 The adapter does not call the business approval endpoint itself.
 

@@ -33,3 +33,18 @@ jobs:
           npm run client-api:check -- \
             --contract-dir /tmp/bailinghub-core/contracts/client-api/v1
       - run: npm pack --dry-run
+
+  windows-agent-session:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check:project
+      - run: npm run build
+      - name: Verify native Windows DPAPI and multi-connection persistence
+        run: node --test tests/windows-credential-store.test.mjs
+      - run: npm pack --dry-run --ignore-scripts

@@ -10,7 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, win32 as windowsPath } from 'node:path';
 import { createServer, type Server as NetServer } from 'node:net';
 
 import {
@@ -30,6 +30,66 @@ const REFRESH_LOCK_WAIT_MILLISECONDS = 20_000;
 const REFRESH_LOCK_POLL_MILLISECONDS = 50;
 const CREDENTIAL_COMMAND_TIMEOUT_MILLISECONDS = 15_000;
 const CREDENTIAL_COMMAND_KILL_GRACE_MILLISECONDS = 1_000;
+const MAX_DPAPI_CIPHERTEXT_BYTES = 128 * 1024;
+const WINDOWS_DPAPI_ENTROPY_PREFIX =
+  'io.github.bailinghub.bailinghub-mcp-server.agent-session.dpapi.v1';
+const WINDOWS_DPAPI_ACCOUNT_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+const WINDOWS_DPAPI_PROTECT_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  Add-Type -AssemblyName System.Security
+  $request = [System.Console]::In.ReadToEnd() | ConvertFrom-Json
+  $path = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String([string]$request.path_b64)
+  )
+  $plaintext = [System.Convert]::FromBase64String([string]$request.payload_b64)
+  if ($plaintext.Length -gt 65536) { throw 'Credential payload is too large.' }
+  $entropy = [System.Convert]::FromBase64String([string]$request.entropy)
+  $ciphertext = [System.Security.Cryptography.ProtectedData]::Protect(
+    $plaintext,
+    $entropy,
+    [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+  )
+  $verified = [System.Security.Cryptography.ProtectedData]::Unprotect(
+    $ciphertext,
+    $entropy,
+    [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+  )
+  if ($verified.Length -ne $plaintext.Length) { throw 'DPAPI verification failed.' }
+  for ($index = 0; $index -lt $plaintext.Length; $index += 1) {
+    if ($verified[$index] -ne $plaintext[$index]) { throw 'DPAPI verification failed.' }
+  }
+  [System.IO.File]::WriteAllBytes($path, $ciphertext)
+  [System.Console]::Out.Write('ok')
+} catch {
+  exit 1
+}
+`;
+
+const WINDOWS_DPAPI_UNPROTECT_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  Add-Type -AssemblyName System.Security
+  $request = [System.Console]::In.ReadToEnd() | ConvertFrom-Json
+  $path = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String([string]$request.path_b64)
+  )
+  $ciphertext = [System.IO.File]::ReadAllBytes($path)
+  $entropy = [System.Convert]::FromBase64String([string]$request.entropy)
+  $plaintext = [System.Security.Cryptography.ProtectedData]::Unprotect(
+    $ciphertext,
+    $entropy,
+    [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+  )
+  if ($plaintext.Length -gt 65536) { throw 'Credential payload is too large.' }
+  $output = [System.Console]::OpenStandardOutput()
+  $output.Write($plaintext, 0, $plaintext.Length)
+  $output.Flush()
+} catch {
+  exit 1
+}
+`;
 
 export type AgentCredentials = {
   schema_version: 1;
@@ -100,6 +160,86 @@ export function defaultKeychainCredentialAccount(storageNamespace?: string): str
   const segment = agentStorageNamespaceSegment(storageNamespace);
   return segment ? `${segment}-default` : KEYCHAIN_ACCOUNT;
 }
+
+function requiredAbsoluteWindowsPath(value: string, label: string): string {
+  if (
+    !value ||
+    /[\u0000\r\n]/.test(value) ||
+    !windowsPath.isAbsolute(value)
+  ) {
+    throw new Error(`${label} is invalid.`);
+  }
+  return windowsPath.normalize(value);
+}
+
+/** Current-user application data root used only for public metadata and DPAPI ciphertext. */
+export function defaultWindowsAgentStorageRoot(
+  storageNamespace?: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const configuredRoot = String(
+    environment.LOCALAPPDATA ?? process.env.LOCALAPPDATA ?? '',
+  ).trim();
+  const localApplicationData = requiredAbsoluteWindowsPath(
+    configuredRoot || windowsPath.join(homedir(), 'AppData', 'Local'),
+    'The Windows local application data path',
+  );
+  const root = windowsPath.join(localApplicationData, 'BailingHub', 'AgentClient');
+  const segment = agentStorageNamespaceSegment(storageNamespace);
+  return segment ? windowsPath.join(root, 'hosts', segment) : root;
+}
+
+export function defaultWindowsDpapiCredentialPath(
+  storageNamespace?: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  return windowsPath.join(
+    defaultWindowsAgentStorageRoot(storageNamespace, environment),
+    'agent-credentials.dpapi',
+  );
+}
+
+export function defaultWindowsPowerShellPath(
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const configuredRoot = String(
+    environment.SystemRoot ??
+      environment.SYSTEMROOT ??
+      process.env.SystemRoot ??
+      process.env.SYSTEMROOT ??
+      '',
+  ).trim();
+  const systemRoot = requiredAbsoluteWindowsPath(
+    configuredRoot || 'C:\\Windows',
+    'The Windows system root',
+  );
+  return windowsPath.join(
+    systemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+}
+
+function encodedPowerShellCommand(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
+const WINDOWS_DPAPI_PROTECT_ARGUMENTS = [
+  '-NoLogo',
+  '-NoProfile',
+  '-NonInteractive',
+  '-EncodedCommand',
+  encodedPowerShellCommand(WINDOWS_DPAPI_PROTECT_SCRIPT),
+];
+const WINDOWS_DPAPI_UNPROTECT_ARGUMENTS = [
+  '-NoLogo',
+  '-NoProfile',
+  '-NonInteractive',
+  '-EncodedCommand',
+  encodedPowerShellCommand(WINDOWS_DPAPI_UNPROTECT_SCRIPT),
+];
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -410,6 +550,181 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
   }
 }
 
+/**
+ * Stores one Agent Session as a CurrentUser DPAPI-protected binary file.
+ *
+ * The fixed PowerShell programs are passed through -EncodedCommand. Credential JSON, file paths,
+ * and the non-secret entropy value travel only through stdin, never process arguments or logs.
+ * DPAPI provides the confidentiality and integrity boundary; the file is only ciphertext.
+ */
+export class WindowsDpapiCredentialStore implements CredentialStore {
+  readonly description = 'Windows DPAPI (CurrentUser)';
+  private readonly path: string;
+  private readonly entropy: string;
+  private readonly powerShellPath: string;
+  private readonly refreshLock: LocalAgentOperationLock;
+
+  constructor(
+    path: string,
+    private readonly commandRunner: CommandRunner = runCommand,
+    account: string = KEYCHAIN_ACCOUNT,
+    environment: NodeJS.ProcessEnv = process.env,
+  ) {
+    if (!WINDOWS_DPAPI_ACCOUNT_PATTERN.test(account)) {
+      throw new Error('The Windows DPAPI credential account is invalid.');
+    }
+    this.path = resolve(path);
+    this.entropy = Buffer.from(
+      `${WINDOWS_DPAPI_ENTROPY_PREFIX}\0${account}`,
+      'utf8',
+    ).toString('base64');
+    this.powerShellPath = defaultWindowsPowerShellPath(environment);
+    this.refreshLock = new LocalAgentOperationLock(`windows-dpapi:${this.path}`);
+  }
+
+  async load(): Promise<AgentCredentials | undefined> {
+    let metadata;
+    try {
+      metadata = await lstat(this.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw new Error('Could not inspect the Windows DPAPI credential file.');
+    }
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size < 1 ||
+      metadata.size > MAX_DPAPI_CIPHERTEXT_BYTES
+    ) {
+      throw new Error('The Windows DPAPI credential file is invalid.');
+    }
+
+    let result: CommandResult;
+    try {
+      result = await this.commandRunner(
+        this.powerShellPath,
+        [...WINDOWS_DPAPI_UNPROTECT_ARGUMENTS],
+        JSON.stringify({
+          path_b64: Buffer.from(this.path, 'utf8').toString('base64'),
+          entropy: this.entropy,
+        }),
+      );
+    } catch {
+      throw new Error('The Windows DPAPI credential store is unavailable.');
+    }
+    if (result.exitCode !== 0) {
+      throw new Error('Could not decrypt Agent credentials with Windows DPAPI.');
+    }
+    try {
+      return parseAgentCredentials(JSON.parse(result.stdout));
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('Stored Agent credentials are invalid.');
+      }
+      throw error;
+    }
+  }
+
+  async save(credentials: AgentCredentials): Promise<void> {
+    const serialized = serializeCredentials(credentials);
+    const directory = dirname(this.path);
+    await mkdir(directory, { recursive: true });
+    const directoryMetadata = await lstat(directory);
+    if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink()) {
+      throw new Error('The Windows DPAPI credential directory is not secure.');
+    }
+    let previousCiphertext: Buffer | undefined;
+    try {
+      const destinationMetadata = await lstat(this.path);
+      if (
+        !destinationMetadata.isFile() ||
+        destinationMetadata.isSymbolicLink() ||
+        destinationMetadata.size < 1 ||
+        destinationMetadata.size > MAX_DPAPI_CIPHERTEXT_BYTES
+      ) {
+        throw new Error('The Windows DPAPI credential file is invalid.');
+      }
+      previousCiphertext = await readFile(this.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    const temporaryPath = join(
+      directory,
+      `.agent-credentials-${randomBytes(12).toString('hex')}.dpapi.tmp`,
+    );
+    let destinationReplaced = false;
+    try {
+      let result: CommandResult;
+      try {
+        result = await this.commandRunner(
+          this.powerShellPath,
+          [...WINDOWS_DPAPI_PROTECT_ARGUMENTS],
+          JSON.stringify({
+            path_b64: Buffer.from(temporaryPath, 'utf8').toString('base64'),
+            entropy: this.entropy,
+            payload_b64: Buffer.from(serialized, 'utf8').toString('base64'),
+          }),
+        );
+      } catch {
+        throw new Error('The Windows DPAPI credential store is unavailable.');
+      }
+      if (result.exitCode !== 0 || result.stdout !== 'ok') {
+        throw new Error('Could not encrypt Agent credentials with Windows DPAPI.');
+      }
+      const temporaryMetadata = await lstat(temporaryPath);
+      if (
+        !temporaryMetadata.isFile() ||
+        temporaryMetadata.isSymbolicLink() ||
+        temporaryMetadata.size < 1 ||
+        temporaryMetadata.size > MAX_DPAPI_CIPHERTEXT_BYTES
+      ) {
+        throw new Error('Windows DPAPI returned an invalid credential file.');
+      }
+      await rename(temporaryPath, this.path);
+      destinationReplaced = true;
+      const persisted = await this.load();
+      if (!persisted || serializeCredentials(persisted) !== serialized) {
+        throw new Error('Windows DPAPI credential verification failed.');
+      }
+    } catch (error) {
+      if (destinationReplaced) {
+        if (previousCiphertext) {
+          try {
+            await writeFile(this.path, previousCiphertext);
+          } catch {
+            throw new Error('Could not restore previous Windows DPAPI credentials.');
+          }
+        } else {
+          await unlink(this.path).catch((cleanupError: NodeJS.ErrnoException) => {
+            if (cleanupError.code !== 'ENOENT') {
+              throw new Error('Could not verify or remove Windows DPAPI credentials.');
+            }
+          });
+        }
+      }
+      if (error instanceof Error && error.message.includes('unavailable')) throw error;
+      throw new Error('Could not verify Agent credentials with Windows DPAPI.');
+    } finally {
+      await unlink(temporaryPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
+  }
+
+  async delete(): Promise<void> {
+    await unlink(this.path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') {
+        throw new Error('Could not remove the Windows DPAPI credential file.');
+      }
+    });
+  }
+
+  withRefreshLock<T>(work: () => Promise<T>): Promise<T> {
+    return this.refreshLock.withLock(work);
+  }
+}
+
 export class FileCredentialStore implements CredentialStore {
   readonly description: string;
   private readonly refreshLock: LocalAgentOperationLock;
@@ -549,9 +864,11 @@ export function selectCredentialStore(
     );
   }
   if (platform === 'win32') {
-    throw new Error(
-      'Agent Session credential storage is not supported on Windows yet. ' +
-        'Use Client Token mode (BAILINGHUB_CLIENT_TOKEN) instead.',
+    return new WindowsDpapiCredentialStore(
+      defaultWindowsDpapiCredentialPath(namespace, environment),
+      commandRunner,
+      defaultKeychainCredentialAccount(namespace),
+      environment,
     );
   }
 

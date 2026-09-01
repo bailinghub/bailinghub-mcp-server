@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add Windows Agent Session support with per-user DPAPI-protected credential files, native
+  multi-connection persistence, and real Windows CI coverage without a plaintext fallback.
 - Add secret-free `connectionsList`, `connectionsAdd`, `connectionsUse`, and
   `connectionsRemove` host APIs across multiple named local selectors.
 - Add a backward-readable registry migration that preserves deterministic v1 profiles and uses an

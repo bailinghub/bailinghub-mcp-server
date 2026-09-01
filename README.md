@@ -128,8 +128,9 @@ The login callback binds only to a random `127.0.0.1` port and uses `state` plus
 Access and refresh tokens never appear in CLI output. macOS uses Keychain. Linux and other
 POSIX platforms require an explicit `BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE=true` opt-in;
 that fallback rejects files that are not owned by the current user with mode `0600`.
-Agent Session credential storage is not yet supported on Windows; compatible Client Token
-mode remains available there.
+Windows uses a CurrentUser DPAPI-protected file under the user's LocalAppData directory. If
+Windows PowerShell or DPAPI is unavailable, Agent Session fails closed and never falls back to
+plaintext. Compatible Client Token mode remains available on every supported platform.
 
 For a local BailingHub process, loopback HTTP is accepted:
 

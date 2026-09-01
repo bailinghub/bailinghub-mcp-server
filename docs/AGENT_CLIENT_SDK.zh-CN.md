@@ -72,11 +72,12 @@ const transport = createAgentClientTransport({
 发给 Core。宿主适配器不得允许模型或会话修改它。
 
 命名空间必须是 1 至 64 位小写标识，只能使用 `a-z`、`0-9`、`.`、`_`、`-`，并以字母或数字开头。
-SDK 会先哈希再使用，并同时隔离连接注册表、POSIX 凭据文件、macOS Keychain account 和本机锁作用域。
-未设置时，历史路径与 Keychain account 保持完全不变，以保证向后兼容。
+SDK 会先哈希再使用，并同时隔离连接注册表、POSIX 凭据文件、macOS Keychain account、Windows
+DPAPI 路径与附加熵，以及本机锁作用域。未设置时，历史 POSIX 路径与 Keychain account 保持完全
+不变，以保证向后兼容。
 
 命名空间不会在宿主之间复制或迁移凭据。因此宿主首次采用新命名空间时，会从空的本机注册表开始，
-并需要正常完成一次浏览器授权。不要通过复制凭据文件或 Keychain 记录绕过边界；停用旧宿主连接时，
+并需要正常完成一次浏览器授权。不要通过复制凭据文件、DPAPI 密文或 Keychain 记录绕过边界；停用旧宿主连接时，
 应由匹配的旧宿主正常撤销并删除。注入自定义注册表或凭据路径的高级宿主，需要自行确保这些覆盖路径
 仍位于同一个命名空间边界内。
 
@@ -121,7 +122,7 @@ await transport.connectionsRemove('shop-a');
 已有确定性 v1 注册表连接继续可读，并保持原凭据 key。只有至少存在一个具名实例时，注册表
 才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。
 旧版 SDK 遇到 schema v2 会失败关闭。降级前必须使用匹配候选版逐一撤销并删除候选实例；最后一个
-实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件或 Keychain 记录。
+实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件、DPAPI 密文或 Keychain 记录。
 
 ## 登录生命周期
 
@@ -137,7 +138,11 @@ const workspaces = await transport.workspaces();
 `on_behalf_of`。插件既不接收业务 URL，也不接收业务凭据。
 
 macOS 使用 Keychain。Linux 与其他 POSIX 系统必须显式启用当前用户所有、权限为 `0600` 的文件
-回退。Windows 在具备原生安全存储前失败关闭；不得用宿主明文 Token 字段绕过。
+回退。Windows 将每个凭据槽保存为 LocalAppData 下的当前用户范围 DPAPI 加密二进制文件；密文绑定
+CurrentUser 保护范围、宿主命名空间与连接槽，复制密文不是受支持的登录迁移方式，漫游例外由 Windows
+用户配置与企业恢复策略决定。SDK 以非交互方式调用系统 Windows PowerShell 5.1 的固定脚本，动态数据
+只经 stdin 传递。PowerShell 或
+DPAPI 不可用时失败关闭；不得用宿主明文 Token 字段绕过。
 
 标准 v1 factory 登录一次申请一个 workspace。公开绑定是 `Hub + clientAppId + workspace`；
 `connectionName` 只决定从哪个本机选择器开始。需要增加另一业务身份时，创建新名称并在业务授权页

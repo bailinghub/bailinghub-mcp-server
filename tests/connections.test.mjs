@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -16,7 +16,9 @@ import {
 import {
   AGENT_CLIENT_STORAGE_NAMESPACE_ENV,
   agentStorageNamespaceSegment,
+  defaultWindowsAgentStorageRoot,
   FileCredentialStore,
+  WindowsDpapiCredentialStore,
 } from '../dist/credential-store.js';
 
 function credentials(overrides = {}) {
@@ -90,6 +92,24 @@ test('host namespace isolates default registry, credentials, Keychain account, a
   assert.equal(keychainAccount, `${segment}-connection-${connectionKey}`);
   assert.equal(`${registryPath}\n${credentialPath}\n${keychainAccount}`.includes(namespace), false);
 
+  const windowsEnvironment = {
+    LOCALAPPDATA: 'C:\\Users\\Example\\AppData\\Local',
+  };
+  const windowsRoot = defaultWindowsAgentStorageRoot(namespace, windowsEnvironment);
+  assert.equal(
+    defaultConnectionRegistryPath(namespace, 'win32', windowsEnvironment),
+    `${windowsRoot}\\agent-connections.json`,
+  );
+  assert.equal(
+    defaultConnectionCredentialPath(
+      connectionKey,
+      namespace,
+      'win32',
+      windowsEnvironment,
+    ),
+    `${windowsRoot}\\agent-connections\\${connectionKey}.dpapi`,
+  );
+
   const legacyRegistry = new AgentConnectionRegistry(defaultConnectionRegistryPath());
   const namespacedRegistry = new AgentConnectionRegistry(registryPath);
   assert.notEqual(legacyRegistry.operationScope, namespacedRegistry.operationScope);
@@ -115,6 +135,45 @@ test('connection store accepts a host environment namespace and keeps it out of 
     calls[0][calls[0].indexOf('-a') + 1],
     defaultConnectionKeychainAccount(connectionKey, namespace),
   );
+});
+
+test('Windows connection store selects an isolated DPAPI credential slot', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-windows-connection-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const connectionKey = 'conn_0123456789abcdef0123456789abcdef';
+  const namespace = 'product-desktop';
+  const calls = [];
+  const store = new AgentConnectionStore({
+    environment: { SystemRoot: 'C:\\Windows' },
+    platform: 'win32',
+    registry: new AgentConnectionRegistry(join(directory, 'registry.json'), 'win32'),
+    commandRunner: async (executable, args, input) => {
+      calls.push({ executable, args, input });
+      return { exitCode: 1, stdout: '' };
+    },
+    storageNamespace: namespace,
+    credentialPathFor: (key) => join(directory, `${key}.dpapi`),
+  });
+
+  const credentials = store.credentialStore(connectionKey);
+  assert.equal(credentials instanceof WindowsDpapiCredentialStore, true);
+  assert.equal(credentials.description, 'Windows DPAPI (CurrentUser)');
+  assert.equal(await credentials.load(), undefined);
+  assert.equal(calls.length, 0);
+});
+
+test('Windows public connection registry does not depend on POSIX mode bits', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-windows-registry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'registry.json');
+  const registry = new AgentConnectionRegistry(path, 'win32');
+  const profile = await registry.upsert({
+    baseUrl: 'https://hub.example.com',
+    clientAppId: 'example-agent-client',
+    workspace: 'orders',
+  }, { makeCurrent: true });
+  await chmod(path, 0o644);
+  assert.equal((await registry.current()).connectionKey, profile.connectionKey);
 });
 
 test('host namespace isolates same-binding locks even with an injected shared registry', async (t) => {
