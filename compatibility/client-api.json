@@ -1,7 +1,7 @@
 {
   "schema_version": "bailing.client-api.consumer.v1",
   "consumer": "bailinghub-mcp-server",
-  "adapter_version": "0.2.0",
+  "adapter_version": "0.3.0",
   "contract": "bailing.client-api",
   "contract_major": 1,
   "tested_contract_version": "1.0.0",

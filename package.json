@@ -1,6 +1,6 @@
 {
   "name": "bailinghub-mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "description": "Submit and inspect governed AI jobs through BailingHub from MCP hosts.",
   "license": "MIT",

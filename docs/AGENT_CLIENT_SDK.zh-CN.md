@@ -14,10 +14,10 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install bailinghub-mcp-server@0.2.0
+npm install bailinghub-mcp-server@0.3.0
 ```
 
-`0.2.0` 是稳定的 Agent Client SDK 版本。在公开 npm Registry 能解析到该精确版本之前，
+`0.3.0` 是稳定的 Agent Client SDK 版本。在公开 npm Registry 能解析到该精确版本之前，
 宿主适配器必须保持私有，且不得在公开 manifest 中改用本机路径。
 
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
@@ -83,8 +83,8 @@ DPAPI 路径与附加熵，以及本机锁作用域。未设置时，历史 POSI
 
 ## 多连接生命周期
 
-> **未发布候选能力：**本节 API 已在当前开发分支实现，需要配套的 SDK 与宿主候选版本，
-> 不属于公开 `0.2.0` 包。正式发布前必须按 Core -> SDK -> 宿主适配器顺序对齐精确版本。
+本节 API 属于公开 `0.3.0` 包。宿主适配器应精确依赖该版本，并把连接选择保留在用户掌控的
+命令或设置界面中，不能把它暴露为模型工具。
 
 SDK 注册表可以同时保存多个具名连接实例，`connectionName` 只是本机选择器。浏览器授权完成后，
 SDK 会在相同 `Hub + clientAppId + workspace` 公开绑定内，使用 Core 返回的可信
@@ -121,7 +121,7 @@ await transport.connectionsRemove('shop-a');
 
 已有确定性 v1 注册表连接继续可读，并保持原凭据 key。只有至少存在一个具名实例时，注册表
 才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。
-旧版 SDK 遇到 schema v2 会失败关闭。降级前必须使用匹配候选版逐一撤销并删除候选实例；最后一个
+旧版 SDK 遇到 schema v2 会失败关闭。降级前必须使用 `0.3.0` 逐一撤销并删除具名实例；最后一个
 实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件、DPAPI 密文或 Keychain 记录。
 
 ## 登录生命周期

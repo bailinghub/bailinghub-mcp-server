@@ -21,7 +21,7 @@ current BailingHub contract and rejects:
 MCP protocol versions, this npm package version, BailingHub application versions, and Client
 API versions are deliberately independent.
 
-The stable Agent Session 0.2 release uses Agent Auth v1 and Agent API v1. It does not alter
+The stable Agent Session 0.3 release uses Agent Auth v1 and Agent API v1. It does not alter
 the machine-readable `bailing.client-api.v1` compatibility declaration or the behavior of
 existing Client Token installations.
 
@@ -31,12 +31,12 @@ that descriptor; they import `bailinghub-mcp-server/sdk` and use browser-authori
 credentials. These are two installation surfaces of one package, not one shared configuration
 form.
 
-The host-neutral `bailinghub-mcp-server/sdk` export is part of the 0.2 package surface. Host
+The host-neutral `bailinghub-mcp-server/sdk` export is part of the 0.3 package surface. Host
 adapters must use an exact compatible normal dependency for reproducible installation. A host
 adapter must not depend on an optional peer, a local `file:` path, or copied SDK sources.
 
-One public binding is `Hub + client_app_id + workspace`. The unreleased multi-connection candidate
-uses `connectionName` only as a local selector. After authorization it reconciles same-binding
+One public binding is `Hub + client_app_id + workspace`. The 0.3 multi-connection lifecycle uses
+`connectionName` only as a local selector. After authorization it reconciles same-binding
 connections by Core's trusted `on_behalf_of`: the same identity replaces its older local Session,
 while different identities retain separate credentials and revocation. The host never configures a
 business authorization URL; Core resolves the one stable entry registered for the client app.

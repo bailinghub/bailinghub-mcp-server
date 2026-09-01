@@ -16,10 +16,10 @@ resolves the one authorization entry registered for `clientAppId`.
 Install the SDK package version that matches the Agent Client release line:
 
 ```bash
-npm install bailinghub-mcp-server@0.2.0
+npm install bailinghub-mcp-server@0.3.0
 ```
 
-`0.2.0` is the stable Agent Client SDK release. A host adapter must remain private until that exact
+`0.3.0` is the stable Agent Client SDK release. A host adapter must remain private until that exact
 version resolves from the public npm registry; never substitute a local path in a public manifest.
 
 Required server surfaces:
@@ -94,9 +94,8 @@ the same namespace boundary.
 
 ## Multiple connection lifecycle
 
-> **Unreleased candidate:** the APIs in this section are implemented on the current development
-> branch and require a matching SDK/host candidate. They are not part of the public `0.2.0`
-> package. Align exact versions in the order Core -> SDK -> host adapter before release.
+These APIs are part of the public `0.3.0` package. Host adapters should depend on this exact
+version and keep connection selection in user-owned commands or settings rather than model tools.
 
 The SDK registry can retain multiple named connection instances. `connectionName` is only a local
 selector. After browser authorization, the SDK compares the same public
@@ -140,8 +139,8 @@ conversations and runs remain pinned to their captured connection.
 Existing deterministic v1 registry entries remain readable and keep their credential key. The
 registry is written as schema v2 only while at least one named instance exists; the
 instance id is opaque local metadata, not a credential or an identity assertion sent to Core.
-An older SDK fails closed on schema v2. Before downgrading, use the matching candidate to revoke
-and remove every candidate-only instance; after the last one is removed, the registry is written
+An older SDK fails closed on schema v2. Before downgrading, use `0.3.0` to revoke and remove every
+named instance; after the last one is removed, the registry is written
 back as schema v1. Do not delete credential files or Keychain entries manually.
 
 ## Login lifecycle
