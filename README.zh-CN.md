@@ -33,7 +33,7 @@ BailingHub 地址、凭据和 route 都是本地进程配置，不是 MCP 工具
 ## 认证模式
 
 - **Agent Session：**先执行一次 `bailinghub-mcp-server login`。CLI 使用随机回环端口和
-  PKCE，打开系统浏览器，并把已批准会话保存到 macOS Keychain。MCP 工具改用
+  PKCE，打开系统浏览器，并把已批准会话保存到各平台对应的安全凭据存储。MCP 工具改用
   `/agent-api/v1/*`，并在本地安全轮换 refresh token。
 - **Client Token（保持兼容）：**存在 `BAILINGHUB_CLIENT_TOKEN` 时，仍按原样调用
   `POST /run` 和 `GET /jobs/{job_id}`。

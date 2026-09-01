@@ -35,8 +35,9 @@ MCP tool arguments and therefore cannot be selected or replaced by model output.
 ## Authentication Modes
 
 - **Agent Session:** run `bailinghub-mcp-server login` once. The CLI uses a random loopback
-  callback plus PKCE, opens the system browser, and stores the approved session in macOS
-  Keychain. The MCP tools then use `/agent-api/v1/*` and refresh rotated tokens locally.
+  callback plus PKCE, opens the system browser, and stores the approved session in the
+  platform-specific secure credential store. The MCP tools then use `/agent-api/v1/*` and
+  refresh rotated tokens locally.
 - **Client Token (compatible):** when `BAILINGHUB_CLIENT_TOKEN` is present, the adapter keeps
   using `POST /run` and `GET /jobs/{job_id}` exactly as before.
 
