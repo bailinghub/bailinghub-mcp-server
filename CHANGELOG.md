@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-09-01
 
 - Add Windows Agent Session support with per-user DPAPI-protected credential files, native
   multi-connection persistence, and real Windows CI coverage without a plaintext fallback.

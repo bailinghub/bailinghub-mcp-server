@@ -2,8 +2,9 @@
 
 [简体中文](README.zh-CN.md) | English
 
-> **0.2.0:** adds the stable host-neutral Agent Client SDK and browser-authorized Agent Session
-> flow. The existing `0.1.x` Client Token behavior remains compatible and is not replaced.
+> **0.3.0:** adds host-controlled multi-connection lifecycle APIs and CurrentUser DPAPI storage
+> for Windows Agent Sessions. The existing Agent Client and `0.1.x` Client Token behavior remains
+> compatible and is not replaced.
 
 Use MCP hosts to submit and inspect governed business-system actions through a
 self-hosted [BailingHub](https://www.bailinghub.com/) control plane.
@@ -21,7 +22,7 @@ which a human approves one local Agent through the system browser.
 | `get_governed_job` | Read the current public state of a credential-owned job |
 | `wait_for_governed_job` | Poll one job for at most 60 seconds without resubmitting it |
 
-The Agent Client 0.2 path starts with five small meta-tools for turn bootstrap,
+The Agent Client 0.3 path starts with five small meta-tools for turn bootstrap,
 capability search, governed invocation/recovery, and visible run completion. BailingHub then
 returns at most 12 active business tools for the current turn; each replacement removes the
 previous active set instead of growing the model context indefinitely.

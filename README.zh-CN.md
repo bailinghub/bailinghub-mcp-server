@@ -2,8 +2,9 @@
 
 [English](README.md) | 简体中文
 
-> **0.2.0：**新增稳定的宿主无关 Agent Client SDK 与浏览器授权 Agent Session
-> 流程。现有 `0.1.x` Client Token 语义继续兼容，不会被替换。
+> **0.3.0：**新增由宿主控制的多连接生命周期 API，以及 Windows Agent Session 的
+> CurrentUser DPAPI 安全存储。现有 Agent Client 与 `0.1.x` Client Token 语义继续兼容，
+> 不会被替换。
 
 让 MCP Host 通过自托管的 [BailingHub](https://www.bailinghub.com/) 控制面，提交并查询
 受治理的业务系统操作。
@@ -20,7 +21,7 @@ Session 模式：用户通过系统浏览器授权当前本地智能体。
 | `get_governed_job` | 查询当前 Client 所拥有任务的公开状态 |
 | `wait_for_governed_job` | 最多等待 60 秒，不会重新提交业务操作 |
 
-Agent Client 0.2 路径初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
+Agent Client 0.3 路径初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
 受治理调用/恢复以及同步可见结果。BailingHub 每轮最多返回 12 个 active tools，
 新集合会替换旧集合，不会在上下文中无限累加。
 
