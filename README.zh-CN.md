@@ -197,8 +197,9 @@ Agent Session 模式另外消费增量的 Agent Auth v1 与 Agent API v1：
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
-`bailinghub-mcp-server/sdk` 子路径暴露宿主无关的 Agent Client
-factory。它统一负责浏览器授权、连接别名、按 Hub/client/workspace 隔离的凭据、
-token 刷新和 Core DTO 映射；DSH 等宿主适配器不保存凭据，也不拼装 BailingHub HTTP 路径。
+`bailinghub-mcp-server/sdk` 子路径暴露宿主无关的 Agent Client factory。它统一负责浏览器授权、
+本机具名选择器、隔离凭据、Token 刷新和 Core DTO 映射。在相同 Hub/client/workspace 公开绑定下，
+只有 Core 返回的可信 `on_behalf_of` 相同时才替换旧本机连接，不同业务身份仍可独立选择。业务授权
+入口由 Core 解析，因此 DSH 等宿主既不填写业务 URL，也不保存凭据或拼装 BailingHub HTTP 路径。
 
 本适配器仍不调用管理员、执行器、审批决策、Tool Proxy、配置或业务系统直接接口。

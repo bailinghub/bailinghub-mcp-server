@@ -219,15 +219,26 @@ async function readJsonWithLimit(response: Response): Promise<unknown> {
   }
 }
 
+class AgentAuthHttpError extends Error {
+  constructor(message: string, readonly statusCode: number) {
+    super(message);
+    this.name = 'AgentAuthHttpError';
+  }
+}
+
 function authorizationHttpError(statusCode: number): Error {
-  if (statusCode === 400) return new Error('The Agent authorization is invalid or expired.');
-  if (statusCode === 401) return new Error('The BailingHub Agent Session is invalid or expired.');
-  if (statusCode === 403) return new Error('The Agent is not allowed to use this route.');
-  if (statusCode === 404) return new Error('The Agent authorization was not found.');
-  if (statusCode === 409) return new Error('The Agent authorization is no longer pending.');
-  if (statusCode === 429) return new Error('Too many Agent authorization requests. Try later.');
-  if (statusCode >= 500) return new Error('BailingHub Agent Auth is temporarily unavailable.');
-  return new Error(`BailingHub rejected Agent Auth (HTTP ${statusCode}).`);
+  if (statusCode === 400) return new AgentAuthHttpError('The Agent authorization is invalid or expired.', statusCode);
+  if (statusCode === 401) return new AgentAuthHttpError('The BailingHub Agent Session is invalid or expired.', statusCode);
+  if (statusCode === 403) return new AgentAuthHttpError('The Agent is not allowed to use this route.', statusCode);
+  if (statusCode === 404) return new AgentAuthHttpError('The Agent authorization was not found.', statusCode);
+  if (statusCode === 409) return new AgentAuthHttpError('The Agent authorization is no longer pending.', statusCode);
+  if (statusCode === 429) return new AgentAuthHttpError('Too many Agent authorization requests. Try later.', statusCode);
+  if (statusCode >= 500) return new AgentAuthHttpError('BailingHub Agent Auth is temporarily unavailable.', statusCode);
+  return new AgentAuthHttpError(`BailingHub rejected Agent Auth (HTTP ${statusCode}).`, statusCode);
+}
+
+function isInvalidAgentSessionError(error: unknown): boolean {
+  return error instanceof AgentAuthHttpError && error.statusCode === 401;
 }
 
 export class AgentAuthHttpClient {
@@ -624,19 +635,32 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
   }
 
   async getSession(): Promise<AgentSessionView> {
-    const credentials = await this.loadRequired();
-    const token = await this.getAccessToken();
-    const session = await new AgentAuthHttpClient(
-      credentials.base_url,
-      this.fetchImpl,
-    ).getSession(token);
-    if (
-      session.session_id !== credentials.session_id ||
-      session.client_app_id !== credentials.client_app_id
-    ) {
-      throw new Error('The remote Agent Session does not match the local login.');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await this.getAccessToken();
+      const credentials = await this.loadRequired();
+      if (credentials.access_token !== token) continue;
+      let session: AgentSessionView;
+      try {
+        session = await new AgentAuthHttpClient(
+          credentials.base_url,
+          this.fetchImpl,
+        ).getSession(token);
+      } catch (error) {
+        if (!isInvalidAgentSessionError(error)) throw error;
+        if (!await this.deleteInvalidCredentialsIfCurrent(credentials)) continue;
+        throw new Error(
+          'The BailingHub Agent Session is invalid or expired. The local login was removed; run login again.',
+        );
+      }
+      if (
+        session.session_id !== credentials.session_id ||
+        session.client_app_id !== credentials.client_app_id
+      ) {
+        throw new Error('The remote Agent Session does not match the local login.');
+      }
+      return session;
     }
-    return session;
+    throw new Error('The Agent login changed during Session inspection. Retry status.');
   }
 
   async logout(): Promise<LogoutResult> {
@@ -681,7 +705,16 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
       current.base_url,
       this.fetchImpl,
     );
-    const token = await client.refresh(current.client_app_id, current.refresh_token);
+    let token: TokenResponse;
+    try {
+      token = await client.refresh(current.client_app_id, current.refresh_token);
+    } catch (error) {
+      if (!isInvalidAgentSessionError(error)) throw error;
+      await this.deleteInvalidCredentials();
+      throw new Error(
+        'The BailingHub Agent Session is invalid or expired. The local login was removed; run login again.',
+      );
+    }
     if (
       token.clientAppId !== current.client_app_id ||
       token.sessionId !== current.session_id
@@ -723,5 +756,31 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
       );
     }
     return next;
+  }
+
+  private async deleteInvalidCredentials(): Promise<void> {
+    try {
+      await this.store.delete();
+    } catch {
+      throw new Error(
+        'The remote Agent Session is invalid, but its local credentials could not be removed. Remove the local login before retrying.',
+      );
+    }
+  }
+
+  private deleteInvalidCredentialsIfCurrent(observed: AgentCredentials): Promise<boolean> {
+    return withCredentialRefreshLock(this.store, async () => {
+      const current = await this.store.load();
+      if (!current) return true;
+      if (
+        current.session_id !== observed.session_id ||
+        current.access_token !== observed.access_token ||
+        current.refresh_token !== observed.refresh_token
+      ) {
+        return false;
+      }
+      await this.deleteInvalidCredentials();
+      return true;
+    });
   }
 }

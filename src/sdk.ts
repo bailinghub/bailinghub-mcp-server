@@ -18,10 +18,16 @@ import {
 } from './agent-auth.js';
 import {
   AgentConnectionStore,
+  agentConnectionInstanceKey,
+  agentConnectionKey,
   type AgentConnectionProfile,
   type AgentConnectionStoreOptions,
 } from './connections.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
+import {
+  LocalAgentOperationLockTimeoutError,
+  normalizeAgentStorageNamespace,
+} from './credential-store.js';
 
 export {
   AgentClientTransport,
@@ -43,8 +49,10 @@ export {
 export {
   AgentConnectionRegistry,
   AgentConnectionStore,
+  agentConnectionInstanceKey,
   agentConnectionKey,
   defaultConnectionCredentialPath,
+  defaultConnectionKeychainAccount,
   defaultConnectionRegistryPath,
   type AgentConnectionDescriptor,
   type AgentConnectionProfile,
@@ -67,7 +75,13 @@ export {
   FileCredentialStore,
   MacOsKeychainCredentialStore,
   MemoryCredentialStore,
+  AGENT_CLIENT_STORAGE_NAMESPACE_ENV,
+  agentStorageNamespaceSegment,
+  defaultFileCredentialPath,
+  defaultKeychainCredentialAccount,
+  normalizeAgentStorageNamespace,
   parseAgentCredentials,
+  resolveAgentStorageNamespace,
   selectCredentialStore,
   type AgentCredentials,
   type CredentialStore,
@@ -100,6 +114,11 @@ export type AgentClientHostConfig = {
 };
 
 export type AgentClientHostDependencies = {
+  /**
+   * Host-owned local storage namespace. This dependency setting is not a user connection field,
+   * business identity, or secret and never enters a Core request.
+   */
+  storageNamespace?: string;
   connectionStore?: AgentConnectionStore;
   connectionStoreOptions?: AgentConnectionStoreOptions;
   fetchImpl?: typeof fetch;
@@ -111,6 +130,10 @@ export type AgentClientHostDependencies = {
 };
 
 export type AgentClientHostTransport = {
+  connectionsList(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  connectionsAdd(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  connectionsUse(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
+  connectionsRemove(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
   login(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
   status(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
   logout(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -165,10 +188,12 @@ function normalizedConnectionName(value: unknown): string {
 
 function profileMatches(
   profile: AgentConnectionProfile,
-  baseUrl: string,
-  clientAppId: string,
+  descriptor: { baseUrl: string; clientAppId: string; workspace: string; allowInsecureHttp: boolean },
 ): boolean {
-  return profile.baseUrl === baseUrl && profile.clientAppId === clientAppId;
+  return profile.baseUrl === descriptor.baseUrl &&
+    profile.clientAppId === descriptor.clientAppId &&
+    profile.workspace === descriptor.workspace &&
+    profile.allowInsecureHttp === descriptor.allowInsecureHttp;
 }
 
 function modelRuntimeText(value: unknown): string | undefined {
@@ -226,20 +251,44 @@ export function createAgentClientTransport(
   const defaultConnectionName = normalizedConnectionName(
     configValue.connectionKey ?? configValue.connectionName,
   );
-  const connections = dependencies.connectionStore ??
-    new AgentConnectionStore(dependencies.connectionStoreOptions);
+  let connections: AgentConnectionStore;
+  if (dependencies.connectionStore) {
+    if (dependencies.storageNamespace !== undefined) {
+      const requestedNamespace = normalizeAgentStorageNamespace(dependencies.storageNamespace);
+      if (requestedNamespace && requestedNamespace !== dependencies.connectionStore.storageNamespace) {
+        throw new Error(
+          'The supplied Agent connection store does not match the requested storage namespace.',
+        );
+      }
+    }
+    connections = dependencies.connectionStore;
+  } else {
+    const options = { ...(dependencies.connectionStoreOptions ?? {}) };
+    if (dependencies.storageNamespace !== undefined) {
+      const requestedNamespace = normalizeAgentStorageNamespace(dependencies.storageNamespace);
+      const nestedNamespace = normalizeAgentStorageNamespace(options.storageNamespace);
+      if (requestedNamespace && nestedNamespace && nestedNamespace !== requestedNamespace) {
+        throw new Error(
+          'The Agent Client dependency storage namespace is configured more than once with different values.',
+        );
+      }
+      if (requestedNamespace) options.storageNamespace = requestedNamespace;
+    }
+    connections = new AgentConnectionStore(options);
+  }
   const fetchImpl = dependencies.fetchImpl ?? fetch;
 
   async function resolveProfile(
     selectorValue: unknown,
     workspaceValue?: unknown,
   ): Promise<AgentConnectionProfile> {
+    const hasExplicitSelector = typeof selectorValue === 'string' && selectorValue.trim().length > 0;
     const selector = normalizedConnectionName(selectorValue ?? defaultConnectionName);
     let profile = CONNECTION_KEY_PATTERN.test(selector)
       ? await connections.registry.get(selector)
       : await connections.registry.getByAlias(selector);
     const workspace = workspaceValue === undefined
-      ? defaultWorkspace
+      ? (hasExplicitSelector ? undefined : defaultWorkspace)
       : normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
     if (!profile && workspace && !CONNECTION_KEY_PATTERN.test(selector)) {
       profile = await connections.register(
@@ -250,19 +299,316 @@ export function createAgentClientTransport(
     if (!profile) {
       throw new Error('No Agent connection was found. Run BailingHub login with a workspace first.');
     }
-    if (!profileMatches(profile, baseUrl, clientAppId)) {
-      throw new Error('The selected Agent connection belongs to a different BailingHub or client_app_id.');
-    }
     if (workspace && profile.workspace !== workspace) {
       throw new Error(`Workspace ${workspace} is not selected for this Agent connection. Run use() first.`);
     }
     return profile;
   }
 
+  async function connectionBySelector(selectorValue: unknown): Promise<AgentConnectionProfile> {
+    const selector = normalizedConnectionName(selectorValue);
+    const profile = CONNECTION_KEY_PATTERN.test(selector)
+      ? await connections.registry.get(selector)
+      : await connections.registry.getByAlias(selector);
+    if (!profile) throw new Error('The Agent connection is not registered.');
+    return profile;
+  }
+
+  async function publicConnection(
+    profile: AgentConnectionProfile,
+    currentConnectionKey?: string,
+  ): Promise<Record<string, unknown>> {
+    const store = connections.credentialStore(profile.connectionKey);
+    const stored = await store.load();
+    if (stored) await connections.load(profile.connectionKey);
+    const loggedIn = Boolean(stored);
+    return {
+      connectionKey: profile.connectionKey,
+      ...(profile.alias ? { connectionName: profile.alias } : {}),
+      hubUrl: profile.baseUrl,
+      clientAppId: profile.clientAppId,
+      workspace: profile.workspace,
+      allowInsecureHttp: profile.allowInsecureHttp,
+      current: profile.connectionKey === currentConnectionKey,
+      state: loggedIn ? 'authorized' : 'logged_out',
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+    };
+  }
+
   async function sessionFor(profile: AgentConnectionProfile): Promise<AgentSessionManager> {
     const store = connections.credentialStore(profile.connectionKey);
     if (!await store.load()) throw new Error('The selected Agent connection is not logged in.');
     return new AgentSessionManager(store, fetchImpl, dependencies.now);
+  }
+
+  function connectionReference(profile: AgentConnectionProfile): Record<string, unknown> {
+    return {
+      connectionKey: profile.connectionKey,
+      ...(profile.alias ? { connectionName: profile.alias } : {}),
+    };
+  }
+
+  async function reconcileSameIdentityConnections(
+    profileValue: AgentConnectionProfile,
+    options: { replacementConnectionKey?: string; replacementAlias?: string } = {},
+  ): Promise<{
+    profile: AgentConnectionProfile;
+    identityReconciliation: 'not_needed' | 'distinct' | 'replaced' | 'deferred' | 'cleanup_required';
+    cleanupRequired: boolean;
+    replacedConnections: Record<string, unknown>[];
+    cleanupConnections: Record<string, unknown>[];
+    warning?: string;
+  }> {
+    return connections.withBindingLock(profileValue, async () => {
+      let profile = await connections.registry.get(profileValue.connectionKey);
+      if (!profile) {
+        throw new Error('The newly authorized Agent connection is no longer registered.');
+      }
+      const profileStore = connections.credentialStore(profile.connectionKey);
+      let currentSession;
+      try {
+        currentSession = await new AgentSessionManager(
+          profileStore,
+          fetchImpl,
+          dependencies.now,
+        ).getSession();
+      } catch {
+        if (!await profileStore.load()) {
+          throw new Error('The newly authorized Agent Session became invalid and its local login was removed.');
+        }
+        try {
+          profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+            ...(options.replacementAlias
+              ? { allocateAliasFrom: options.replacementAlias }
+              : {}),
+          });
+        } catch {
+          return {
+            profile,
+            identityReconciliation: 'cleanup_required',
+            cleanupRequired: true,
+            replacedConnections: [],
+            cleanupConnections: [connectionReference(profile)],
+            warning: 'Authorization succeeded, but identity inspection and local connection promotion both need retry. Do not authorize again.',
+          };
+        }
+        return {
+          profile,
+          identityReconciliation: 'deferred',
+          cleanupRequired: true,
+          replacedConnections: [],
+          cleanupConnections: [],
+          warning: 'Authorization succeeded, but same-identity reconciliation was deferred. Do not authorize again; retry status or cleanup later.',
+        };
+      }
+
+      const activeProfile = profile;
+      const candidates = (await connections.registry.list()).filter((candidate) =>
+        candidate.connectionKey !== activeProfile.connectionKey &&
+        profileMatches(candidate, activeProfile),
+      );
+      let replacementTarget: AgentConnectionProfile | undefined;
+      if (options.replacementAlias) {
+        const aliasOwner = await connections.registry.getByAlias(options.replacementAlias);
+        if (aliasOwner && aliasOwner.connectionKey !== activeProfile.connectionKey && profileMatches(aliasOwner, activeProfile)) {
+          replacementTarget = aliasOwner;
+        }
+      } else if (options.replacementConnectionKey) {
+        const selected = await connections.registry.get(options.replacementConnectionKey);
+        if (selected && selected.connectionKey !== activeProfile.connectionKey && profileMatches(selected, activeProfile)) {
+          replacementTarget = selected;
+        }
+      }
+
+      const sameIdentity: AgentConnectionProfile[] = [];
+      const deferred: AgentConnectionProfile[] = [];
+      const inspectedConnectionKeys = new Set<string>();
+      let invalidReplacementTarget: AgentConnectionProfile | undefined;
+      let inspectedActiveConnection = false;
+      const reconcileMissingReplacement = async (
+        candidate: AgentConnectionProfile,
+        store: ReturnType<AgentConnectionStore['credentialStore']>,
+      ): Promise<'retired' | 'present' | 'deferred'> => {
+        if (!store.withRefreshLock) return 'deferred';
+        try {
+          return await store.withRefreshLock(async () => {
+            if (await store.load()) return 'present';
+            try {
+              profile = await connections.registry.reconcileToSurvivor(activeProfile.connectionKey, {
+                retiredConnectionKeys: [candidate.connectionKey],
+                ...(options.replacementAlias ? { alias: options.replacementAlias } : {}),
+              });
+            } catch {
+              return 'deferred';
+            }
+            return 'retired';
+          });
+        } catch {
+          return 'deferred';
+        }
+      };
+      for (const candidate of candidates) {
+        const store = connections.credentialStore(candidate.connectionKey);
+        let storedCredentials;
+        try {
+          storedCredentials = await store.load();
+        } catch {
+          deferred.push(candidate);
+          continue;
+        }
+        if (!storedCredentials) {
+          if (candidate.connectionKey !== replacementTarget?.connectionKey) continue;
+          const missingState = await reconcileMissingReplacement(candidate, store);
+          if (missingState === 'retired') {
+            invalidReplacementTarget = candidate;
+            continue;
+          }
+          if (missingState === 'deferred') {
+            deferred.push(candidate);
+            continue;
+          }
+        }
+        try {
+          const session = await new AgentSessionManager(store, fetchImpl, dependencies.now).getSession();
+          inspectedActiveConnection = true;
+          inspectedConnectionKeys.add(candidate.connectionKey);
+          if (session.on_behalf_of === currentSession.on_behalf_of) sameIdentity.push(candidate);
+        } catch {
+          // Definitively invalid Sessions delete their local credential and do not participate.
+          // Transient failures keep the credential and defer all destructive reconciliation.
+          let remainingCredentials;
+          try {
+            remainingCredentials = await store.load();
+          } catch {
+            deferred.push(candidate);
+            continue;
+          }
+          if (remainingCredentials) {
+            deferred.push(candidate);
+          } else if (candidate.connectionKey === replacementTarget?.connectionKey) {
+            const missingState = await reconcileMissingReplacement(candidate, store);
+            if (missingState === 'retired') {
+              invalidReplacementTarget = candidate;
+            } else {
+              deferred.push(candidate);
+            }
+          }
+        }
+      }
+
+      if (deferred.length > 0) {
+        try {
+          profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+            ...(invalidReplacementTarget
+              ? { retiredConnectionKeys: [invalidReplacementTarget.connectionKey] }
+              : {}),
+            ...(invalidReplacementTarget && options.replacementAlias
+              ? { alias: options.replacementAlias }
+              : options.replacementAlias
+              ? { allocateAliasFrom: options.replacementAlias }
+              : {}),
+          });
+        } catch {
+          return {
+            profile,
+            identityReconciliation: 'cleanup_required',
+            cleanupRequired: true,
+            replacedConnections: [],
+            cleanupConnections: [
+              ...deferred.map(connectionReference),
+              ...(invalidReplacementTarget ? [connectionReference(invalidReplacementTarget)] : []),
+              connectionReference(profile),
+            ],
+            warning: 'Authorization succeeded, but an existing login could not be inspected and local promotion needs retry. Do not authorize again.',
+          };
+        }
+        return {
+          profile,
+          identityReconciliation: 'deferred',
+          cleanupRequired: true,
+          replacedConnections: invalidReplacementTarget
+            ? [connectionReference(invalidReplacementTarget)]
+            : [],
+          cleanupConnections: deferred.map(connectionReference),
+          warning: 'Authorization succeeded, but at least one existing login could not be inspected. No old Session was revoked; do not authorize again.',
+        };
+      }
+
+      const duplicateByKey = new Map<string, AgentConnectionProfile>();
+      for (const candidate of sameIdentity) duplicateByKey.set(candidate.connectionKey, candidate);
+      const revoked: AgentConnectionProfile[] = [];
+      const cleanup: AgentConnectionProfile[] = [];
+      for (const duplicate of duplicateByKey.values()) {
+        const manager = new AgentSessionManager(
+          connections.credentialStore(duplicate.connectionKey),
+          fetchImpl,
+          dependencies.now,
+        );
+        try {
+          await manager.logout();
+          revoked.push(duplicate);
+        } catch {
+          cleanup.push(duplicate);
+        }
+      }
+
+      const replacementWasRevoked = replacementTarget !== undefined &&
+        revoked.some((item) => item.connectionKey === replacementTarget.connectionKey);
+      const replacementWasInspected = replacementTarget !== undefined &&
+        inspectedConnectionKeys.has(replacementTarget.connectionKey);
+      const retired = [
+        ...revoked,
+        ...(invalidReplacementTarget ? [invalidReplacementTarget] : []),
+      ];
+      try {
+        profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+          retiredConnectionKeys: retired.map((item) => item.connectionKey),
+          ...((replacementWasRevoked || invalidReplacementTarget) && options.replacementAlias
+            ? { alias: options.replacementAlias }
+            : replacementWasInspected && options.replacementAlias
+              ? { allocateAliasFrom: options.replacementAlias }
+            : {}),
+        });
+      } catch {
+        const cleanupConnections = [...cleanup, ...retired].map(connectionReference);
+        return {
+          profile,
+          identityReconciliation: 'cleanup_required',
+          cleanupRequired: true,
+          replacedConnections: [],
+          cleanupConnections,
+          warning: 'Authorization succeeded and some old Sessions may already be revoked, but local connection cleanup needs retry. Do not authorize again.',
+        };
+      }
+
+      if (cleanup.length > 0) {
+        return {
+          profile,
+          identityReconciliation: 'cleanup_required',
+          cleanupRequired: true,
+          replacedConnections: retired.map(connectionReference),
+          cleanupConnections: cleanup.map(connectionReference),
+          warning: 'Authorization succeeded, but at least one earlier Session could not be revoked. Use connection removal to retry cleanup; do not authorize again.',
+        };
+      }
+      if (retired.length > 0) {
+        return {
+          profile,
+          identityReconciliation: 'replaced',
+          cleanupRequired: false,
+          replacedConnections: retired.map(connectionReference),
+          cleanupConnections: [],
+        };
+      }
+      return {
+        profile,
+        identityReconciliation: inspectedActiveConnection ? 'distinct' : 'not_needed',
+        cleanupRequired: false,
+        replacedConnections: [],
+        cleanupConnections: [],
+      };
+    });
   }
 
   async function clientFor(
@@ -283,61 +629,197 @@ export function createAgentClientTransport(
   }
 
   return {
+    async connectionsList(inputValue = {}) {
+      hostRecord(inputValue, 'connectionsList input');
+      const [profiles, current] = await Promise.all([
+        connections.registry.list(),
+        connections.registry.current(),
+      ]);
+      return {
+        currentConnectionKey: current?.connectionKey ?? null,
+        connections: await Promise.all(
+          profiles.map((profile) => publicConnection(profile, current?.connectionKey)),
+        ),
+      };
+    },
+
+    async connectionsAdd(inputValue) {
+      const input = hostRecord(inputValue, 'connectionsAdd input');
+      const connectionName = normalizedConnectionName(input.connectionName ?? input.alias);
+      const connectionBaseUrl = normalizeBaseUrl(
+        hostText(input.hubUrl ?? input.baseUrl, 'hubUrl', 2_048),
+        input.allowInsecureHttp === true,
+      );
+      const connectionClientAppId = normalizeClientAppId(
+        hostText(input.clientAppId, 'clientAppId', 64),
+      );
+      const workspace = normalizeAgentRoute(hostText(input.workspace ?? input.route, 'workspace', 64));
+      const descriptor = {
+        baseUrl: connectionBaseUrl,
+        clientAppId: connectionClientAppId,
+        workspace,
+        allowInsecureHttp: input.allowInsecureHttp === true,
+      };
+      const existing = await connections.registry.getByAlias(connectionName);
+      if (existing && !profileMatches(existing, descriptor)) {
+        throw new Error('The Agent connection alias is already bound to different public metadata.');
+      }
+      const profile = existing ?? await connections.registerInstance(
+        descriptor,
+        { alias: connectionName, makeCurrent: true },
+      );
+      if (existing) await connections.registry.setCurrent(existing.connectionKey);
+      return {
+        state: existing ? 'selected' : 'registered',
+        connection: await publicConnection(profile, profile.connectionKey),
+      };
+    },
+
+    async connectionsUse(inputValue) {
+      const input = typeof inputValue === 'string'
+        ? { connectionName: inputValue }
+        : hostRecord(inputValue, 'connectionsUse input');
+      const profile = await connectionBySelector(input.connectionName ?? input.connectionKey);
+      await connections.registry.setCurrent(profile.connectionKey);
+      return {
+        state: 'selected',
+        connection: await publicConnection(profile, profile.connectionKey),
+      };
+    },
+
+    async connectionsRemove(inputValue) {
+      const input = typeof inputValue === 'string'
+        ? { connectionName: inputValue }
+        : hostRecord(inputValue, 'connectionsRemove input');
+      const profile = await connectionBySelector(input.connectionName ?? input.connectionKey);
+      const store = connections.credentialStore(profile.connectionKey);
+      if (await store.load()) await connections.load(profile.connectionKey);
+      const result = await new AgentSessionManager(
+        store,
+        fetchImpl,
+        dependencies.now,
+      ).logout();
+      await connections.registry.remove(profile.connectionKey);
+      const current = await connections.registry.current();
+      return {
+        state: 'removed',
+        connectionKey: profile.connectionKey,
+        ...(profile.alias ? { connectionName: profile.alias } : {}),
+        hadCredentials: result.hadCredentials,
+        remoteRevoked: result.remoteRevoked,
+        currentConnectionKey: current?.connectionKey ?? null,
+      };
+    },
+
     async login(inputValue = {}) {
       const input = hostRecord(inputValue, 'login input');
-      const loginBaseUrl = normalizeBaseUrl(
-        optionalHostText(input.hubUrl ?? input.baseUrl, 'hubUrl', 2_048) ?? baseUrl,
-        input.allowInsecureHttp === true || allowInsecureHttp,
-      );
-      const loginClientAppId = normalizeClientAppId(
-        optionalHostText(input.clientAppId, 'clientAppId', 64) ?? clientAppId,
-      );
       const alias = normalizedConnectionName(
         input.connectionKey ?? input.connectionName ?? defaultConnectionName,
       );
-      let workspaceValue = input.workspace ?? input.route ?? defaultWorkspace;
-      if (workspaceValue === undefined) {
-        const existing = CONNECTION_KEY_PATTERN.test(alias)
-          ? await connections.registry.get(alias)
-          : await connections.registry.getByAlias(alias);
-        workspaceValue = existing?.workspace;
-      }
+      const existing = CONNECTION_KEY_PATTERN.test(alias)
+        ? await connections.registry.get(alias)
+        : await connections.registry.getByAlias(alias);
+      const loginBaseUrl = normalizeBaseUrl(
+        optionalHostText(input.hubUrl ?? input.baseUrl, 'hubUrl', 2_048) ?? existing?.baseUrl ?? baseUrl,
+        input.allowInsecureHttp === true || existing?.allowInsecureHttp === true || allowInsecureHttp,
+      );
+      const loginClientAppId = normalizeClientAppId(
+        optionalHostText(input.clientAppId, 'clientAppId', 64) ?? existing?.clientAppId ?? clientAppId,
+      );
+      const workspaceValue = input.workspace ?? input.route ?? existing?.workspace ?? defaultWorkspace;
       if (workspaceValue === undefined) {
         throw new Error('workspace is required for the first Agent authorization.');
       }
       const workspace = normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
-      let profile = await connections.register({
+      const descriptor = {
         baseUrl: loginBaseUrl,
         clientAppId: loginClientAppId,
         workspace,
-        allowInsecureHttp: input.allowInsecureHttp === true || allowInsecureHttp,
-      }, { makeCurrent: true });
-      if (CONNECTION_KEY_PATTERN.test(alias) && profile.connectionKey !== alias) {
-        throw new Error('The requested Agent connection key does not match this Hub-client-workspace binding.');
+        allowInsecureHttp: input.allowInsecureHttp === true || existing?.allowInsecureHttp === true || allowInsecureHttp,
+      };
+      if (existing && !profileMatches(existing, descriptor)) {
+        throw new Error('The selected Agent connection does not match the requested Hub-client-workspace binding.');
       }
-      if (!CONNECTION_KEY_PATTERN.test(alias) && profile.alias && profile.alias !== alias) {
-        throw new Error('This Hub-client-workspace binding already has a different connection alias.');
+      if (!existing && CONNECTION_KEY_PATTERN.test(alias)) {
+        throw new Error('The requested Agent connection key is not registered.');
       }
-      await connections.migrateLegacy(profile);
+      let profile = existing ?? (alias === defaultConnectionName
+        ? await connections.register(descriptor, { makeCurrent: true })
+        : await connections.registerInstance(descriptor, { alias, makeCurrent: true }));
+      if (!profile.connectionInstanceId) await connections.migrateLegacy(profile);
+      let replacementConnectionKey: string | undefined;
+      let replacementAlias: string | undefined;
+      if (await connections.credentialStore(profile.connectionKey).load()) {
+        // Reauthorization is staged in a fresh credential slot. Cancelling the browser flow can
+        // therefore never destroy the selected working Session.
+        replacementConnectionKey = profile.connectionKey;
+        replacementAlias = profile.alias ?? (!CONNECTION_KEY_PATTERN.test(alias) ? alias : undefined);
+        profile = await connections.registerStagingInstance(descriptor);
+      }
       const store = connections.credentialStore(profile.connectionKey);
-      const credentials = await (dependencies.loginImpl ?? performAgentLogin)({
-        baseUrl: profile.baseUrl,
-        clientAppId: profile.clientAppId,
-        route: profile.workspace,
-        deviceLabel: optionalHostText(input.deviceLabel, 'deviceLabel', 128) ??
-          configValue.deviceLabel ?? 'BailingHub Agent Client',
-      }, {
-        store,
-        fetchImpl,
-        ...(dependencies.createLoopbackReceiver ? { createLoopbackReceiver: dependencies.createLoopbackReceiver } : {}),
-        ...(dependencies.openBrowser ? { openBrowser: dependencies.openBrowser } : {}),
-        ...(dependencies.randomBytesImpl ? { randomBytesImpl: dependencies.randomBytesImpl } : {}),
-        ...(dependencies.now ? { now: dependencies.now } : {}),
-      });
-      if (!CONNECTION_KEY_PATTERN.test(alias)) {
-        profile = await connections.registry.assignAlias(profile.connectionKey, alias);
+      let credentials;
+      try {
+        credentials = await (dependencies.loginImpl ?? performAgentLogin)({
+          baseUrl: profile.baseUrl,
+          clientAppId: profile.clientAppId,
+          route: profile.workspace,
+          deviceLabel: optionalHostText(input.deviceLabel, 'deviceLabel', 128) ??
+            configValue.deviceLabel ?? 'BailingHub Agent Client',
+        }, {
+          store,
+          fetchImpl,
+          ...(dependencies.createLoopbackReceiver ? { createLoopbackReceiver: dependencies.createLoopbackReceiver } : {}),
+          ...(dependencies.openBrowser ? { openBrowser: dependencies.openBrowser } : {}),
+          ...(dependencies.randomBytesImpl ? { randomBytesImpl: dependencies.randomBytesImpl } : {}),
+          ...(dependencies.now ? { now: dependencies.now } : {}),
+        });
+      } catch (error) {
+        if (replacementConnectionKey && !await store.load()) {
+          await connections.registry.remove(profile.connectionKey).catch(() => undefined);
+        }
+        throw error;
       }
-      await connections.registry.setCurrent(profile.connectionKey);
+      if (!CONNECTION_KEY_PATTERN.test(alias) && !profile.alias) {
+        if (!replacementConnectionKey) {
+          profile = await connections.registry.assignAlias(profile.connectionKey, alias);
+        }
+      }
+      if (replacementConnectionKey && replacementAlias && !profile.alias) {
+        try {
+          // Give a safely persisted staged Session a readable selector before network-bound
+          // reconciliation. This never steals the selected connection's existing alias.
+          profile = await connections.registry.reconcileToSurvivor(profile.connectionKey, {
+            allocateAliasFrom: replacementAlias,
+          });
+        } catch {
+          // This promotion is best-effort. The binding-locked reconciliation below retries the
+          // same atomic registry write and reports cleanup_required if persistence still fails.
+        }
+      }
+      let reconciliation;
+      try {
+        reconciliation = await reconcileSameIdentityConnections(profile, {
+          ...(replacementConnectionKey ? { replacementConnectionKey } : {}),
+          ...(replacementAlias ? { replacementAlias } : {}),
+        });
+      } catch (error) {
+        if (!(error instanceof LocalAgentOperationLockTimeoutError)) throw error;
+        const persisted = await store.load();
+        const registered = await connections.registry.get(profile.connectionKey);
+        if (!persisted || !registered) throw error;
+        profile = registered;
+        reconciliation = {
+          profile,
+          identityReconciliation: 'cleanup_required' as const,
+          cleanupRequired: true,
+          replacedConnections: [],
+          cleanupConnections: [],
+          warning: 'Authorization succeeded, but same-binding reconciliation is still running in another local process. Do not authorize again; retry status or cleanup later.',
+        };
+      }
+      profile = reconciliation.profile;
+      const replacedConnectionNames = reconciliation.replacedConnections
+        .flatMap((item) => typeof item.connectionName === 'string' ? [item.connectionName] : []);
       return {
         state: 'authorized',
         connectionKey: profile.connectionKey,
@@ -346,6 +828,12 @@ export function createAgentClientTransport(
         sessionId: credentials.session_id,
         expiresAt: credentials.access_expires_at,
         refreshExpiresAt: credentials.refresh_expires_at,
+        identityReconciliation: reconciliation.identityReconciliation,
+        cleanupRequired: reconciliation.cleanupRequired,
+        replacedConnections: reconciliation.replacedConnections,
+        cleanupConnections: reconciliation.cleanupConnections,
+        ...(reconciliation.warning ? { warning: reconciliation.warning } : {}),
+        ...(replacedConnectionNames.length > 0 ? { replacedConnectionNames } : {}),
       };
     },
 
@@ -359,7 +847,16 @@ export function createAgentClientTransport(
           ...(profile.alias ? { connectionName: profile.alias } : {}), workspace: profile.workspace,
         };
       }
-      const session = await new AgentSessionManager(store, fetchImpl, dependencies.now).getSession();
+      let session;
+      try {
+        session = await new AgentSessionManager(store, fetchImpl, dependencies.now).getSession();
+      } catch (error) {
+        if (await store.load()) throw error;
+        return {
+          state: 'logged_out', connectionKey: profile.connectionKey,
+          ...(profile.alias ? { connectionName: profile.alias } : {}), workspace: profile.workspace,
+        };
+      }
       return {
         state: 'authorized', connectionKey: profile.connectionKey,
         ...(profile.alias ? { connectionName: profile.alias } : {}),
@@ -409,27 +906,34 @@ export function createAgentClientTransport(
         throw new Error(`The current Agent authorization does not include workspace ${workspace}.`);
       }
       const credentials = await manager.loadRequired();
-      let target = await connections.register({
+      const descriptor = {
         baseUrl: current.baseUrl,
         clientAppId: current.clientAppId,
         workspace,
         allowInsecureHttp: current.allowInsecureHttp,
-      });
-      const targetStore = connections.credentialStore(target.connectionKey);
-      const alias = CONNECTION_KEY_PATTERN.test(String(selector))
-        ? current.alias
-        : normalizedConnectionName(selector);
-      if (target.alias && alias && target.alias !== alias) {
-        throw new Error('The target workspace is already bound to a different connection alias.');
+      };
+      const targetKey = current.connectionInstanceId
+        ? agentConnectionInstanceKey(descriptor, current.connectionInstanceId)
+        : agentConnectionKey(descriptor);
+      const conflicting = await connections.registry.get(targetKey);
+      if (conflicting && conflicting.connectionKey !== current.connectionKey) {
+        throw new Error('The target workspace already belongs to another Agent connection instance.');
       }
+      const targetStore = connections.credentialStore(targetKey);
       const existingTarget = await targetStore.load();
       if (existingTarget && existingTarget.session_id !== credentials.session_id) {
         throw new Error('The target workspace already has a different Agent login. Select that connection instead.');
       }
       await targetStore.save({ ...credentials, route: workspace });
-      if (alias) target = await connections.registry.assignAlias(target.connectionKey, alias);
+      let target;
+      try {
+        target = await connections.registry.rebind(current.connectionKey, descriptor);
+      } catch (error) {
+        if (!existingTarget) await targetStore.delete().catch(() => undefined);
+        throw error;
+      }
       await connections.registry.setCurrent(target.connectionKey);
-      await currentStore.delete();
+      if (target.connectionKey !== current.connectionKey) await currentStore.delete();
       return {
         state: 'selected', connectionKey: target.connectionKey,
         ...(target.alias ? { connectionName: target.alias } : {}), workspace,

@@ -35,8 +35,13 @@ The host-neutral `bailinghub-mcp-server/sdk` export is part of the 0.2 package s
 adapters must use an exact compatible normal dependency for reproducible installation. A host
 adapter must not depend on an optional peer, a local `file:` path, or copied SDK sources.
 
-One connection is bound to `Hub + client_app_id + workspace`. Standard v1 login requests one
-workspace; another Hub or route requires another connection alias and browser authorization.
+One public binding is `Hub + client_app_id + workspace`. The unreleased multi-connection candidate
+uses `connectionName` only as a local selector. After authorization it reconciles same-binding
+connections by Core's trusted `on_behalf_of`: the same identity replaces its older local Session,
+while different identities retain separate credentials and revocation. The host never configures a
+business authorization URL; Core resolves the one stable entry registered for the client app.
+Standard v1 login still requests one workspace, and another Hub or route requires another
+connection and authorization.
 
 Agent Session credential storage currently supports macOS Keychain and an explicitly enabled
 current-user-owned mode-0600 file on Linux and other POSIX platforms. Windows fails closed for

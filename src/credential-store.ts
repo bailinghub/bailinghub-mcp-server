@@ -22,6 +22,9 @@ import {
 
 const KEYCHAIN_SERVICE = 'io.github.bailinghub.bailinghub-mcp-server.agent-session';
 const KEYCHAIN_ACCOUNT = 'default';
+export const AGENT_CLIENT_STORAGE_NAMESPACE_ENV =
+  'BAILINGHUB_AGENT_CLIENT_STORAGE_NAMESPACE';
+const STORAGE_NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
 const REFRESH_LOCK_WAIT_MILLISECONDS = 20_000;
 const REFRESH_LOCK_POLL_MILLISECONDS = 50;
@@ -48,6 +51,56 @@ export interface CredentialStore {
   readonly description: string;
 }
 
+/**
+ * Validates an optional host-owned local-storage namespace.
+ *
+ * This value is not a connection field or a business identity. It is deliberately constrained
+ * to a short lowercase identifier and is hashed before it reaches a path, Keychain account, or
+ * lock key. Empty input preserves the historical unnamespaced storage locations exactly.
+ */
+export function normalizeAgentStorageNamespace(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || value !== value.trim() ||
+      !STORAGE_NAMESPACE_PATTERN.test(value)) {
+    throw new Error(
+      'The Agent Client storage namespace must be a lowercase identifier of 1 to 64 characters.',
+    );
+  }
+  return value;
+}
+
+export function resolveAgentStorageNamespace(
+  explicitValue: unknown,
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const explicit = normalizeAgentStorageNamespace(explicitValue);
+  const environmentValue = normalizeAgentStorageNamespace(
+    environment[AGENT_CLIENT_STORAGE_NAMESPACE_ENV],
+  );
+  if (explicit && environmentValue && explicit !== environmentValue) {
+    throw new Error(
+      'The Agent Client storage namespace conflicts with the host environment.',
+    );
+  }
+  return explicit ?? environmentValue;
+}
+
+/** Opaque filesystem/Keychain-safe segment; never contains the host's raw namespace. */
+export function agentStorageNamespaceSegment(value: unknown): string | undefined {
+  const namespace = normalizeAgentStorageNamespace(value);
+  if (!namespace) return undefined;
+  return `host-${createHash('sha256')
+    .update('bailinghub.agent-client-storage.v1\0')
+    .update(namespace, 'utf8')
+    .digest('hex')
+    .slice(0, 32)}`;
+}
+
+export function defaultKeychainCredentialAccount(storageNamespace?: string): string {
+  const segment = agentStorageNamespaceSegment(storageNamespace);
+  return segment ? `${segment}-default` : KEYCHAIN_ACCOUNT;
+}
+
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -63,16 +116,17 @@ function closeNetServer(server: NetServer): Promise<void> {
 }
 
 /**
- * A loopback listen socket is an OS-released, crash-safe cross-process mutex. The lock key is
- * hashed to a stable local port and never contains credentials. A rare unrelated port
- * collision fails closed after a bounded wait.
+ * Crash-safe, cross-process mutex for short local Agent state transitions.
+ * The key is hashed before it is mapped to a loopback TCP port and must never contain credentials.
+ * The OS releases the listener after a crash; a rare unrelated hash/port collision only serializes
+ * the operation or fails closed after the bounded wait.
  */
-class LoopbackRefreshLock {
+export class LocalAgentOperationLock {
   private readonly port: number;
 
   constructor(key: string) {
-    const value = createHash('sha256').update(key).digest().readUInt32BE(0);
-    this.port = 40_000 + (value % 10_000);
+    const digest = createHash('sha256').update(key).digest();
+    this.port = 10_000 + (digest.readUInt32BE(0) % 30_000);
   }
 
   async withLock<T>(work: () => Promise<T>): Promise<T> {
@@ -82,9 +136,7 @@ class LoopbackRefreshLock {
       server = await this.tryAcquire();
       if (server) break;
       if (Date.now() >= deadline) {
-        throw new Error(
-          'Timed out waiting for another BailingHub process to finish a credential operation.',
-        );
+        throw new LocalAgentOperationLockTimeoutError();
       }
       await sleep(REFRESH_LOCK_POLL_MILLISECONDS);
     }
@@ -103,13 +155,17 @@ class LoopbackRefreshLock {
           resolve(undefined);
           return;
         }
-        reject(new Error('Could not acquire the local Agent refresh lock.'));
+        reject(new Error('Could not acquire the local Agent operation lock.'));
       });
-      server.listen(
-        { host: '127.0.0.1', port: this.port, exclusive: true },
-        () => resolve(server),
-      );
+      server.listen({ host: '127.0.0.1', port: this.port, exclusive: true }, () => resolve(server));
     });
+  }
+}
+
+export class LocalAgentOperationLockTimeoutError extends Error {
+  constructor() {
+    super('Timed out waiting for another BailingHub process to finish a local Agent operation.');
+    this.name = 'LocalAgentOperationLockTimeoutError';
   }
 }
 
@@ -266,7 +322,7 @@ export const runCommand = createCommandRunner();
 
 export class MacOsKeychainCredentialStore implements CredentialStore {
   readonly description = 'macOS Keychain';
-  private readonly refreshLock: LoopbackRefreshLock;
+  private readonly refreshLock: LocalAgentOperationLock;
 
   constructor(
     private readonly commandRunner: CommandRunner = runCommand,
@@ -275,7 +331,7 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
     if (!/^[A-Za-z0-9._-]{1,128}$/.test(account)) {
       throw new Error('The Keychain credential account is invalid.');
     }
-    this.refreshLock = new LoopbackRefreshLock(
+    this.refreshLock = new LocalAgentOperationLock(
       `keychain:${process.getuid?.() ?? 'user'}:${KEYCHAIN_SERVICE}:${account}`,
     );
   }
@@ -356,11 +412,11 @@ export class MacOsKeychainCredentialStore implements CredentialStore {
 
 export class FileCredentialStore implements CredentialStore {
   readonly description: string;
-  private readonly refreshLock: LoopbackRefreshLock;
+  private readonly refreshLock: LocalAgentOperationLock;
 
   constructor(private readonly path: string) {
     this.description = 'explicit mode-0600 file store';
-    this.refreshLock = new LoopbackRefreshLock(`file:${path}`);
+    this.refreshLock = new LocalAgentOperationLock(`file:${path}`);
   }
 
   async load(): Promise<AgentCredentials | undefined> {
@@ -472,16 +528,26 @@ export class MemoryCredentialStore implements CredentialStore {
   }
 }
 
-export function defaultFileCredentialPath(): string {
-  return join(homedir(), '.config', 'bailinghub', 'agent-credentials.json');
+export function defaultFileCredentialPath(storageNamespace?: string): string {
+  const segment = agentStorageNamespaceSegment(storageNamespace);
+  return segment
+    ? join(homedir(), '.config', 'bailinghub', 'hosts', segment, 'agent-credentials.json')
+    : join(homedir(), '.config', 'bailinghub', 'agent-credentials.json');
 }
 
 export function selectCredentialStore(
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   commandRunner: CommandRunner = runCommand,
+  storageNamespace?: string,
 ): CredentialStore {
-  if (platform === 'darwin') return new MacOsKeychainCredentialStore(commandRunner);
+  const namespace = resolveAgentStorageNamespace(storageNamespace, environment);
+  if (platform === 'darwin') {
+    return new MacOsKeychainCredentialStore(
+      commandRunner,
+      defaultKeychainCredentialAccount(namespace),
+    );
+  }
   if (platform === 'win32') {
     throw new Error(
       'Agent Session credential storage is not supported on Windows yet. ' +
@@ -501,5 +567,5 @@ export function selectCredentialStore(
     );
   }
   const path = String(environment.BAILINGHUB_CREDENTIAL_FILE ?? '').trim();
-  return new FileCredentialStore(path || defaultFileCredentialPath());
+  return new FileCredentialStore(path || defaultFileCredentialPath(namespace));
 }

@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { chmod, mkdtemp, stat } from 'node:fs/promises';
-import { createConnection } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  AGENT_CLIENT_STORAGE_NAMESPACE_ENV,
+  agentStorageNamespaceSegment,
   createCommandRunner,
+  defaultFileCredentialPath,
+  defaultKeychainCredentialAccount,
   FileCredentialStore,
   MacOsKeychainCredentialStore,
+  normalizeAgentStorageNamespace,
   parseAgentCredentials,
+  resolveAgentStorageNamespace,
   selectCredentialStore,
 } from '../dist/credential-store.js';
 
@@ -35,6 +41,62 @@ test('credential parser fails closed without exposing malformed secret fields', 
   assert.throws(
     () => parseAgentCredentials({ ...CREDENTIALS, access_token: '' }),
     (error) => !error.message.includes('refresh-secret'),
+  );
+});
+
+test('host storage namespace is strict, opaque, and preserves legacy defaults when unset', () => {
+  assert.equal(normalizeAgentStorageNamespace(undefined), undefined);
+  assert.equal(normalizeAgentStorageNamespace(''), undefined);
+  assert.equal(normalizeAgentStorageNamespace('product-desktop'), 'product-desktop');
+  for (const value of [
+    '../product', 'product/desktop', 'product\\desktop', 'Product', ' product',
+    'product ', '.', 'a'.repeat(65),
+  ]) {
+    assert.throws(
+      () => normalizeAgentStorageNamespace(value),
+      /storage namespace must be a lowercase identifier/u,
+    );
+  }
+
+  assert.equal(
+    defaultFileCredentialPath(),
+    join(homedir(), '.config', 'bailinghub', 'agent-credentials.json'),
+  );
+  assert.equal(defaultKeychainCredentialAccount(), 'default');
+
+  const segment = agentStorageNamespaceSegment('product-desktop');
+  assert.match(segment, /^host-[a-f0-9]{32}$/u);
+  assert.equal(segment.includes('product-desktop'), false);
+  assert.equal(defaultFileCredentialPath('product-desktop').includes(segment), true);
+  assert.equal(defaultKeychainCredentialAccount('product-desktop'), `${segment}-default`);
+});
+
+test('host environment namespaces Keychain account without placing raw input in arguments', async () => {
+  const calls = [];
+  const runner = async (_executable, args) => {
+    calls.push(args);
+    return { exitCode: 44, stdout: '' };
+  };
+  const namespace = 'product-desktop';
+  const store = selectCredentialStore({
+    [AGENT_CLIENT_STORAGE_NAMESPACE_ENV]: namespace,
+  }, 'darwin', runner);
+
+  assert.equal(await store.load(), undefined);
+  assert.equal(store.description.includes(namespace), false);
+  assert.equal(JSON.stringify(calls).includes(namespace), false);
+  assert.equal(
+    calls[0][calls[0].indexOf('-a') + 1],
+    defaultKeychainCredentialAccount(namespace),
+  );
+});
+
+test('conflicting host environment and SDK namespace fail closed', () => {
+  assert.throws(
+    () => resolveAgentStorageNamespace('product-one', {
+      [AGENT_CLIENT_STORAGE_NAMESPACE_ENV]: 'product-two',
+    }),
+    /conflicts with the host environment/u,
   );
 });
 
@@ -104,42 +166,37 @@ test('credential command runner terminates a hung system command', async () => {
   );
 });
 
-test('file credential refresh lock destroys unexpected loopback clients', async (t) => {
+test('file credential stores with the same path share one cross-process operation lock', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-lock-'));
   const path = join(directory, 'credentials.json');
-  const store = new FileCredentialStore(path);
-  const value = createHash('sha256').update(`file:${path}`).digest().readUInt32BE(0);
-  const port = 40_000 + (value % 10_000);
-  let releaseWork;
-  let enteredWork;
-  const entered = new Promise((resolve) => {
-    enteredWork = resolve;
+  const moduleUrl = new URL('../dist/credential-store.js', import.meta.url).href;
+  const child = spawn(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `import { FileCredentialStore } from ${JSON.stringify(moduleUrl)};
+const store = new FileCredentialStore(process.argv[1]);
+await store.withRefreshLock(async () => {
+  process.stdout.write('locked\\n');
+  await new Promise((resolve) => process.stdin.once('data', resolve));
+});`,
+    path,
+  ], { stdio: ['pipe', 'pipe', 'inherit'] });
+  t.after(() => child.kill('SIGKILL'));
+  const [chunk] = await once(child.stdout, 'data');
+  assert.equal(String(chunk), 'locked\n');
+
+  const second = new FileCredentialStore(path);
+  let secondEntered = false;
+  const waiting = second.withRefreshLock(async () => {
+    secondEntered = true;
+    return 'second';
   });
-  const gate = new Promise((resolve) => {
-    releaseWork = resolve;
-  });
-  const locked = store.withRefreshLock(async () => {
-    enteredWork();
-    await gate;
-    return 'released';
-  });
-  await entered;
-  const socket = createConnection({ host: '127.0.0.1', port });
-  t.after(() => socket.destroy());
-  await new Promise((resolve, reject) => {
-    socket.once('connect', resolve);
-    socket.once('error', reject);
-  });
-  releaseWork();
-  assert.equal(
-    await Promise.race([
-      locked,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('refresh lock did not close')), 500),
-      ),
-    ]),
-    'released',
-  );
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.equal(secondEntered, false);
+  child.stdin.end('release\n');
+  const [exitCode] = await once(child, 'exit');
+  assert.equal(exitCode, 0);
+  assert.equal(await waiting, 'second');
 });
 
 test('Windows Agent Session credentials fail closed instead of using POSIX file modes', () => {
