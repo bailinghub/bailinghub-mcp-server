@@ -29,6 +29,7 @@ const MAX_CREDENTIAL_BYTES = 64 * 1024;
 const REFRESH_LOCK_WAIT_MILLISECONDS = 20_000;
 const REFRESH_LOCK_POLL_MILLISECONDS = 50;
 const CREDENTIAL_COMMAND_TIMEOUT_MILLISECONDS = 15_000;
+const WINDOWS_DPAPI_COMMAND_TIMEOUT_MILLISECONDS = 30_000;
 const CREDENTIAL_COMMAND_KILL_GRACE_MILLISECONDS = 1_000;
 const MAX_DPAPI_CIPHERTEXT_BYTES = 128 * 1024;
 const WINDOWS_DPAPI_ENTROPY_PREFIX =
@@ -566,7 +567,9 @@ export class WindowsDpapiCredentialStore implements CredentialStore {
 
   constructor(
     path: string,
-    private readonly commandRunner: CommandRunner = runCommand,
+    private readonly commandRunner: CommandRunner = createCommandRunner(
+      WINDOWS_DPAPI_COMMAND_TIMEOUT_MILLISECONDS,
+    ),
     account: string = KEYCHAIN_ACCOUNT,
     environment: NodeJS.ProcessEnv = process.env,
   ) {
