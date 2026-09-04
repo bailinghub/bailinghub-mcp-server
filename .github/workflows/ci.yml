@@ -32,7 +32,10 @@ jobs:
           fi
           npm run client-api:check -- \
             --contract-dir /tmp/bailinghub-core/contracts/client-api/v1
-      - run: npm pack --dry-run
+      # `npm run verify` above is also the package prepack hook. Avoid running
+      # the full tests and dependency audit a second time while still checking
+      # the exact package contents produced for publication.
+      - run: npm pack --dry-run --ignore-scripts
 
   windows-agent-session:
     runs-on: windows-latest
