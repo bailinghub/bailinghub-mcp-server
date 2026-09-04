@@ -2,12 +2,21 @@
 
 [English](README.md) | 简体中文
 
+让兼容 MCP 的本地或桌面智能体，通过自然语言查询和操作已经接入
+[BailingHub](https://www.bailinghub.com/) 的商城、SaaS、CRM、ERP 或其他业务后台。
+
+具体能做什么，取决于业务系统主动声明的能力，以及管理员为当前连接放行的路由。例如：
+
+- 找出库存低于 10 件的商品，并生成补货建议；
+- 修改员工或客户资料；
+- 发起订单退款，并在路由要求时等待人工审批。
+
+智能体不会拿到管理员凭据或业务系统凭据。BailingHub 保留路由边界、审批状态、执行记录
+和审计轨迹，最终能否执行仍由业务系统按照当前登录身份和自身规则决定。
+
 > **0.3.0：**新增由宿主控制的多连接生命周期 API，以及 Windows Agent Session 的
 > CurrentUser DPAPI 安全存储。现有 Agent Client 与 `0.1.x` Client Token 语义继续兼容，
 > 不会被替换。
-
-让 MCP Host 通过自托管的 [BailingHub](https://www.bailinghub.com/) 控制面，提交并查询
-受治理的业务系统操作。
 
 它是一个独立、轻量的生态适配器，不内嵌 BailingHub，不授予业务权限，也不替代
 业务系统的最终授权。它同时保留原有 Client Token 模式，并新增 Agent
