@@ -2,12 +2,24 @@
 
 [简体中文](README.zh-CN.md) | English
 
+Let an MCP-compatible AI agent use natural-language requests to query and operate your
+store, SaaS, CRM, ERP, or other business system through
+[BailingHub](https://www.bailinghub.com/).
+
+Depending on the capabilities explicitly exposed by the business system and the routes
+allowed for this connection, an agent can, for example:
+
+- find products with fewer than 10 items in stock and prepare a restocking suggestion;
+- update an employee or customer profile;
+- submit a refund request and wait when the configured route requires human approval.
+
+The agent does not receive administrator or business-system credentials. BailingHub keeps
+the route boundary, approval state, execution record, and audit trail, while the downstream
+business system still makes the final authorization decision.
+
 > **0.3.0:** adds host-controlled multi-connection lifecycle APIs and CurrentUser DPAPI storage
 > for Windows Agent Sessions. The existing Agent Client and `0.1.x` Client Token behavior remains
 > compatible and is not replaced.
-
-Use MCP hosts to submit and inspect governed business-system actions through a
-self-hosted [BailingHub](https://www.bailinghub.com/) control plane.
 
 This package is a thin integration adapter. It does not embed BailingHub, grant business
 permissions, or replace the downstream business system's final authorization. It supports

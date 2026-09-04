@@ -2,7 +2,7 @@
   "name": "bailinghub-mcp-server",
   "version": "0.3.0",
   "private": false,
-  "description": "Submit and inspect governed AI jobs through BailingHub from MCP hosts.",
+  "description": "Let MCP-compatible agents query and operate permitted business systems through BailingHub.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
