@@ -6,8 +6,11 @@ The stable Agent Client release order is BailingHub Core, then this MCP/SDK pack
 adapters such as `dsh-bailinghub`. Do not publish a host adapter that resolves this SDK from an
 optional peer or local path.
 
-1. Start from a clean checkout of the immutable release commit.
-2. Confirm the matching BailingHub Core Agent Auth v1 and Agent Client Runtime v1 release exists.
+1. Publish through the tag-triggered CI workflow from a fresh ordinary Git clone of the
+   immutable release commit. Do not publish from a linked Git worktree.
+2. Confirm the matching BailingHub Core 0.6.1 release exists. SDK 0.4.0's archive API minimum
+   remains Core 0.6.0; Core 0.6.1 is the recommended user installation. Existing Agent Auth v1,
+   Agent Client Runtime v1 and Client API flows stay compatible.
 3. Set one stable version in `package.json`, `package-lock.json`, `src/version.ts`, `server.json`,
    `compatibility/client-api.json`, changelog, Git tag, and release notes; remove private-candidate
    wording from the English and Chinese README files.
@@ -26,6 +29,9 @@ optional peer or local path.
     working Session survives. Force inspection and revoke failures and prove `login()` still
     returns `state: authorized` with `cleanupRequired`, preserves the relevant credentials, and
     does not advise another login. Confirm a legacy schema-v1 profile remains readable.
+    For conversation archives, verify frozen member confirmation, text/run association, lost-ACK
+    idempotency, revoked-member rejection and unsupported old-Core behavior from the package.
+    Archive recovery must not execute any business invocation again.
 11. `npm pack --dry-run --json`, unpack the tarball, and inspect the exact contents.
 12. Confirm `dist/sdk.js`, `dist/sdk.d.ts`, Agent Auth/Runtime modules, and both Agent Client SDK
     guides are present.
@@ -33,7 +39,8 @@ optional peer or local path.
     absolute paths, private keys, raw tool arguments/results, and hidden reasoning.
 14. Install the tarball into a clean project and dynamically import
     `bailinghub-mcp-server/sdk`; no repository path or build tree may be visible.
-15. Publish the npm package with provenance and verify the exact version through npm.
+15. Publish the npm package with provenance through CI. Verify the exact npm version, sha512
+    integrity and `gitHead` matching the immutable Tag commit; missing source identity fails the gate.
 16. Validate `mcpName` against `server.json`, publish metadata with the official
     `mcp-publisher`, and verify it through the Registry API.
 17. Only after this package is publicly resolvable may a host adapter publish with an exact normal

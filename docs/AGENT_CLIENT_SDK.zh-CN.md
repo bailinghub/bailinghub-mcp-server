@@ -2,6 +2,13 @@
 
 [English](AGENT_CLIENT_SDK.md) | 简体中文
 
+0.4.0 让配套 Agent 客户端把可读的对话和业务执行记录关联起来。用户可以在同一系统里使用明确
+选中的账号，管理员则能从整段可见对话追溯到每项原始业务动作。
+
+需要对话归档时，升级下方精确 SDK 版本，并配合 BailingHub Core 0.6.1。客户端负责选择账号、
+保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
+原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
+
 `bailinghub-mcp-server/sdk` 是本地智能体框架的宿主无关接入层。它统一负责浏览器授权、PKCE、
 连接元数据、Agent Session 安全存储、Token 刷新和 BailingHub Runtime DTO 映射。宿主适配器只负责
 自己的生命周期、模型调用、可见会话 ID 和动态工具注册。
@@ -14,14 +21,18 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install bailinghub-mcp-server@0.3.0
+npm install --save-exact bailinghub-mcp-server@0.4.0
 ```
 
-`0.3.0` 是稳定的 Agent Client SDK 版本。在公开 npm Registry 能解析到该精确版本之前，
-宿主适配器必须保持私有，且不得在公开 manifest 中改用本机路径。
+公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.4.0` 后发布。
+不要在公开 manifest 中改用本机路径。
 
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
 `agent_client` 配置，以及已登记的公开 Client App ID 与业务授权页。
+
+归档接口最低需要 Core 0.6.0，新安装和升级推荐 Core 0.6.1。低于接口最低版本的 Core
+可以继续使用已有 Agent Auth/Runtime 功能；
+归档接口不支持时应显示该限制，不能宣称正文已保存，也不能为修复归档重新执行业务动作。
 
 旧 Client Token/MCP Job 模式是独立兼容路径。Agent Client 宿主不需要
 `BAILINGHUB_CLIENT_TOKEN`。
@@ -83,8 +94,9 @@ DPAPI 路径与附加熵，以及本机锁作用域。未设置时，历史 POSI
 
 ## 多连接生命周期
 
-本节 API 属于公开 `0.3.0` 包。宿主适配器应精确依赖该版本，并把连接选择保留在用户掌控的
-命令或设置界面中，不能把它暴露为模型工具。
+本节 API 从 `0.3.0` 引入，在 `0.4.0` 中保持兼容。宿主适配器应精确依赖 SDK 版本，并把连接管理保留在用户掌控的
+命令或设置界面中。宿主可以发布可用授权引用，供模型按次选择，再由宿主按下文固定映射到连接。
+登录、连接管理、身份和凭据不能成为模型控制的输入。
 
 SDK 注册表可以同时保存多个具名连接实例，`connectionName` 只是本机选择器。浏览器授权完成后，
 SDK 会在相同 `Hub + clientAppId + workspace` 公开绑定内，使用 Core 返回的可信
@@ -108,8 +120,8 @@ await transport.connectionsRemove('shop-a');
 `connectionsAdd()` 在名称尚不存在时创建一个新的本机实例，只登记公开元数据并选为当前项，
 不会伪造、复制登录。相同名称与相同绑定重复添加是幂等选择；相同名称改绑其他公开元数据会失败。
 每个尚未授权的新选择器都要完成浏览器授权。`connectionsUse()` 只切换本机当前选择。宿主必须把这些入口
-放在用户命令或设置界面中，不能投影为模型工具，也不能接受模型生成的连接选择。已经开始的会话
-或 run 必须继续使用创建时固定的实例，切换只影响新会话。
+放在用户命令或设置界面中，不能投影为模型工具。每个 run 和 invocation 必须继续使用创建时固定的实例；
+切换 current 只影响以后捕获连接时的默认项，不改变会话中已经公开的授权引用。
 
 `connectionsRemove()` 在有登录时先撤销远端 Agent Session，成功后才删除本地凭据与公开元数据。
 远端撤销失败时，连接与凭据原样保留以便重试。它不同于 `use(workspace)`：前者选择或删除一整套
@@ -121,8 +133,34 @@ await transport.connectionsRemove('shop-a');
 
 已有确定性 v1 注册表连接继续可读，并保持原凭据 key。只有至少存在一个具名实例时，注册表
 才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。
-旧版 SDK 遇到 schema v2 会失败关闭。降级前必须使用 `0.3.0` 逐一撤销并删除具名实例；最后一个
+早于 `0.3.0` 的 SDK 遇到 schema v2 会失败关闭。降级到这些版本前，必须使用已安装的 `0.3.0` 或
+`0.4.0` 逐一撤销并删除具名实例；最后一个
 实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件、DPAPI 密文或 Keychain 记录。
+
+### 同一系统内按次选择授权引用
+
+宿主可以复用现有 API，在相同 `Hub + clientAppId + workspace` 下同时使用两份独立身份授权，
+无需切换 current。宿主决定本会话可用哪些授权，并分配 `store_a`、`store_b` 这样的安全引用和
+用户认可的展示名称。引用不是凭据、`on_behalf_of` 或新的 Core 字段。不要把原始 `status()` 结果
+交给模型。`connectionsList()` 的 `authorized` 只表示本地存在凭据；是否可执行仍取决于 Session
+检查和 Core 授权校验。
+
+宿主将每个引用一次性解析为不透明 `connectionKey` 与固定 `workspace`。将这两个字段作为
+`startTurn`、`searchCapabilities`、`invoke`、`completeRun` 的第二参数，或 `resume` 的第三参数。
+即使两份授权返回相同工具声明和 revision，也分别保存 run、capability revision、active tools 和恢复状态。
+续执行不能重新解析可能变更的别名或 current；原连接被删除、撤销或改绑后必须失败关闭，不能回退到另一身份。
+
+工具名称、输入 schema 和公开治理属性一致时，宿主可以只展示一份 typed 工具，模型输入使用外层封装：
+
+```json
+{"authorization_ref":"store_a","arguments":{"id":42,"name":"Updated product"}}
+```
+
+外层两个字段必填，并拒绝额外字段；`authorization_ref` 枚举只包含该工具可用的授权引用，
+`arguments` 保留原始业务 schema。宿主校验并消费引用后，只把内层 `arguments` 连同对应授权的
+run、revision 交给 SDK。声明不一致时不要合并为这份共享展示。连接管理继续放在模型工具之外。
+每个 `invocation_id` 都要与创建时捕获的授权一起保存，审批恢复、结果未知和重试始终沿用原身份与
+原 invocation。本节是使用现有 SDK 方法的宿主接入指南，不表示独立 MCP Server 新增了授权选择工具。
 
 ## 登录生命周期
 
@@ -243,12 +281,56 @@ await transport.completeRun(turn.run_id, {
 SDK 只映射最终可见正文和公开 usage 白名单。不要传 hidden reasoning、thinking chunk、完整敏感参数
 或业务响应原文。在 Core 确认完成前，始终复用同一个 assistant message ID 与 payload。
 
+## 完整可见对话归档
+
+`0.4.0` 新增宿主方法 `syncConversationArchive(envelope, { members })`，推荐配套 Core 0.6.1，
+接口最低需要 Core 0.6.0。
+该方法不作为模型工具，不修改业务能力声明。
+
+```js
+await transport.syncConversationArchive({
+  clientArchiveId: persistentArchiveUuid,
+  clientConversationId: originalClientConversationId,
+  events: pendingVisibleEvents,
+}, {
+  members: frozenMembers.map((member) => ({
+    connectionKey: member.connectionKey,
+    workspace: member.workspace,
+    expectedSessionId: member.sessionId,
+    label: member.label,
+  })),
+});
+```
+
+`envelope` 为 `{ clientArchiveId, clientConversationId, events }`：`clientArchiveId` 是宿主先持久化的
+随机 UUID，`clientConversationId` 与原 `startTurn` 一致。成员数组固定为
+`{ connectionKey, workspace, expectedSessionId, label? }[]`，第一项是固定写入者。SDK 校验全部原连接
+属于同一 Hub、客户端应用和 workspace，再使用各自凭据确认成员；全部确认后才上传正文。
+改选、重授权、丢失原凭据不能自动替换归档成员。`label` 仅用于显示。
+
+事件包含 `event_id`、从 1 开始连续递增的 `sequence`、原 `client_turn_id` 与 `kind`：
+
+- `turn_start`：轮次开始；
+- `user_message` / `assistant_message`：`content` 保存实际可见文本，包括中间说明；
+- `run_link`：原 `run_id`、`member_session_id`，服务端验证归属；
+- `turn_end`：`status` 为 `completed` / `failed` / `cancelled`。
+
+返回 `{ schema: 'bailing.agent-conversation-audit-ack.v1', conversation_id, last_sequence }`。
+空事件数组仅注册/复核成员并取得游标，不读取正文。宿主负责持久事件队列、原始顺序、确认游标及断线补传。
+相同事件重试必须保持 ID 和正文不变；SDK 每批最多 50 事件、192 KiB，超大单条明确失败，不截断。
+补传不得重新执行任何业务动作。旧 Core 的 404、成员失效、同步失败都必须如实显示归档状态。
+
+聚合正文只进入当前部署管理审计域，不复制进各授权的记忆；没有面向业务 Agent Session 的正文读取接口。
+首期只覆盖可见文本和原 run 引用，不包含附件、卡片、隐藏推理或任意本地工具原始输出。
+空选普通聊天不访问 Hub。原文未保留的历史会话不能从执行摘要猜补。
+
 ## 宿主适配器发布验收
 
 1. 在全新宿主 Profile 中只用公开 Registry 包安装；
 2. SDK 必须是精确普通 dependency，不是 optional peer 或本机路径；
 3. 验证浏览器登录、status、一次只读、一次可回滚写、审批/resume、complete、logout 和业务撤销；
 4. 确认 BailingHub 能看到会话与治理轨迹；
+   使用归档时，再在 Core 0.6.1 上核对全部原成员、可见消息、原 run 关联、ACK 丢失重传、断线恢复与成员撤销；
 5. 扫描源码、tarball、日志、截图和连接元数据中的 Secret/私有地址；
 6. 确认 hidden reasoning 与业务原始 payload 从未进入 Core。
 

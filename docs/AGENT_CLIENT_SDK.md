@@ -2,6 +2,15 @@
 
 [简体中文](AGENT_CLIENT_SDK.zh-CN.md) | English
 
+Version 0.4.0 lets a compatible Agent Client preserve a readable conversation alongside its
+business execution records. A user can work with explicitly selected accounts in one system,
+and an administrator can follow the visible conversation back to each original action.
+
+Upgrade your host integration when you need this archive. Install the exact SDK version below,
+use BailingHub Core 0.6.1 for archive support, and implement local capture and retry in the host.
+The SDK does not create an account-selection UI or automatically collect conversations.
+Existing Client Token, browser authorization, business invocation and recovery APIs stay compatible.
+
 `bailinghub-mcp-server/sdk` is the host-neutral integration seam for a local Agent framework. It
 owns browser authorization, PKCE, connection metadata, secure Agent Session storage, token refresh,
 and BailingHub Runtime DTO mapping. A host adapter owns its own lifecycle, model invocation,
@@ -16,11 +25,11 @@ resolves the one authorization entry registered for `clientAppId`.
 Install the SDK package version that matches the Agent Client release line:
 
 ```bash
-npm install bailinghub-mcp-server@0.3.0
+npm install --save-exact bailinghub-mcp-server@0.4.0
 ```
 
-`0.3.0` is the stable Agent Client SDK release. A host adapter must remain private until that exact
-version resolves from the public npm registry; never substitute a local path in a public manifest.
+Use an exact ordinary dependency for a published host adapter. Publish it only after `0.4.0`
+resolves from the public npm registry; never substitute a local path in a public manifest.
 
 Required server surfaces:
 
@@ -28,6 +37,11 @@ Required server surfaces:
 - BailingHub Agent Client Runtime v1;
 - route `tools.agent_direct` and `agent_client` configuration;
 - a registered public Client App ID and business authorization page.
+
+The archive API minimum is Core 0.6.0; use Core 0.6.1 for new installations and upgrades.
+On Core releases below that minimum, existing Agent Auth/Runtime flows remain available;
+an archive request can return unsupported.
+Display that limitation without claiming the text was saved or retrying a business operation.
 
 The older Client Token/MCP job mode remains a separate compatibility path. Agent Client hosts do
 not require `BAILINGHUB_CLIENT_TOKEN`.
@@ -94,8 +108,11 @@ the same namespace boundary.
 
 ## Multiple connection lifecycle
 
-These APIs are part of the public `0.3.0` package. Host adapters should depend on this exact
-version and keep connection selection in user-owned commands or settings rather than model tools.
+These APIs were introduced in 0.3.0 and remain compatible in 0.4.0. Host adapters should depend
+on the exact SDK version and keep connection management in user-owned commands or settings. A host may publish
+available authorization references for a model to select per call; the host fixes each reference's
+connection binding as described below. Login, connection management, identities, and credentials
+must never become model-controlled inputs.
 
 The SDK registry can retain multiple named connection instances. `connectionName` is only a local
 selector. After browser authorization, the SDK compares the same public
@@ -122,9 +139,9 @@ await transport.connectionsRemove('shop-a');
 public metadata, and selects it; it does not fabricate or copy a login. Repeating the exact same
 name and binding is idempotent, while reusing that name for different public metadata fails.
 Browser authorization is required for every new, still-unauthorized selector. Hosts must expose
-add/use only through user commands or settings, never as model tools or model-controlled selectors.
-Existing conversations and runs stay pinned to the connection captured when they were created;
-a selection affects new sessions only.
+add/use only through user commands or settings, never as model tools. Each run and invocation
+stays pinned to its captured connection; changing the current connection only changes the default
+for future captures, not any authorization reference already available in a conversation.
 
 When credentials exist, `connectionsRemove()` revokes the remote Agent Session before deleting
 local credentials and public metadata. A failed remote revoke keeps both intact for retry. This is
@@ -139,9 +156,43 @@ conversations and runs remain pinned to their captured connection.
 Existing deterministic v1 registry entries remain readable and keep their credential key. The
 registry is written as schema v2 only while at least one named instance exists; the
 instance id is opaque local metadata, not a credential or an identity assertion sent to Core.
-An older SDK fails closed on schema v2. Before downgrading, use `0.3.0` to revoke and remove every
+An SDK older than 0.3.0 fails closed on schema v2. Before downgrading below that version, use the
+installed 0.3.0 or 0.4.0 SDK to revoke and remove every
 named instance; after the last one is removed, the registry is written
 back as schema v1. Do not delete credential files or Keychain entries manually.
+
+### Per-call authorization references within one system
+
+A host can use the existing API for two independently authorized identities on the same
+`Hub + clientAppId + workspace` binding without switching the current connection. The host chooses
+which authorizations are available to a conversation and assigns safe references such as
+`store_a` and `store_b`, with user-approved display names. These references are not credentials,
+`on_behalf_of` values, or new Core fields. Do not expose the raw `status()` result to a model.
+The `authorized` state from `connectionsList()` only means local credentials exist; session
+inspection and Core authorization still determine whether an operation can proceed.
+
+Resolve each reference once to its opaque `connectionKey` and fixed `workspace`. Pass that pair
+as the second argument to `startTurn`, `searchCapabilities`, `invoke`, and `completeRun`, or the
+third argument to `resume`. Keep a separate run, capability revision, active tool set, and recovery
+state for each authorization, even when the returned tool declarations and revisions are equal.
+Do not resolve a mutable alias or current connection again when continuing an existing invocation.
+A removed, revoked, or rebound connection must fail closed rather than fall back to another identity.
+
+When the tool name, input schema, and public governance properties match, the host may show one
+shared typed tool with this model-facing envelope:
+
+```json
+{"authorization_ref":"store_a","arguments":{"id":42,"name":"Updated product"}}
+```
+
+The outer object requires both fields and rejects additional properties. Its `authorization_ref`
+enum contains only references available for that tool; `arguments` retains the original business
+schema. The host validates and consumes the reference, then forwards only the inner `arguments`
+to the SDK with the selected authorization's run and revision. If declarations differ, do not
+merge them into this shared presentation. Connection management remains outside the model tools.
+Persist each `invocation_id` with its captured authorization so approval recovery, uncertain outcomes,
+and retries retain the same identity and invocation. This is host integration guidance using existing
+SDK methods; the standalone MCP server does not add an authorization-selection tool.
 
 ## Login lifecycle
 
@@ -277,6 +328,55 @@ Only visible final content and the public usage allowlist are mapped. Do not pas
 thinking chunks, complete sensitive arguments, or raw business responses. Reuse the same assistant
 message ID and payload until Core confirms completion.
 
+## Visible conversation archive
+
+Version 0.4.0 adds the host-only `syncConversationArchive(envelope, { members })` API. Use
+BailingHub Core 0.6.1; the API minimum is Core 0.6.0. It does not add an MCP/model tool or change
+business API declarations.
+
+```js
+await transport.syncConversationArchive({
+  clientArchiveId: persistentArchiveUuid,
+  clientConversationId: originalClientConversationId,
+  events: pendingVisibleEvents,
+}, {
+  members: frozenMembers.map((member) => ({
+    connectionKey: member.connectionKey,
+    workspace: member.workspace,
+    expectedSessionId: member.sessionId,
+    label: member.label,
+  })),
+});
+```
+
+The host persists a random archive UUID and the ordered member set before first upload. Member
+zero is the fixed writer. All members must share one Hub, public client application and workspace;
+the current/default connection is never consulted. Core enrolls the group, each member confirms
+with its own original Agent Session, and only the writer can append visible events after all
+members are confirmed and still valid. Labels are display hints, not identity assertions.
+
+Events use `event_id`, consecutive positive `sequence`, `client_turn_id`, and `kind`:
+`turn_start`, `user_message`/`assistant_message` with `content`, `run_link` with the original
+`run_id` and `member_session_id`, or `turn_end` with `status` (`completed`, `failed`, `cancelled`).
+Conversation and turn IDs must match the original `startTurn` values for run links. Visible
+messages are text only; attachments, cards, hidden reasoning and arbitrary local tool payloads
+are outside this contract. The SDK projects allowed fields and sends bounded batches (up to
+50 events and 192 KiB). Oversized events are rejected, never silently truncated.
+
+The result is `{ schema: 'bailing.agent-conversation-audit-ack.v1', conversation_id,
+last_sequence }`. An empty event array can enroll/reconfirm the fixed group and return its
+cursor without reading any transcript. The host owns durable event IDs, frozen event payloads,
+ordering, acknowledgement persistence and retries. Retry an uncertain upload with the same
+events; conflicting content under an existing event ID or sequence is an error. Never repeat a
+business invocation to repair an archive failure.
+
+The archive is separate from authorization run completion and per-authorization memory.
+Only the deployment's administrative `runs:read` audit domain can read combined text; there is
+no Agent Session transcript read API. Empty selection must make no SDK request. Unsupported
+Core/SDK, revoked members and failed uploads must be reported as incomplete/unsupported archive
+state, not as successful archival or as permission to use another connection. Historical final
+replies not retained by the host cannot be reconstructed from execution summaries.
+
 ## Host-adapter acceptance
 
 Before publishing an adapter:
@@ -286,6 +386,8 @@ Before publishing an adapter:
 3. complete browser login, status, one read, one reversible write, approval/resume, completion,
    logout, and business-side revoke;
 4. confirm BailingHub shows the conversation and governance trace;
+   for archives, also check all original members, visible messages, run links, lost-ACK retry,
+   offline recovery and member revocation against Core 0.6.1;
 5. scan source, tarballs, logs, screenshots, and connection metadata for secrets/private hosts;
 6. confirm hidden reasoning and raw business payloads never reach Core.
 

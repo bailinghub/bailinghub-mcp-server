@@ -1,4 +1,10 @@
 import { createHash } from 'node:crypto';
+import {
+  auditEvents, auditId, auditUuid, CONVERSATION_BATCH_BYTES,
+  type ConversationAuditAck, type ConversationAuditEvent,
+} from './conversation-audit.js';
+
+export type { ConversationAudit, ConversationAuditAck, ConversationAuditEvent, CreateConversationAuditInput } from './conversation-audit.js';
 
 import {
   BailingHubAgentClient,
@@ -148,6 +154,8 @@ export type AgentClientHostTransport = {
   invoke(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   resume(invocationId: string, input?: unknown, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   completeRun(runId: string, input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentRunCompletion>;
+  /** Host-only visible transcript synchronization; never expose this method as a model tool. */
+  syncConversationArchive(input: Record<string, unknown>, options: Record<string, unknown>): Promise<ConversationAuditAck>;
 };
 
 function hostRecord(value: unknown, label: string): Record<string, unknown> {
@@ -633,6 +641,99 @@ export function createAgentClientTransport(
   }
 
   return {
+    async syncConversationArchive(inputValue, optionsValue) {
+      const input = hostRecord(inputValue, 'conversation archive');
+      const options = hostRecord(optionsValue, 'conversation archive options');
+      const clientArchiveId = auditUuid(input.clientArchiveId);
+      const clientConversationId = auditId(input.clientConversationId);
+      const events = auditEvents(input.events);
+      if (!Array.isArray(options.members) || options.members.length < 1 || options.members.length > 64) {
+        throw new TypeError('Conversation archive requires an explicit frozen member set.');
+      }
+      const members = options.members.map((value) => {
+        const member = hostRecord(value, 'conversation member');
+        const connectionKey = hostText(member.connectionKey, 'connectionKey', 37);
+        if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new TypeError('Conversation members require exact connection keys.');
+        return {
+          connectionKey,
+          workspace: normalizeAgentRoute(hostText(member.workspace, 'workspace', 64)),
+          expectedSessionId: auditUuid(member.expectedSessionId),
+          label: optionalHostText(member.label, 'member label', 128),
+        };
+      });
+      if (new Set(members.map((member) => member.connectionKey)).size !== members.length ||
+          new Set(members.map((member) => member.expectedSessionId)).size !== members.length) {
+        throw new TypeError('Conversation archive members must be unique.');
+      }
+      for (const event of events) {
+        if (event.kind === 'run_link' && !members.some((member) => member.expectedSessionId === event.member_session_id)) {
+          throw new TypeError('Conversation run link is outside the frozen member set.');
+        }
+      }
+      // Resolve every fixed key before any network request. The current/default connection is never used.
+      const prepared: { profile: AgentConnectionProfile; client: BailingHubAgentClient; assertBinding: () => Promise<void> }[] = [];
+      for (const member of members) {
+        const profile = await connections.registry.get(member.connectionKey);
+        if (!profile || profile.workspace !== member.workspace) throw new Error('A frozen conversation connection is unavailable.');
+        const first = prepared[0]?.profile;
+        if (first && (first.baseUrl !== profile.baseUrl || first.clientAppId !== profile.clientAppId || first.workspace !== profile.workspace)) {
+          throw new Error('Conversation archive members must share one Hub, client application and workspace.');
+        }
+        const manager = await sessionFor(profile);
+        const assertBinding = async () => {
+          const current = await connections.registry.get(member.connectionKey);
+          const credential = await manager.loadRequired();
+          if (!current || current.baseUrl !== profile.baseUrl || current.clientAppId !== profile.clientAppId || current.workspace !== profile.workspace ||
+              credential.session_id !== member.expectedSessionId || credential.base_url !== profile.baseUrl ||
+              credential.client_app_id !== profile.clientAppId || credential.route !== profile.workspace) {
+            throw new Error('The original conversation authorization is no longer available.');
+          }
+        };
+        await assertBinding();
+        const client = new BailingHubAgentClient({
+          baseUrl: profile.baseUrl, clientAppId: profile.clientAppId, workspace: profile.workspace,
+          sessionId: member.expectedSessionId,
+          accessTokenProvider: { getAccessToken: async (forceRefresh) => {
+            await assertBinding();
+            const token = await manager.getAccessToken(forceRefresh);
+            await assertBinding();
+            return token;
+          } },
+        }, { fetchImpl, allowInsecureHttp: profile.allowInsecureHttp });
+        prepared.push({ profile, client, assertBinding });
+      }
+      const writer = prepared[0]!.client;
+      const memberLabels = Object.fromEntries(members.flatMap((member) => member.label ? [[member.expectedSessionId, member.label]] : []));
+      let registration = await writer.createConversationAudit({
+        clientArchiveId, clientConversationId,
+        memberSessionIds: members.map((member) => member.expectedSessionId), memberLabels,
+      });
+      for (const member of prepared.slice(1)) {
+        registration = await member.client.confirmConversationAudit(registration.conversation_id);
+      }
+      if (registration.state !== 'ready' || registration.member_count !== members.length || registration.confirmed_count !== members.length) {
+        throw new Error('The complete conversation membership has not been confirmed.');
+      }
+      let receipt: ConversationAuditAck = {
+        schema: 'bailing.agent-conversation-audit-ack.v1',
+        conversation_id: registration.conversation_id, last_sequence: registration.last_sequence,
+      };
+      let batch: ConversationAuditEvent[] = [];
+      const flush = async () => {
+        if (!batch.length) return;
+        // A local replacement of any member blocks combined-text upload, including after enrollment.
+        for (const member of prepared) await member.assertBinding();
+        receipt = await writer.appendConversationAuditEvents(registration.conversation_id, batch);
+        batch = [];
+      };
+      for (const event of events) {
+        if (batch.length === 50 || Buffer.byteLength(JSON.stringify({ events: [...batch, event] })) > CONVERSATION_BATCH_BYTES) await flush();
+        batch.push(event);
+      }
+      await flush();
+      return receipt;
+    },
+
     async connectionsList(inputValue = {}) {
       hostRecord(inputValue, 'connectionsList input');
       const [profiles, current] = await Promise.all([

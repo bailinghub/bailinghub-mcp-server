@@ -17,9 +17,30 @@ The agent does not receive administrator or business-system credentials. Bailing
 the route boundary, approval state, execution record, and audit trail, while the downstream
 business system still makes the final authorization decision.
 
-> **0.3.0:** adds host-controlled multi-connection lifecycle APIs and CurrentUser DPAPI storage
-> for Windows Agent Sessions. The existing Agent Client and `0.1.x` Client Token behavior remains
-> compatible and is not replaced.
+## What changes in 0.4.0
+
+When an Agent Client host enables conversation archiving, a BailingHub administrator can follow
+the user's request, the assistant's visible replies and the resulting business actions together.
+For example, one conversation can compare two separately authorized stores while retaining the
+original execution record for each store. Use **BailingHub Core 0.6.1** with a host that
+captures and synchronizes the conversation. The archive API minimum is Core 0.6.0.
+
+The SDK adds that synchronization API. It does not capture conversations by itself. A native host
+such as [the DSH plugin](https://github.com/bailinghub/bailinghub-dsh-plugin) owns the account
+selection and conversation interface. The standalone MCP server keeps its existing tool surface.
+
+## Who should upgrade, and where to start
+
+| Your setup | Next step |
+| --- | --- |
+| You use an MCP application with a fixed business route | Install this package at `0.4.0` using the [MCP setup below](#install). Your existing Client Token and Agent Session flows remain compatible. |
+| You use a native Agent Client, such as DSH | Upgrade through that host's matching release and follow its account-selection guide. Installing this MCP command alone does not add a multi-account conversation UI. |
+| You build an Agent Client host | Install `bailinghub-mcp-server@0.4.0`, use Core `0.6.1` for archives, and follow the [SDK guide](docs/AGENT_CLIENT_SDK.md). |
+
+You do not need to change business API declarations for this SDK upgrade. Existing read/write,
+approval and invocation recovery behavior stays in place. Conversation upload retries use the
+same event IDs and never repeat business actions; only the deployment's authorized administrators
+can read the combined archive. Hidden reasoning is excluded.
 
 This package is a thin integration adapter. It does not embed BailingHub, grant business
 permissions, or replace the downstream business system's final authorization. It supports
@@ -34,15 +55,18 @@ which a human approves one local Agent through the system browser.
 | `get_governed_job` | Read the current public state of a credential-owned job |
 | `wait_for_governed_job` | Poll one job for at most 60 seconds without resubmitting it |
 
-The Agent Client 0.3 path starts with five small meta-tools for turn bootstrap,
+The Agent Session MCP path starts with five small meta-tools for turn bootstrap,
 capability search, governed invocation/recovery, and visible run completion. BailingHub then
 returns at most 12 active business tools for the current turn; each replacement removes the
 previous active set instead of growing the model context indefinitely.
 
 Host implementers should use the [host-neutral Agent Client SDK guide](docs/AGENT_CLIENT_SDK.md).
 
-The route, BailingHub URL, and credential are local process configuration. They are never
-MCP tool arguments and therefore cannot be selected or replaced by model output.
+The route, BailingHub URL, and credential are local process configuration, never model-supplied
+MCP tool arguments. An SDK host may publish a fixed set of available authorization references
+for per-call selection within one system; the host resolves each reference to its captured
+connection and retains control of connection management. See the
+[authorization-reference guidance](docs/AGENT_CLIENT_SDK.md#per-call-authorization-references-within-one-system).
 
 ## Authentication Modes
 
@@ -112,7 +136,7 @@ For the legacy static-job mode, configure an MCP host to spawn:
   "mcpServers": {
     "bailinghub": {
       "command": "npx",
-      "args": ["-y", "bailinghub-mcp-server"],
+      "args": ["-y", "bailinghub-mcp-server@0.4.0"],
       "env": {
         "BAILINGHUB_BASE_URL": "https://hub.example.com",
         "BAILINGHUB_CLIENT_TOKEN": "replace-with-a-route-scoped-client-token",
@@ -129,6 +153,8 @@ Authorize one registered public Agent client and one fixed route before starting
 host without a Client Token:
 
 ```bash
+npm install --global bailinghub-mcp-server@0.4.0
+
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \
   --client-app-id merchant-agent \
@@ -225,6 +251,13 @@ Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
 - `POST /agent-api/v1/tool-invocations`
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
+
+The host SDK additionally uses conversation audit write APIs available from Core 0.6.0.
+Core 0.6.1 is the recommended release. These APIs are not exposed as MCP/model tools:
+
+- `POST /agent-api/v1/conversation-audits`
+- `POST /agent-api/v1/conversation-audits/{conversation_id}/confirm`
+- `POST /agent-api/v1/conversation-audits/{conversation_id}/events`
 
 The `bailinghub-mcp-server/sdk` subpath additionally exposes a host-neutral Agent Client factory.
 It owns browser login, named local selectors, isolated credentials, token refresh, and Core DTO

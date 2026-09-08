@@ -21,9 +21,21 @@ current BailingHub contract and rejects:
 MCP protocol versions, this npm package version, BailingHub application versions, and Client
 API versions are deliberately independent.
 
-The stable Agent Session 0.3 release uses Agent Auth v1 and Agent API v1. It does not alter
-the machine-readable `bailing.client-api.v1` compatibility declaration or the behavior of
-existing Client Token installations.
+Version 0.4.0 retains Agent Auth v1, Agent Client Runtime v1 and the existing Client Token flow.
+The Client API contract and payload semantics remain unchanged; the consumer declaration records
+the adapter's new version.
+
+| Feature | Server requirement |
+| --- | --- |
+| Standalone MCP Client Token jobs | Existing `bailing.client-api.v1` contract |
+| Browser authorization, Agent turns, governed calls and completion | Existing Agent Auth v1 and Agent Client Runtime v1, including Core 0.5.1 |
+| Host SDK visible conversation archive | Conversation audit v1: Core 0.6.0 API minimum; Core 0.6.1 recommended |
+
+The archive is an additive host SDK API. Core releases below 0.6.0 do not implement it; hosts must
+report unsupported archival while preserving the established business flow. Upgrade Core before
+enabling archiving; use Core 0.6.1 for new installations and upgrades. This SDK does not add a
+multi-account selector or transcript capture to the standalone MCP tools; native host adapters
+own that interface and durable outbox.
 
 `server.json` remains the MCP Registry descriptor for the standalone stdio/Client Token entry and
 therefore intentionally requires `BAILINGHUB_CLIENT_TOKEN`. Native host adapters do not consume
@@ -31,17 +43,23 @@ that descriptor; they import `bailinghub-mcp-server/sdk` and use browser-authori
 credentials. These are two installation surfaces of one package, not one shared configuration
 form.
 
-The host-neutral `bailinghub-mcp-server/sdk` export is part of the 0.3 package surface. Host
+The host-neutral `bailinghub-mcp-server/sdk` export is part of the 0.4 package surface. Host
 adapters must use an exact compatible normal dependency for reproducible installation. A host
 adapter must not depend on an optional peer, a local `file:` path, or copied SDK sources.
 
-One public binding is `Hub + client_app_id + workspace`. The 0.3 multi-connection lifecycle uses
+One public binding is `Hub + client_app_id + workspace`. The multi-connection lifecycle uses
 `connectionName` only as a local selector. After authorization it reconciles same-binding
 connections by Core's trusted `on_behalf_of`: the same identity replaces its older local Session,
 while different identities retain separate credentials and revocation. The host never configures a
 business authorization URL; Core resolves the one stable entry registered for the client app.
 Standard v1 login still requests one workspace, and another Hub or route requires another
 connection and authorization.
+
+For combined archives, freeze one explicit ordered member set under that same binding. Every
+member confirms through its own original Agent Session, and text is readable only through Core's
+administrator audit permissions. Per-authorization runs and memory keep their existing ownership.
+There is no Agent Session transcript-read endpoint. Archive retry reuses original event IDs and
+must not resubmit business invocations.
 
 Agent Session credential storage currently supports macOS Keychain and an explicitly enabled
 current-user-owned mode-0600 file on Linux and other POSIX platforms. Windows uses CurrentUser
