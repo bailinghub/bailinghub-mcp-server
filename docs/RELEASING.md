@@ -7,7 +7,8 @@ adapters such as `dsh-bailinghub`. Do not publish a host adapter that resolves t
 optional peer or local path.
 
 1. Start from a clean checkout of the immutable release commit.
-2. Confirm the matching BailingHub Core Agent Auth v1 and Agent Client Runtime v1 release exists.
+2. Confirm the matching BailingHub Core release exists. SDK 0.4.0's conversation archive requires
+   Core 0.6.0; existing Agent Auth v1, Agent Client Runtime v1 and Client API flows stay compatible.
 3. Set one stable version in `package.json`, `package-lock.json`, `src/version.ts`, `server.json`,
    `compatibility/client-api.json`, changelog, Git tag, and release notes; remove private-candidate
    wording from the English and Chinese README files.
@@ -26,6 +27,9 @@ optional peer or local path.
     working Session survives. Force inspection and revoke failures and prove `login()` still
     returns `state: authorized` with `cleanupRequired`, preserves the relevant credentials, and
     does not advise another login. Confirm a legacy schema-v1 profile remains readable.
+    For conversation archives, verify frozen member confirmation, text/run association, lost-ACK
+    idempotency, revoked-member rejection and unsupported old-Core behavior from the package.
+    Archive recovery must not execute any business invocation again.
 11. `npm pack --dry-run --json`, unpack the tarball, and inspect the exact contents.
 12. Confirm `dist/sdk.js`, `dist/sdk.d.ts`, Agent Auth/Runtime modules, and both Agent Client SDK
     guides are present.

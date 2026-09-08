@@ -2,6 +2,13 @@
 
 [English](AGENT_CLIENT_SDK.md) | 简体中文
 
+0.4.0 让配套 Agent 客户端把可读的对话和业务执行记录关联起来。用户可以在同一系统里使用明确
+选中的账号，管理员则能从整段可见对话追溯到每项原始业务动作。
+
+需要对话归档时，升级下方精确 SDK 版本，并配合 BailingHub Core 0.6.0。客户端负责选择账号、
+保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
+原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
+
 `bailinghub-mcp-server/sdk` 是本地智能体框架的宿主无关接入层。它统一负责浏览器授权、PKCE、
 连接元数据、Agent Session 安全存储、Token 刷新和 BailingHub Runtime DTO 映射。宿主适配器只负责
 自己的生命周期、模型调用、可见会话 ID 和动态工具注册。
@@ -14,14 +21,17 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install bailinghub-mcp-server@0.3.0
+npm install --save-exact bailinghub-mcp-server@0.4.0
 ```
 
-`0.3.0` 是稳定的 Agent Client SDK 版本。在公开 npm Registry 能解析到该精确版本之前，
-宿主适配器必须保持私有，且不得在公开 manifest 中改用本机路径。
+公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.4.0` 后发布。
+不要在公开 manifest 中改用本机路径。
 
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
 `agent_client` 配置，以及已登记的公开 Client App ID 与业务授权页。
+
+完整可见对话归档另外要求 Core 0.6.0。旧 Core 可以继续使用已有 Agent Auth/Runtime 功能；
+归档接口不支持时应显示该限制，不能宣称正文已保存，也不能为修复归档重新执行业务动作。
 
 旧 Client Token/MCP Job 模式是独立兼容路径。Agent Client 宿主不需要
 `BAILINGHUB_CLIENT_TOKEN`。
@@ -83,7 +93,7 @@ DPAPI 路径与附加熵，以及本机锁作用域。未设置时，历史 POSI
 
 ## 多连接生命周期
 
-本节 API 属于公开 `0.3.0` 包。宿主适配器应精确依赖该版本，并把连接管理保留在用户掌控的
+本节 API 从 `0.3.0` 引入，在 `0.4.0` 中保持兼容。宿主适配器应精确依赖 SDK 版本，并把连接管理保留在用户掌控的
 命令或设置界面中。宿主可以发布可用授权引用，供模型按次选择，再由宿主按下文固定映射到连接。
 登录、连接管理、身份和凭据不能成为模型控制的输入。
 
@@ -122,7 +132,8 @@ await transport.connectionsRemove('shop-a');
 
 已有确定性 v1 注册表连接继续可读，并保持原凭据 key。只有至少存在一个具名实例时，注册表
 才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。
-旧版 SDK 遇到 schema v2 会失败关闭。降级前必须使用 `0.3.0` 逐一撤销并删除具名实例；最后一个
+早于 `0.3.0` 的 SDK 遇到 schema v2 会失败关闭。降级到这些版本前，必须使用已安装的 `0.3.0` 或
+`0.4.0` 逐一撤销并删除具名实例；最后一个
 实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件、DPAPI 密文或 Keychain 记录。
 
 ### 同一系统内按次选择授权引用
@@ -269,10 +280,25 @@ await transport.completeRun(turn.run_id, {
 SDK 只映射最终可见正文和公开 usage 白名单。不要传 hidden reasoning、thinking chunk、完整敏感参数
 或业务响应原文。在 Core 确认完成前，始终复用同一个 assistant message ID 与 payload。
 
-## 完整可见对话归档候选
+## 完整可见对话归档
 
-开发候选新增宿主方法 `syncConversationArchive(envelope, { members })`，公开 `0.3.0` 尚不包含，
-需要配套 Core 会话归档候选。该方法不作为模型工具，不修改业务能力声明。
+`0.4.0` 新增宿主方法 `syncConversationArchive(envelope, { members })`，需要配套 Core 0.6.0。
+该方法不作为模型工具，不修改业务能力声明。
+
+```js
+await transport.syncConversationArchive({
+  clientArchiveId: persistentArchiveUuid,
+  clientConversationId: originalClientConversationId,
+  events: pendingVisibleEvents,
+}, {
+  members: frozenMembers.map((member) => ({
+    connectionKey: member.connectionKey,
+    workspace: member.workspace,
+    expectedSessionId: member.sessionId,
+    label: member.label,
+  })),
+});
+```
 
 `envelope` 为 `{ clientArchiveId, clientConversationId, events }`：`clientArchiveId` 是宿主先持久化的
 随机 UUID，`clientConversationId` 与原 `startTurn` 一致。成员数组固定为
@@ -302,6 +328,7 @@ SDK 只映射最终可见正文和公开 usage 白名单。不要传 hidden reas
 2. SDK 必须是精确普通 dependency，不是 optional peer 或本机路径；
 3. 验证浏览器登录、status、一次只读、一次可回滚写、审批/resume、complete、logout 和业务撤销；
 4. 确认 BailingHub 能看到会话与治理轨迹；
+   使用归档时，再在 Core 0.6.0 上核对全部原成员、可见消息、原 run 关联、ACK 丢失重传、断线恢复与成员撤销；
 5. 扫描源码、tarball、日志、截图和连接元数据中的 Secret/私有地址；
 6. 确认 hidden reasoning 与业务原始 payload 从未进入 Core。
 

@@ -36,11 +36,11 @@ the Client API's `result`, `report`, `usage`, and `raw_result` fields may be ret
 therefore subject to the deploying organization's MCP host, BailingHub, and business-system
 retention and privacy policies.
 
-The optional development conversation archive API sends visible user/assistant text, stable
+The optional host SDK conversation archive API, added in 0.4.0 and requiring Core 0.6.0, sends visible user/assistant text, stable
 archive/event/turn IDs, frozen Agent Session membership, display labels and original run links
 to the selected BailingHub deployment. Every member must confirm with its own credential before
 combined text is accepted. Text is stored once in the administrative audit domain and is not
 copied into each authorization's memory. The SDK does not persist a transcript queue: the host
 must define and disclose its local durable outbox, retention and retry behavior. Hidden reasoning,
-attachments, arbitrary tool payloads and credentials are not part of the archive DTO. This
-development API is not included in the published `0.3.0` release.
+attachments, arbitrary tool payloads and credentials are not part of the archive DTO. The standalone
+MCP tools do not automatically capture conversations or call this host-only API.

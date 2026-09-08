@@ -14,9 +14,28 @@
 智能体不会拿到管理员凭据或业务系统凭据。BailingHub 保留路由边界、审批状态、执行记录
 和审计轨迹，最终能否执行仍由业务系统按照当前登录身份和自身规则决定。
 
-> **0.3.0：**新增由宿主控制的多连接生命周期 API，以及 Windows Agent Session 的
-> CurrentUser DPAPI 安全存储。现有 Agent Client 与 `0.1.x` Client Token 语义继续兼容，
-> 不会被替换。
+## 0.4.0 带来什么
+
+支持归档的 Agent 客户端可以把“用户提出了什么、助手如何回复、最后执行了哪些业务动作”
+连成一条可查看的记录。例如，在一段对话里比较两家已经分别授权的门店，管理员既能看到
+整段可见对话，也能追溯每家门店各自的执行记录。这个功能需要 **BailingHub Core 0.6.0**，
+以及负责记录和同步对话的客户端。
+
+本次 SDK 新增对话同步接口。SDK 本身不会自动记录聊天；账号选择和会话界面由
+[DSH 插件等原生客户端](https://github.com/bailinghub/bailinghub-dsh-plugin)负责。
+独立 MCP Server 的工具入口保持兼容。
+
+## 谁该升级，如何开始
+
+| 你的使用方式 | 下一步 |
+| --- | --- |
+| 在 MCP 应用里连接一条固定业务路由 | 按下方[安装说明](#安装)使用 `0.4.0`。原 Client Token 和 Agent Session 用法继续兼容。 |
+| 使用 DSH 等原生 Agent 客户端 | 按客户端配套版本升级，并按其指南选择会话可用账号。单独安装这个 MCP 命令不会增加多账号会话界面。 |
+| 开发自己的 Agent 客户端 | 安装 `bailinghub-mcp-server@0.4.0`，归档配合 Core `0.6.0`，再按 [SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)接入。 |
+
+升级此 SDK 不需要修改业务 API 声明。原有读写、审批和调用恢复规则继续生效。
+对话补传沿用原事件 ID，不会重新执行业务动作；聚合归档仅供当前部署有权限的管理员读取，
+不上传隐藏推理。
 
 它是一个独立、轻量的生态适配器，不内嵌 BailingHub，不授予业务权限，也不替代
 业务系统的最终授权。它同时保留原有 Client Token 模式，并新增 Agent
@@ -30,7 +49,7 @@ Session 模式：用户通过系统浏览器授权当前本地智能体。
 | `get_governed_job` | 查询当前 Client 所拥有任务的公开状态 |
 | `wait_for_governed_job` | 最多等待 60 秒，不会重新提交业务操作 |
 
-Agent Client 0.3 路径初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
+Agent Session MCP 路径初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
 受治理调用/恢复以及同步可见结果。BailingHub 每轮最多返回 12 个 active tools，
 新集合会替换旧集合，不会在上下文中无限累加。
 
@@ -104,7 +123,7 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
   "mcpServers": {
     "bailinghub": {
       "command": "npx",
-      "args": ["-y", "bailinghub-mcp-server"],
+      "args": ["-y", "bailinghub-mcp-server@0.4.0"],
       "env": {
         "BAILINGHUB_BASE_URL": "https://hub.example.com",
         "BAILINGHUB_CLIENT_TOKEN": "替换为仅允许指定-route-的-client-token",
@@ -121,6 +140,8 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
 route 完成授权：
 
 ```bash
+npm install --global bailinghub-mcp-server@0.4.0
+
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \
   --client-app-id merchant-agent \
@@ -208,6 +229,12 @@ Agent Session 模式另外消费增量的 Agent Auth v1 与 Agent API v1：
 - `POST /agent-api/v1/tool-invocations`
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
+
+宿主 SDK 另外使用 Core 0.6.0 的对话归档写入接口；这些接口不作为 MCP 或模型工具开放：
+
+- `POST /agent-api/v1/conversation-audits`
+- `POST /agent-api/v1/conversation-audits/{conversation_id}/confirm`
+- `POST /agent-api/v1/conversation-audits/{conversation_id}/events`
 
 `bailinghub-mcp-server/sdk` 子路径暴露宿主无关的 Agent Client factory。它统一负责浏览器授权、
 本机具名选择器、隔离凭据、Token 刷新和 Core DTO 映射。在相同 Hub/client/workspace 公开绑定下，

@@ -2,6 +2,15 @@
 
 [简体中文](AGENT_CLIENT_SDK.zh-CN.md) | English
 
+Version 0.4.0 lets a compatible Agent Client preserve a readable conversation alongside its
+business execution records. A user can work with explicitly selected accounts in one system,
+and an administrator can follow the visible conversation back to each original action.
+
+Upgrade your host integration when you need this archive. Install the exact SDK version below,
+use BailingHub Core 0.6.0 for archive support, and implement local capture and retry in the host.
+The SDK does not create an account-selection UI or automatically collect conversations.
+Existing Client Token, browser authorization, business invocation and recovery APIs stay compatible.
+
 `bailinghub-mcp-server/sdk` is the host-neutral integration seam for a local Agent framework. It
 owns browser authorization, PKCE, connection metadata, secure Agent Session storage, token refresh,
 and BailingHub Runtime DTO mapping. A host adapter owns its own lifecycle, model invocation,
@@ -11,65 +20,16 @@ The SDK does not embed BailingHub, register a business system, generate a busine
 page, or store model-provider credentials. The host never asks for a business-system URL: Core
 resolves the one authorization entry registered for `clientAppId`.
 
-## Visible conversation archive candidate
-
-The development candidate adds a host-only `syncConversationArchive(envelope, { members })`.
-This is not included in the published `0.3.0` package and requires the matching Core conversation
-audit candidate. It does not add an MCP/model tool or change business API declarations.
-
-```js
-await transport.syncConversationArchive({
-  clientArchiveId: persistentArchiveUuid,
-  clientConversationId: originalClientConversationId,
-  events: pendingVisibleEvents,
-}, {
-  members: frozenMembers.map((member) => ({
-    connectionKey: member.connectionKey,
-    workspace: member.workspace,
-    expectedSessionId: member.sessionId,
-    label: member.label,
-  })),
-});
-```
-
-The host persists a random archive UUID and the ordered member set before first upload. Member
-zero is the fixed writer. All members must share one Hub, public client application and workspace;
-the current/default connection is never consulted. Core enrolls the group, each member confirms
-with its own original Agent Session, and only the writer can append visible events after all
-members are confirmed and still valid. Labels are display hints, not identity assertions.
-
-Events use `event_id`, consecutive positive `sequence`, `client_turn_id`, and `kind`:
-`turn_start`, `user_message`/`assistant_message` with `content`, `run_link` with the original
-`run_id` and `member_session_id`, or `turn_end` with `status` (`completed`, `failed`, `cancelled`).
-Conversation and turn IDs must match the original `startTurn` values for run links. Visible
-messages are text only; attachments, cards, hidden reasoning and arbitrary local tool payloads
-are outside this contract. The SDK projects allowed fields and sends bounded batches (up to
-50 events and 192 KiB). Oversized events are rejected, never silently truncated.
-
-The result is `{ schema: 'bailing.agent-conversation-audit-ack.v1', conversation_id,
-last_sequence }`. An empty event array can enroll/reconfirm the fixed group and return its
-cursor without reading any transcript. The host owns durable event IDs, frozen event payloads,
-ordering, acknowledgement persistence and retries. Retry an uncertain upload with the same
-events; conflicting content under an existing event ID or sequence is an error. Never repeat a
-business invocation to repair an archive failure.
-
-The archive is separate from authorization run completion and per-authorization memory.
-Only the deployment's administrative `runs:read` audit domain can read combined text; there is
-no Agent Session transcript read API. Empty selection must make no SDK request. Unsupported
-Core/SDK, revoked members and failed uploads must be reported as incomplete/unsupported archive
-state, not as successful archival or as permission to use another connection. Historical final
-replies not retained by the host cannot be reconstructed from execution summaries.
-
 ## Installation and compatibility
 
 Install the SDK package version that matches the Agent Client release line:
 
 ```bash
-npm install bailinghub-mcp-server@0.3.0
+npm install --save-exact bailinghub-mcp-server@0.4.0
 ```
 
-`0.3.0` is the stable Agent Client SDK release. A host adapter must remain private until that exact
-version resolves from the public npm registry; never substitute a local path in a public manifest.
+Use an exact ordinary dependency for a published host adapter. Publish it only after `0.4.0`
+resolves from the public npm registry; never substitute a local path in a public manifest.
 
 Required server surfaces:
 
@@ -77,6 +37,10 @@ Required server surfaces:
 - BailingHub Agent Client Runtime v1;
 - route `tools.agent_direct` and `agent_client` configuration;
 - a registered public Client App ID and business authorization page.
+
+Visible conversation archives additionally require Core 0.6.0. On older Core releases, the
+existing Agent Auth/Runtime flows remain available; an archive request can return unsupported.
+Display that limitation without claiming the text was saved or retrying a business operation.
 
 The older Client Token/MCP job mode remains a separate compatibility path. Agent Client hosts do
 not require `BAILINGHUB_CLIENT_TOKEN`.
@@ -143,8 +107,8 @@ the same namespace boundary.
 
 ## Multiple connection lifecycle
 
-These APIs are part of the public `0.3.0` package. Host adapters should depend on this exact
-version and keep connection management in user-owned commands or settings. A host may publish
+These APIs were introduced in 0.3.0 and remain compatible in 0.4.0. Host adapters should depend
+on the exact SDK version and keep connection management in user-owned commands or settings. A host may publish
 available authorization references for a model to select per call; the host fixes each reference's
 connection binding as described below. Login, connection management, identities, and credentials
 must never become model-controlled inputs.
@@ -191,7 +155,8 @@ conversations and runs remain pinned to their captured connection.
 Existing deterministic v1 registry entries remain readable and keep their credential key. The
 registry is written as schema v2 only while at least one named instance exists; the
 instance id is opaque local metadata, not a credential or an identity assertion sent to Core.
-An older SDK fails closed on schema v2. Before downgrading, use `0.3.0` to revoke and remove every
+An SDK older than 0.3.0 fails closed on schema v2. Before downgrading below that version, use the
+installed 0.3.0 or 0.4.0 SDK to revoke and remove every
 named instance; after the last one is removed, the registry is written
 back as schema v1. Do not delete credential files or Keychain entries manually.
 
@@ -362,6 +327,54 @@ Only visible final content and the public usage allowlist are mapped. Do not pas
 thinking chunks, complete sensitive arguments, or raw business responses. Reuse the same assistant
 message ID and payload until Core confirms completion.
 
+## Visible conversation archive
+
+Version 0.4.0 adds the host-only `syncConversationArchive(envelope, { members })` API, requiring
+BailingHub Core 0.6.0. It does not add an MCP/model tool or change business API declarations.
+
+```js
+await transport.syncConversationArchive({
+  clientArchiveId: persistentArchiveUuid,
+  clientConversationId: originalClientConversationId,
+  events: pendingVisibleEvents,
+}, {
+  members: frozenMembers.map((member) => ({
+    connectionKey: member.connectionKey,
+    workspace: member.workspace,
+    expectedSessionId: member.sessionId,
+    label: member.label,
+  })),
+});
+```
+
+The host persists a random archive UUID and the ordered member set before first upload. Member
+zero is the fixed writer. All members must share one Hub, public client application and workspace;
+the current/default connection is never consulted. Core enrolls the group, each member confirms
+with its own original Agent Session, and only the writer can append visible events after all
+members are confirmed and still valid. Labels are display hints, not identity assertions.
+
+Events use `event_id`, consecutive positive `sequence`, `client_turn_id`, and `kind`:
+`turn_start`, `user_message`/`assistant_message` with `content`, `run_link` with the original
+`run_id` and `member_session_id`, or `turn_end` with `status` (`completed`, `failed`, `cancelled`).
+Conversation and turn IDs must match the original `startTurn` values for run links. Visible
+messages are text only; attachments, cards, hidden reasoning and arbitrary local tool payloads
+are outside this contract. The SDK projects allowed fields and sends bounded batches (up to
+50 events and 192 KiB). Oversized events are rejected, never silently truncated.
+
+The result is `{ schema: 'bailing.agent-conversation-audit-ack.v1', conversation_id,
+last_sequence }`. An empty event array can enroll/reconfirm the fixed group and return its
+cursor without reading any transcript. The host owns durable event IDs, frozen event payloads,
+ordering, acknowledgement persistence and retries. Retry an uncertain upload with the same
+events; conflicting content under an existing event ID or sequence is an error. Never repeat a
+business invocation to repair an archive failure.
+
+The archive is separate from authorization run completion and per-authorization memory.
+Only the deployment's administrative `runs:read` audit domain can read combined text; there is
+no Agent Session transcript read API. Empty selection must make no SDK request. Unsupported
+Core/SDK, revoked members and failed uploads must be reported as incomplete/unsupported archive
+state, not as successful archival or as permission to use another connection. Historical final
+replies not retained by the host cannot be reconstructed from execution summaries.
+
 ## Host-adapter acceptance
 
 Before publishing an adapter:
@@ -371,6 +384,8 @@ Before publishing an adapter:
 3. complete browser login, status, one read, one reversible write, approval/resume, completion,
    logout, and business-side revoke;
 4. confirm BailingHub shows the conversation and governance trace;
+   for archives, also check all original members, visible messages, run links, lost-ACK retry,
+   offline recovery and member revocation against Core 0.6.0;
 5. scan source, tarballs, logs, screenshots, and connection metadata for secrets/private hosts;
 6. confirm hidden reasoning and raw business payloads never reach Core.
 
