@@ -55,7 +55,7 @@ async function main() {
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
   const metadataCommit = git('rev-parse', 'HEAD');
   validateDispatchEnvironment(process.env, metadataCommit);
-  const tagCommit = git('rev-parse', `${RETRY_TAG}^{commit}`);
+  const tagCommit = git('rev-parse', '--verify', `refs/tags/${RETRY_TAG}^{commit}`);
   const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
   const serverJson = JSON.parse(await readFile(resolve(root, 'server.json'), 'utf8'));
   const taggedPackage = JSON.parse(git('show', `${tagCommit}:package.json`));
