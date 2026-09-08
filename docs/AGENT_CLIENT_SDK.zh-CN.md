@@ -5,7 +5,7 @@
 0.4.0 让配套 Agent 客户端把可读的对话和业务执行记录关联起来。用户可以在同一系统里使用明确
 选中的账号，管理员则能从整段可见对话追溯到每项原始业务动作。
 
-需要对话归档时，升级下方精确 SDK 版本，并配合 BailingHub Core 0.6.0。客户端负责选择账号、
+需要对话归档时，升级下方精确 SDK 版本，并配合 BailingHub Core 0.6.1。客户端负责选择账号、
 保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
 原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
 
@@ -30,7 +30,8 @@ npm install --save-exact bailinghub-mcp-server@0.4.0
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
 `agent_client` 配置，以及已登记的公开 Client App ID 与业务授权页。
 
-完整可见对话归档另外要求 Core 0.6.0。旧 Core 可以继续使用已有 Agent Auth/Runtime 功能；
+归档接口最低需要 Core 0.6.0，新安装和升级推荐 Core 0.6.1。低于接口最低版本的 Core
+可以继续使用已有 Agent Auth/Runtime 功能；
 归档接口不支持时应显示该限制，不能宣称正文已保存，也不能为修复归档重新执行业务动作。
 
 旧 Client Token/MCP Job 模式是独立兼容路径。Agent Client 宿主不需要
@@ -282,7 +283,8 @@ SDK 只映射最终可见正文和公开 usage 白名单。不要传 hidden reas
 
 ## 完整可见对话归档
 
-`0.4.0` 新增宿主方法 `syncConversationArchive(envelope, { members })`，需要配套 Core 0.6.0。
+`0.4.0` 新增宿主方法 `syncConversationArchive(envelope, { members })`，推荐配套 Core 0.6.1，
+接口最低需要 Core 0.6.0。
 该方法不作为模型工具，不修改业务能力声明。
 
 ```js
@@ -328,7 +330,7 @@ await transport.syncConversationArchive({
 2. SDK 必须是精确普通 dependency，不是 optional peer 或本机路径；
 3. 验证浏览器登录、status、一次只读、一次可回滚写、审批/resume、complete、logout 和业务撤销；
 4. 确认 BailingHub 能看到会话与治理轨迹；
-   使用归档时，再在 Core 0.6.0 上核对全部原成员、可见消息、原 run 关联、ACK 丢失重传、断线恢复与成员撤销；
+   使用归档时，再在 Core 0.6.1 上核对全部原成员、可见消息、原 run 关联、ACK 丢失重传、断线恢复与成员撤销；
 5. 扫描源码、tarball、日志、截图和连接元数据中的 Secret/私有地址；
 6. 确认 hidden reasoning 与业务原始 payload 从未进入 Core。
 

@@ -7,7 +7,7 @@ business execution records. A user can work with explicitly selected accounts in
 and an administrator can follow the visible conversation back to each original action.
 
 Upgrade your host integration when you need this archive. Install the exact SDK version below,
-use BailingHub Core 0.6.0 for archive support, and implement local capture and retry in the host.
+use BailingHub Core 0.6.1 for archive support, and implement local capture and retry in the host.
 The SDK does not create an account-selection UI or automatically collect conversations.
 Existing Client Token, browser authorization, business invocation and recovery APIs stay compatible.
 
@@ -38,8 +38,9 @@ Required server surfaces:
 - route `tools.agent_direct` and `agent_client` configuration;
 - a registered public Client App ID and business authorization page.
 
-Visible conversation archives additionally require Core 0.6.0. On older Core releases, the
-existing Agent Auth/Runtime flows remain available; an archive request can return unsupported.
+The archive API minimum is Core 0.6.0; use Core 0.6.1 for new installations and upgrades.
+On Core releases below that minimum, existing Agent Auth/Runtime flows remain available;
+an archive request can return unsupported.
 Display that limitation without claiming the text was saved or retrying a business operation.
 
 The older Client Token/MCP job mode remains a separate compatibility path. Agent Client hosts do
@@ -329,8 +330,9 @@ message ID and payload until Core confirms completion.
 
 ## Visible conversation archive
 
-Version 0.4.0 adds the host-only `syncConversationArchive(envelope, { members })` API, requiring
-BailingHub Core 0.6.0. It does not add an MCP/model tool or change business API declarations.
+Version 0.4.0 adds the host-only `syncConversationArchive(envelope, { members })` API. Use
+BailingHub Core 0.6.1; the API minimum is Core 0.6.0. It does not add an MCP/model tool or change
+business API declarations.
 
 ```js
 await transport.syncConversationArchive({
@@ -385,7 +387,7 @@ Before publishing an adapter:
    logout, and business-side revoke;
 4. confirm BailingHub shows the conversation and governance trace;
    for archives, also check all original members, visible messages, run links, lost-ACK retry,
-   offline recovery and member revocation against Core 0.6.0;
+   offline recovery and member revocation against Core 0.6.1;
 5. scan source, tarballs, logs, screenshots, and connection metadata for secrets/private hosts;
 6. confirm hidden reasoning and raw business payloads never reach Core.
 

@@ -29,12 +29,13 @@ the adapter's new version.
 | --- | --- |
 | Standalone MCP Client Token jobs | Existing `bailing.client-api.v1` contract |
 | Browser authorization, Agent turns, governed calls and completion | Existing Agent Auth v1 and Agent Client Runtime v1, including Core 0.5.1 |
-| Host SDK visible conversation archive | BailingHub Core 0.6.0 conversation audit v1 |
+| Host SDK visible conversation archive | Conversation audit v1: Core 0.6.0 API minimum; Core 0.6.1 recommended |
 
-The archive is an additive host SDK API. Older Core releases do not implement it; hosts must
+The archive is an additive host SDK API. Core releases below 0.6.0 do not implement it; hosts must
 report unsupported archival while preserving the established business flow. Upgrade Core before
-enabling archiving. This SDK does not add a multi-account selector or transcript capture to the
-standalone MCP tools; native host adapters own that interface and durable outbox.
+enabling archiving; use Core 0.6.1 for new installations and upgrades. This SDK does not add a
+multi-account selector or transcript capture to the standalone MCP tools; native host adapters
+own that interface and durable outbox.
 
 `server.json` remains the MCP Registry descriptor for the standalone stdio/Client Token entry and
 therefore intentionally requires `BAILINGHUB_CLIENT_TOKEN`. Native host adapters do not consume

@@ -22,8 +22,8 @@ business system still makes the final authorization decision.
 When an Agent Client host enables conversation archiving, a BailingHub administrator can follow
 the user's request, the assistant's visible replies and the resulting business actions together.
 For example, one conversation can compare two separately authorized stores while retaining the
-original execution record for each store. This needs **BailingHub Core 0.6.0** and a host that
-captures and synchronizes the conversation.
+original execution record for each store. Use **BailingHub Core 0.6.1** with a host that
+captures and synchronizes the conversation. The archive API minimum is Core 0.6.0.
 
 The SDK adds that synchronization API. It does not capture conversations by itself. A native host
 such as [the DSH plugin](https://github.com/bailinghub/bailinghub-dsh-plugin) owns the account
@@ -35,7 +35,7 @@ selection and conversation interface. The standalone MCP server keeps its existi
 | --- | --- |
 | You use an MCP application with a fixed business route | Install this package at `0.4.0` using the [MCP setup below](#install). Your existing Client Token and Agent Session flows remain compatible. |
 | You use a native Agent Client, such as DSH | Upgrade through that host's matching release and follow its account-selection guide. Installing this MCP command alone does not add a multi-account conversation UI. |
-| You build an Agent Client host | Install `bailinghub-mcp-server@0.4.0`, use Core `0.6.0` for archives, and follow the [SDK guide](docs/AGENT_CLIENT_SDK.md). |
+| You build an Agent Client host | Install `bailinghub-mcp-server@0.4.0`, use Core `0.6.1` for archives, and follow the [SDK guide](docs/AGENT_CLIENT_SDK.md). |
 
 You do not need to change business API declarations for this SDK upgrade. Existing read/write,
 approval and invocation recovery behavior stays in place. Conversation upload retries use the
@@ -252,8 +252,8 @@ Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
-The host SDK additionally uses Core 0.6.0's conversation audit write APIs. They are not exposed
-as MCP/model tools:
+The host SDK additionally uses conversation audit write APIs available from Core 0.6.0.
+Core 0.6.1 is the recommended release. These APIs are not exposed as MCP/model tools:
 
 - `POST /agent-api/v1/conversation-audits`
 - `POST /agent-api/v1/conversation-audits/{conversation_id}/confirm`

@@ -4,7 +4,7 @@
 
 ## 0.4.0 - 2026-09-08
 
-- Add visible conversation archives for Agent Client hosts using BailingHub Core 0.6.0. An
+- Add visible conversation archives for Agent Client hosts; use BailingHub Core 0.6.1. An
   administrator can follow the user's request, visible assistant replies and original business
   runs together, including a conversation that uses several authorized accounts in one system.
 - Add the host-only `syncConversationArchive` API and typed conversation registration,
@@ -21,7 +21,8 @@
   multi-account selector or automatic conversation capture to the standalone MCP tools.
 - Preserve the existing Client Token job flow, Agent Auth/Runtime APIs, credential stores and
   connection registry. Older Core installations can continue those flows; the new archive API
-  requires Core 0.6.0 and hosts must report unsupported servers without fabricating success.
+  has a Core 0.6.0 API minimum, with Core 0.6.1 recommended. Hosts must report unsupported
+  servers without fabricating success.
 - Update the locked `fast-uri` and `qs` dependencies to their security patch versions.
 
 ## 0.3.0 - 2026-09-01
