@@ -83,8 +83,9 @@ DPAPI 路径与附加熵，以及本机锁作用域。未设置时，历史 POSI
 
 ## 多连接生命周期
 
-本节 API 属于公开 `0.3.0` 包。宿主适配器应精确依赖该版本，并把连接选择保留在用户掌控的
-命令或设置界面中，不能把它暴露为模型工具。
+本节 API 属于公开 `0.3.0` 包。宿主适配器应精确依赖该版本，并把连接管理保留在用户掌控的
+命令或设置界面中。宿主可以发布可用授权引用，供模型按次选择，再由宿主按下文固定映射到连接。
+登录、连接管理、身份和凭据不能成为模型控制的输入。
 
 SDK 注册表可以同时保存多个具名连接实例，`connectionName` 只是本机选择器。浏览器授权完成后，
 SDK 会在相同 `Hub + clientAppId + workspace` 公开绑定内，使用 Core 返回的可信
@@ -108,8 +109,8 @@ await transport.connectionsRemove('shop-a');
 `connectionsAdd()` 在名称尚不存在时创建一个新的本机实例，只登记公开元数据并选为当前项，
 不会伪造、复制登录。相同名称与相同绑定重复添加是幂等选择；相同名称改绑其他公开元数据会失败。
 每个尚未授权的新选择器都要完成浏览器授权。`connectionsUse()` 只切换本机当前选择。宿主必须把这些入口
-放在用户命令或设置界面中，不能投影为模型工具，也不能接受模型生成的连接选择。已经开始的会话
-或 run 必须继续使用创建时固定的实例，切换只影响新会话。
+放在用户命令或设置界面中，不能投影为模型工具。每个 run 和 invocation 必须继续使用创建时固定的实例；
+切换 current 只影响以后捕获连接时的默认项，不改变会话中已经公开的授权引用。
 
 `connectionsRemove()` 在有登录时先撤销远端 Agent Session，成功后才删除本地凭据与公开元数据。
 远端撤销失败时，连接与凭据原样保留以便重试。它不同于 `use(workspace)`：前者选择或删除一整套
@@ -123,6 +124,31 @@ await transport.connectionsRemove('shop-a');
 才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。
 旧版 SDK 遇到 schema v2 会失败关闭。降级前必须使用 `0.3.0` 逐一撤销并删除具名实例；最后一个
 实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件、DPAPI 密文或 Keychain 记录。
+
+### 同一系统内按次选择授权引用
+
+宿主可以复用现有 API，在相同 `Hub + clientAppId + workspace` 下同时使用两份独立身份授权，
+无需切换 current。宿主决定本会话可用哪些授权，并分配 `store_a`、`store_b` 这样的安全引用和
+用户认可的展示名称。引用不是凭据、`on_behalf_of` 或新的 Core 字段。不要把原始 `status()` 结果
+交给模型。`connectionsList()` 的 `authorized` 只表示本地存在凭据；是否可执行仍取决于 Session
+检查和 Core 授权校验。
+
+宿主将每个引用一次性解析为不透明 `connectionKey` 与固定 `workspace`。将这两个字段作为
+`startTurn`、`searchCapabilities`、`invoke`、`completeRun` 的第二参数，或 `resume` 的第三参数。
+即使两份授权返回相同工具声明和 revision，也分别保存 run、capability revision、active tools 和恢复状态。
+续执行不能重新解析可能变更的别名或 current；原连接被删除、撤销或改绑后必须失败关闭，不能回退到另一身份。
+
+工具名称、输入 schema 和公开治理属性一致时，宿主可以只展示一份 typed 工具，模型输入使用外层封装：
+
+```json
+{"authorization_ref":"store_a","arguments":{"id":42,"name":"Updated product"}}
+```
+
+外层两个字段必填，并拒绝额外字段；`authorization_ref` 枚举只包含该工具可用的授权引用，
+`arguments` 保留原始业务 schema。宿主校验并消费引用后，只把内层 `arguments` 连同对应授权的
+run、revision 交给 SDK。声明不一致时不要合并为这份共享展示。连接管理继续放在模型工具之外。
+每个 `invocation_id` 都要与创建时捕获的授权一起保存，审批恢复、结果未知和重试始终沿用原身份与
+原 invocation。本节是使用现有 SDK 方法的宿主接入指南，不表示独立 MCP Server 新增了授权选择工具。
 
 ## 登录生命周期
 

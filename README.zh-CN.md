@@ -36,8 +36,9 @@ Agent Client 0.3 路径初始只暴露 5 个小型元工具，用于启动本轮
 
 宿主开发者应使用[宿主无关的 Agent Client SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)。
 
-BailingHub 地址、凭据和 route 都是本地进程配置，不是 MCP 工具参数，因此模型
-不能选择或替换它们。
+BailingHub 地址、凭据和 route 都是本地进程配置，不能由模型作为 MCP 工具参数提供。
+SDK 宿主可以公开同一系统内固定的可用授权引用，供模型按次选择；宿主将引用解析为创建时捕获的
+连接，并继续掌握连接管理。参见[授权引用接入指南](docs/AGENT_CLIENT_SDK.zh-CN.md#同一系统内按次选择授权引用)。
 
 ## 认证模式
 

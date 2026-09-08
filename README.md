@@ -41,8 +41,11 @@ previous active set instead of growing the model context indefinitely.
 
 Host implementers should use the [host-neutral Agent Client SDK guide](docs/AGENT_CLIENT_SDK.md).
 
-The route, BailingHub URL, and credential are local process configuration. They are never
-MCP tool arguments and therefore cannot be selected or replaced by model output.
+The route, BailingHub URL, and credential are local process configuration, never model-supplied
+MCP tool arguments. An SDK host may publish a fixed set of available authorization references
+for per-call selection within one system; the host resolves each reference to its captured
+connection and retains control of connection management. See the
+[authorization-reference guidance](docs/AGENT_CLIENT_SDK.md#per-call-authorization-references-within-one-system).
 
 ## Authentication Modes
 

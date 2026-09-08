@@ -95,7 +95,10 @@ the same namespace boundary.
 ## Multiple connection lifecycle
 
 These APIs are part of the public `0.3.0` package. Host adapters should depend on this exact
-version and keep connection selection in user-owned commands or settings rather than model tools.
+version and keep connection management in user-owned commands or settings. A host may publish
+available authorization references for a model to select per call; the host fixes each reference's
+connection binding as described below. Login, connection management, identities, and credentials
+must never become model-controlled inputs.
 
 The SDK registry can retain multiple named connection instances. `connectionName` is only a local
 selector. After browser authorization, the SDK compares the same public
@@ -122,9 +125,9 @@ await transport.connectionsRemove('shop-a');
 public metadata, and selects it; it does not fabricate or copy a login. Repeating the exact same
 name and binding is idempotent, while reusing that name for different public metadata fails.
 Browser authorization is required for every new, still-unauthorized selector. Hosts must expose
-add/use only through user commands or settings, never as model tools or model-controlled selectors.
-Existing conversations and runs stay pinned to the connection captured when they were created;
-a selection affects new sessions only.
+add/use only through user commands or settings, never as model tools. Each run and invocation
+stays pinned to its captured connection; changing the current connection only changes the default
+for future captures, not any authorization reference already available in a conversation.
 
 When credentials exist, `connectionsRemove()` revokes the remote Agent Session before deleting
 local credentials and public metadata. A failed remote revoke keeps both intact for retry. This is
@@ -142,6 +145,39 @@ instance id is opaque local metadata, not a credential or an identity assertion 
 An older SDK fails closed on schema v2. Before downgrading, use `0.3.0` to revoke and remove every
 named instance; after the last one is removed, the registry is written
 back as schema v1. Do not delete credential files or Keychain entries manually.
+
+### Per-call authorization references within one system
+
+A host can use the existing API for two independently authorized identities on the same
+`Hub + clientAppId + workspace` binding without switching the current connection. The host chooses
+which authorizations are available to a conversation and assigns safe references such as
+`store_a` and `store_b`, with user-approved display names. These references are not credentials,
+`on_behalf_of` values, or new Core fields. Do not expose the raw `status()` result to a model.
+The `authorized` state from `connectionsList()` only means local credentials exist; session
+inspection and Core authorization still determine whether an operation can proceed.
+
+Resolve each reference once to its opaque `connectionKey` and fixed `workspace`. Pass that pair
+as the second argument to `startTurn`, `searchCapabilities`, `invoke`, and `completeRun`, or the
+third argument to `resume`. Keep a separate run, capability revision, active tool set, and recovery
+state for each authorization, even when the returned tool declarations and revisions are equal.
+Do not resolve a mutable alias or current connection again when continuing an existing invocation.
+A removed, revoked, or rebound connection must fail closed rather than fall back to another identity.
+
+When the tool name, input schema, and public governance properties match, the host may show one
+shared typed tool with this model-facing envelope:
+
+```json
+{"authorization_ref":"store_a","arguments":{"id":42,"name":"Updated product"}}
+```
+
+The outer object requires both fields and rejects additional properties. Its `authorization_ref`
+enum contains only references available for that tool; `arguments` retains the original business
+schema. The host validates and consumes the reference, then forwards only the inner `arguments`
+to the SDK with the selected authorization's run and revision. If declarations differ, do not
+merge them into this shared presentation. Connection management remains outside the model tools.
+Persist each `invocation_id` with its captured authorization so approval recovery, uncertain outcomes,
+and retries retain the same identity and invocation. This is host integration guidance using existing
+SDK methods; the standalone MCP server does not add an authorization-selection tool.
 
 ## Login lifecycle
 

@@ -60,6 +60,9 @@ async function setup(t, options = {}) {
     const body = init.body ? JSON.parse(init.body) : undefined;
     const authorization = new Headers(init.headers).get('authorization');
     calls.push({ url: String(url), path, method: init.method, body, authorization });
+    if (options.runtimeResponse && path.startsWith('/agent-api/v1/')) {
+      return options.runtimeResponse({ path, body, authorization });
+    }
     if (path === '/agent-auth/v1/session') {
       const accessToken = authorization?.replace(/^Bearer\s+/u, '') ?? '';
       const sessionCall = (sessionCallsByAccessToken.get(accessToken) ?? 0) + 1;
@@ -329,6 +332,142 @@ test('factory authorizes, switches, rebinds, and revokes same-binding identities
   );
   assert.equal((await transport.status({ connectionName: 'identity two' })).onBehalfOf, 'tenant:user-2');
   assert.equal(calls.filter((entry) => entry.path === '/agent-auth/v1/revoke').length, 1);
+});
+
+test('explicit connection keys keep interleaved same-system authorizations and pending invocations isolated', async (t) => {
+  const runIds = [RUN_ID, '33333333-3333-4333-8333-333333333333'];
+  const tokens = ['Bearer access-secret-1', 'Bearer access-secret-2'];
+  const invocationIds = ['c'.repeat(64), 'd'.repeat(64)];
+  const invocationOwners = new Map();
+  const sharedTool = {
+    ...tool(), name: 'product_rename', description: 'Rename a product.',
+    input_schema: {
+      type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' } },
+      required: ['id', 'name'], additionalProperties: false,
+    },
+    scope: 'tenant.product.write', readonly: false, approval_required: true,
+  };
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+  const { calls, registry, transport } = await setup(t, {
+    runtimeResponse: ({ path, body, authorization }) => {
+      const identity = tokens.indexOf(authorization);
+      assert.notEqual(identity, -1, 'each runtime request must use a known authorized Session');
+      if (path.endsWith('/turns')) {
+        return json({
+          schema_version: 'bailing.agent-turn-context.v1', run_id: runIds[identity],
+          profile_revision: 'f'.repeat(64), capability_revision: CAPABILITY_REVISION,
+          context: {
+            instructions: 'Plan locally.', page_context: {}, renderers: [], memory: null,
+            memory_refs: [], knowledge: [], knowledge_refs: [], governance: {},
+          },
+          active_tools: [sharedTool],
+        });
+      }
+      if (path.endsWith('/capabilities/search')) {
+        assert.equal(body.run_id, runIds[identity]);
+        return json({
+          schema_version: 'bailing.agent-capability-search.v1',
+          capability_revision: CAPABILITY_REVISION, tools: [sharedTool],
+        });
+      }
+      if (path === '/agent-api/v1/tool-invocations') {
+        assert.equal(body.agent_run_id, runIds[identity]);
+        assert.equal(body.invocation_id, invocationIds[identity]);
+        assert.equal(body.capability_revision, CAPABILITY_REVISION);
+        assert.equal(body.route, 'orders');
+        assert.equal(body.tool, sharedTool.name);
+        assert.deepEqual(body.arguments, { id: 42, name: 'Updated product' });
+        assert.deepEqual(Object.keys(body).sort(), [
+          'agent_run_id', 'arguments', 'capability_revision', 'invocation_id', 'route', 'tool',
+        ]);
+        invocationOwners.set(body.invocation_id, authorization);
+        return json({
+          schema_version: 'bailing.agent-tool-invocation.v1', invocation_id: body.invocation_id,
+          route: 'orders', tool: sharedTool.name, state: 'awaiting_approval', ok: false,
+          auto_retry_allowed: false, approval_id: identity + 1, text: 'Awaiting approval.',
+        });
+      }
+      if (path.endsWith('/resume')) {
+        const invocationId = path.split('/').at(-2);
+        if (invocationOwners.get(invocationId) !== authorization) return json({}, 403);
+        return json({
+          schema_version: 'bailing.agent-tool-invocation.v1', invocation_id: invocationId,
+          route: 'orders', tool: sharedTool.name, state: 'executed', ok: true,
+          auto_retry_allowed: false, text: 'Renamed.',
+        });
+      }
+      if (path.endsWith('/complete')) {
+        const runId = path.split('/').at(-2);
+        assert.equal(runId, runIds[identity]);
+        return json({ schema_version: 'bailing.agent-run-completion.v1', run_id: runId, status: body.status });
+      }
+      throw new Error(`Unexpected runtime path: ${path}`);
+    },
+  });
+  const binding = {
+    hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders',
+  };
+  const selected = [];
+  for (const connectionName of ['store a', 'store b']) {
+    await transport.connectionsAdd({ connectionName, ...binding });
+    const login = await transport.login({ connectionName });
+    selected.push(Object.freeze({ connectionKey: login.connectionKey, workspace: 'orders' }));
+  }
+  assert.notEqual(selected[0].connectionKey, selected[1].connectionKey);
+  const statuses = await Promise.all(selected.map((options) => transport.status(options)));
+  assert.deepEqual(statuses.map((status) => status.onBehalfOf), ['tenant:user-1', 'tenant:user-2']);
+
+  const against = async (identity, work) => {
+    const other = selected[1 - identity];
+    await transport.connectionsUse({ connectionKey: other.connectionKey });
+    const result = await work(selected[identity]);
+    assert.equal((await registry.current()).connectionKey, other.connectionKey);
+    return result;
+  };
+  const turnInput = {
+    clientConversationId: 'shared-conversation', clientTurnId: 'shared-turn',
+    userMessageId: 'shared-message', userInput: 'Rename this product in both stores.',
+  };
+  const turns = [];
+  for (const identity of [0, 1]) {
+    turns.push(await against(identity, (options) => transport.startTurn(turnInput, options)));
+  }
+  assert.deepEqual(turns.map((turn) => turn.run_id), runIds);
+  assert.deepEqual(turns[0].active_tools, turns[1].active_tools);
+  for (const identity of [0, 1]) {
+    await against(identity, (options) => transport.searchCapabilities({
+      runId: turns[identity].run_id, query: 'Rename product',
+    }, options));
+  }
+  for (const identity of [0, 1]) {
+    const pending = await against(identity, (options) => transport.invoke({
+      invocationId: invocationIds[identity], capabilityRevision: turns[identity].capability_revision,
+      agentRunId: turns[identity].run_id, tool: sharedTool.name,
+      arguments: { id: 42, name: 'Updated product' },
+    }, options));
+    assert.equal(pending.state, 'awaiting_approval');
+  }
+  for (const identity of [0, 1]) {
+    const resumed = await against(identity, (options) => transport.resume(invocationIds[identity], {}, options));
+    assert.equal(resumed.invocation_id, invocationIds[identity]);
+    assert.equal(resumed.state, 'executed');
+  }
+  for (const identity of [0, 1]) {
+    await against(identity, (options) => transport.completeRun(turns[identity].run_id, {
+      status: 'completed', assistant: { message_id: 'shared-answer', visible_text: 'Product renamed.' },
+    }, options));
+  }
+  const runtimeCalls = calls.filter((call) => call.path.startsWith('/agent-api/v1/'));
+  assert.deepEqual(runtimeCalls.map((call) => call.authorization), Array.from({ length: 5 }, () => tokens).flat());
+  assert.equal(runtimeCalls.every((call) => new URL(call.url).origin === binding.hubUrl), true);
+  assert.equal(runtimeCalls.filter((call) => call.path === '/agent-api/v1/tool-invocations').length, 2);
+  assert.deepEqual([...invocationOwners.keys()], invocationIds);
+
+  await transport.connectionsRemove({ connectionKey: selected[0].connectionKey });
+  const requestCount = calls.length;
+  await assert.rejects(transport.resume(invocationIds[0], {}, selected[0]), /No Agent connection was found/);
+  assert.equal(calls.length, requestCount, 'a removed captured connection must not fall back to the other authorization');
+  assert.equal((await registry.current()).connectionKey, selected[1].connectionKey);
 });
 
 test('factory reports no current connection only after removing the final entry', async (t) => {
