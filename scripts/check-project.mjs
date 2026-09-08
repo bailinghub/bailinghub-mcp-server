@@ -64,6 +64,12 @@ check(
 );
 check(serverJson.name === packageJson.mcpName, 'server.json name must match package mcpName');
 check(
+  typeof serverJson.description === 'string' &&
+    serverJson.description.trim().length > 0 &&
+    Array.from(serverJson.description).length <= 100,
+  'server.json description must contain 1 to 100 characters for the MCP Registry',
+);
+check(
   serverJson.name.startsWith('io.github.bailinghub/'),
   'server name must use the BailingHub GitHub namespace',
 );
