@@ -11,6 +11,55 @@ The SDK does not embed BailingHub, register a business system, generate a busine
 page, or store model-provider credentials. The host never asks for a business-system URL: Core
 resolves the one authorization entry registered for `clientAppId`.
 
+## Visible conversation archive candidate
+
+The development candidate adds a host-only `syncConversationArchive(envelope, { members })`.
+This is not included in the published `0.3.0` package and requires the matching Core conversation
+audit candidate. It does not add an MCP/model tool or change business API declarations.
+
+```js
+await transport.syncConversationArchive({
+  clientArchiveId: persistentArchiveUuid,
+  clientConversationId: originalClientConversationId,
+  events: pendingVisibleEvents,
+}, {
+  members: frozenMembers.map((member) => ({
+    connectionKey: member.connectionKey,
+    workspace: member.workspace,
+    expectedSessionId: member.sessionId,
+    label: member.label,
+  })),
+});
+```
+
+The host persists a random archive UUID and the ordered member set before first upload. Member
+zero is the fixed writer. All members must share one Hub, public client application and workspace;
+the current/default connection is never consulted. Core enrolls the group, each member confirms
+with its own original Agent Session, and only the writer can append visible events after all
+members are confirmed and still valid. Labels are display hints, not identity assertions.
+
+Events use `event_id`, consecutive positive `sequence`, `client_turn_id`, and `kind`:
+`turn_start`, `user_message`/`assistant_message` with `content`, `run_link` with the original
+`run_id` and `member_session_id`, or `turn_end` with `status` (`completed`, `failed`, `cancelled`).
+Conversation and turn IDs must match the original `startTurn` values for run links. Visible
+messages are text only; attachments, cards, hidden reasoning and arbitrary local tool payloads
+are outside this contract. The SDK projects allowed fields and sends bounded batches (up to
+50 events and 192 KiB). Oversized events are rejected, never silently truncated.
+
+The result is `{ schema: 'bailing.agent-conversation-audit-ack.v1', conversation_id,
+last_sequence }`. An empty event array can enroll/reconfirm the fixed group and return its
+cursor without reading any transcript. The host owns durable event IDs, frozen event payloads,
+ordering, acknowledgement persistence and retries. Retry an uncertain upload with the same
+events; conflicting content under an existing event ID or sequence is an error. Never repeat a
+business invocation to repair an archive failure.
+
+The archive is separate from authorization run completion and per-authorization memory.
+Only the deployment's administrative `runs:read` audit domain can read combined text; there is
+no Agent Session transcript read API. Empty selection must make no SDK request. Unsupported
+Core/SDK, revoked members and failed uploads must be reported as incomplete/unsupported archive
+state, not as successful archival or as permission to use another connection. Historical final
+replies not retained by the host cannot be reconstructed from execution summaries.
+
 ## Installation and compatibility
 
 Install the SDK package version that matches the Agent Client release line:

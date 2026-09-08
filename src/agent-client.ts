@@ -9,6 +9,11 @@ import {
 } from './client.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
+import {
+  auditCreateBody, auditEvents, auditReceipt, auditUuid, auditView, CONVERSATION_BATCH_BYTES,
+  type ConversationAudit, type ConversationAuditAck, type ConversationAuditEvent,
+  type CreateConversationAuditInput,
+} from './conversation-audit.js';
 
 const UUID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
@@ -55,6 +60,13 @@ const PUBLIC_AGENT_ERROR_CODES = new Set([
   'run_not_found',
   'tool_not_found',
   'turn_conflict',
+  'conversation_audit_conflict',
+  'conversation_audit_not_found',
+  'conversation_audit_not_ready',
+  'conversation_audit_authorization_invalid',
+  'conversation_audit_limit',
+  'conversation_audit_unavailable',
+  'conversation_audit_internal_error',
 ]);
 
 export const AGENT_CLIENT_V1_PATHS = {
@@ -70,6 +82,9 @@ export const AGENT_CLIENT_V1_PATHS = {
     `/agent-api/v1/tool-invocations/${encodeURIComponent(invocationId)}/resume`,
   completeRun: (runId: string) =>
     `/agent-api/v1/runs/${encodeURIComponent(runId)}/complete`,
+  conversationAudits: '/agent-api/v1/conversation-audits',
+  confirmConversationAudit: (id: string) => `/agent-api/v1/conversation-audits/${encodeURIComponent(id)}/confirm`,
+  conversationAuditEvents: (id: string) => `/agent-api/v1/conversation-audits/${encodeURIComponent(id)}/events`,
 } as const;
 
 export type AgentClientConnection = {
@@ -930,6 +945,35 @@ export class BailingHubAgentClient {
         invocationId,
       );
     }
+  }
+
+  async createConversationAudit(input: CreateConversationAuditInput): Promise<ConversationAudit> {
+    const body = auditCreateBody(input, this.connection.workspace);
+    const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.conversationAudits, body,
+      { acceptedUnknownOnFailure: true });
+    const result = auditView(response.body);
+    if (result.member_count !== input.memberSessionIds.length) throw new BailingHubClientError('Conversation membership acknowledgement does not match.');
+    return result;
+  }
+
+  async confirmConversationAudit(conversationId: string): Promise<ConversationAudit> {
+    const id = auditUuid(conversationId);
+    const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.confirmConversationAudit(id), {},
+      { acceptedUnknownOnFailure: true });
+    return auditView(response.body, id);
+  }
+
+  async appendConversationAuditEvents(conversationId: string, events: ConversationAuditEvent[]): Promise<ConversationAuditAck> {
+    const id = auditUuid(conversationId);
+    const body = { events: auditEvents(events) };
+    if (body.events.length < 1 || body.events.length > 50 || Buffer.byteLength(JSON.stringify(body)) > CONVERSATION_BATCH_BYTES) {
+      throw new TypeError('Conversation event batch exceeds its count or byte limit.');
+    }
+    const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.conversationAuditEvents(id), body,
+      { acceptedUnknownOnFailure: true });
+    const result = auditReceipt(response.body, id);
+    if (result.last_sequence < body.events.at(-1)!.sequence) throw new BailingHubClientError('Conversation events were not fully acknowledged.', undefined, true, undefined, 'accepted_unknown');
+    return result;
   }
 
   async completeRun(runIdValue: unknown, input: CompleteAgentRunInput): Promise<AgentRunCompletion> {

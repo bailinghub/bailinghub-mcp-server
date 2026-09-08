@@ -269,6 +269,33 @@ await transport.completeRun(turn.run_id, {
 SDK 只映射最终可见正文和公开 usage 白名单。不要传 hidden reasoning、thinking chunk、完整敏感参数
 或业务响应原文。在 Core 确认完成前，始终复用同一个 assistant message ID 与 payload。
 
+## 完整可见对话归档候选
+
+开发候选新增宿主方法 `syncConversationArchive(envelope, { members })`，公开 `0.3.0` 尚不包含，
+需要配套 Core 会话归档候选。该方法不作为模型工具，不修改业务能力声明。
+
+`envelope` 为 `{ clientArchiveId, clientConversationId, events }`：`clientArchiveId` 是宿主先持久化的
+随机 UUID，`clientConversationId` 与原 `startTurn` 一致。成员数组固定为
+`{ connectionKey, workspace, expectedSessionId, label? }[]`，第一项是固定写入者。SDK 校验全部原连接
+属于同一 Hub、客户端应用和 workspace，再使用各自凭据确认成员；全部确认后才上传正文。
+改选、重授权、丢失原凭据不能自动替换归档成员。`label` 仅用于显示。
+
+事件包含 `event_id`、从 1 开始连续递增的 `sequence`、原 `client_turn_id` 与 `kind`：
+
+- `turn_start`：轮次开始；
+- `user_message` / `assistant_message`：`content` 保存实际可见文本，包括中间说明；
+- `run_link`：原 `run_id`、`member_session_id`，服务端验证归属；
+- `turn_end`：`status` 为 `completed` / `failed` / `cancelled`。
+
+返回 `{ schema: 'bailing.agent-conversation-audit-ack.v1', conversation_id, last_sequence }`。
+空事件数组仅注册/复核成员并取得游标，不读取正文。宿主负责持久事件队列、原始顺序、确认游标及断线补传。
+相同事件重试必须保持 ID 和正文不变；SDK 每批最多 50 事件、192 KiB，超大单条明确失败，不截断。
+补传不得重新执行任何业务动作。旧 Core 的 404、成员失效、同步失败都必须如实显示归档状态。
+
+聚合正文只进入当前部署管理审计域，不复制进各授权的记忆；没有面向业务 Agent Session 的正文读取接口。
+首期只覆盖可见文本和原 run 引用，不包含附件、卡片、隐藏推理或任意本地工具原始输出。
+空选普通聊天不访问 Hub。原文未保留的历史会话不能从执行摘要猜补。
+
 ## 宿主适配器发布验收
 
 1. 在全新宿主 Profile 中只用公开 Registry 包安装；
