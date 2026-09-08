@@ -54,6 +54,18 @@ guides remain the authority for browser-authorized host adapters.
 The public release must not reuse a maintainer's existing `dist`, local tarball, npm cache result,
 or DSH profile as release evidence. Rebuild and rescan from the clean checkout.
 
+## Registry description repair for 0.4.0
+
+The `Publish Registry Metadata` manual workflow is restricted to `main` and the already-published
+`v0.4.0` package. It checks out the exact dispatch commit and accepts only a `description` change
+from the immutable Tag's descriptor. The description must contain at most 100 characters. Package,
+server, transport and environment fields must remain unchanged, and npm `gitHead` must still match
+the original Tag commit. Run it only after the metadata repair PR and CI pass.
+
+This workflow calls only the official MCP Registry publisher; it cannot publish npm packages or
+write Tags. Record the metadata repair commit separately from the original npm/Tag source commit,
+then verify the exact Registry version before completing the GitHub Release.
+
 ## Stop Conditions
 
 Pause the release if:

@@ -1,0 +1,38 @@
+name: Publish Registry Metadata
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: registry-metadata-v0.4.0
+  cancel-in-progress: false
+
+jobs:
+  registry:
+    if: github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main' && github.repository == 'bailinghub/bailinghub-mcp-server'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Validate immutable npm source and description-only metadata change
+        run: node scripts/check-registry-retry.mjs
+      - name: Install official MCP Registry publisher
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          chmod +x mcp-publisher
+      - name: Authenticate to MCP Registry with GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Publish v0.4.0 Registry metadata only
+        run: ./mcp-publisher publish

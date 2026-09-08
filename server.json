@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.bailinghub/bailinghub-governance",
   "title": "BailingHub for Business Operations",
-  "description": "Let MCP-compatible agents query and operate permitted store, SaaS, CRM, ERP, or other business backends through BailingHub while existing authorization, approval, and audit rules stay in force.",
+  "description": "Let AI agents query and operate business systems with authorization, approval and audit trails.",
   "repository": {
     "url": "https://github.com/bailinghub/bailinghub-mcp-server",
     "source": "github"
