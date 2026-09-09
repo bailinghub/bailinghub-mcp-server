@@ -13,6 +13,7 @@ import {
   type AgentRunCompletion,
   type AgentTurnContext,
   type AgentWorkspaceList,
+  type AgentSystemInfo,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
   type SearchAgentCapabilitiesInput,
@@ -47,6 +48,7 @@ export {
   type AgentTurnContext,
   type AgentWorkspace,
   type AgentWorkspaceList,
+  type AgentSystemInfo,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
   type SearchAgentCapabilitiesInput,
@@ -187,6 +189,8 @@ export type AgentClientHostTransport = {
   syncConversationArchive(input: Record<string, unknown>, options: Record<string, unknown>): Promise<ConversationAuditAck>;
   /** Read protocol support without creating an archive or uploading conversation text. */
   getConversationArchiveCapabilities(options: Record<string, unknown>): Promise<ConversationAuditCapabilities>;
+  /** Optional product positioning for one explicit selected connection; no tool discovery or run. */
+  getSystemInfo(options: Record<string, unknown>): Promise<AgentSystemInfo>;
 };
 
 function hostRecord(value: unknown, label: string): Record<string, unknown> {
@@ -795,6 +799,36 @@ export function createAgentClientTransport(
   }
 
   return {
+    async getSystemInfo(optionsValue) {
+      const options = hostRecord(optionsValue, 'system information options');
+      const connectionKey = hostText(options.connectionKey, 'connectionKey', 37);
+      const workspace = normalizeAgentRoute(hostText(options.workspace, 'workspace', 64));
+      if (!CONNECTION_KEY_PATTERN.test(connectionKey) || options.connectionName !== undefined) {
+        throw new TypeError('System information requires an exact connection key.');
+      }
+      const signal = callerSignal(options.signal);
+      // Snapshot caller-owned primitives before asynchronous registry reads.
+      let expected = options.expectedBinding === undefined ? undefined : expectedAgentBinding(options.expectedBinding);
+      if (expected && expected.workspace !== workspace) throw new TypeError('Expected binding does not match the explicit target.');
+      assertRequestActive(signal);
+      if (!expected) {
+        const profile = await connections.registry.get(connectionKey);
+        const credentials = await connections.credentialStore(connectionKey).load();
+        assertRequestActive(signal);
+        if (!profile || profile.workspace !== workspace || !credentials) {
+          throw new BailingHubClientError('The original Agent connection binding is no longer available.',
+            403, false, 'agent_binding_changed');
+        }
+        expected = { hubUrl: profile.baseUrl, clientAppId: profile.clientAppId, workspace, sessionId: credentials.session_id };
+      }
+      const bound = await boundSession(connectionKey, expected, undefined, signal);
+      try {
+        return await bound.client.getSystemInfo();
+      } finally {
+        // Also reject a replacement that races a failed response: metadata fallback must not hide it.
+        await bound.assertBinding();
+      }
+    },
     async getConversationArchiveCapabilities(optionsValue) {
       const { prepared, assertAll } = await prepareArchiveMembers(optionsValue);
       const capabilities = await prepared[0]!.client.getConversationArchiveCapabilities();

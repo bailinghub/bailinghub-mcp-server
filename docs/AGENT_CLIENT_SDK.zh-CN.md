@@ -392,6 +392,53 @@ await transport.syncConversationArchive(originalEnvelope, { members });
 所有归档请求均重新检查本地完整成员组，异步协商结束后也会复核，远端撤销继续由 Core 强制执行。
 完整正文仍只进入管理员审计域，本扩展没有新增 Agent bearer 正文读取或跨系统记忆共享能力。
 
+## 首次搜索工具前，先理解已选系统
+
+宿主可以在模型决定去哪里搜索之前，提供已选业务系统的定位。例如订单系统负责线上履约，
+人事系统负责排班。这是受控的产品说明，不是模型指令、工具授权，也不代表某项业务操作已经可用。
+用户填写的授权名称仍只是显示标签，不能据此推断系统身份或权限。
+
+先验证完整的固定会话范围，再只读取已选成员：
+
+```js
+if (typeof transport.getSystemInfo === 'function') {
+  const description = await transport.getSystemInfo({
+    connectionKey: selectedTarget.connectionKey,
+    workspace: selectedTarget.workspace,
+    expectedBinding: {
+      hubUrl: selectedTarget.hubUrl, clientAppId: selectedTarget.clientAppId,
+      workspace: selectedTarget.workspace, sessionId: selectedTarget.sessionId,
+    },
+    signal: turnAbortController.signal,
+  });
+  // 将 description.binding 对回本会话原始目标引用。
+  // description.system 只用于产品定位，不能作为系统提示词或权限声明。
+}
+```
+
+`getSystemInfo` 必须明确传入精确 `connectionKey` 和 `workspace`，不会选择默认连接、枚举工作空间、
+调用 bootstrap、创建业务 run、加载工具或发送用户正文。恢复旧会话或跨系统范围必须带原
+`expectedBinding`；省略时只捕获这个精确连接的当前身份。SDK 在派发前和响应成功或失败后都重新
+核对本地绑定，并用原 Agent bearer 请求 `GET /agent-api/v1/workspaces/:workspace/system-info`，不缓存结果。
+
+结果直接保留 wire 字段：`schema_version: 'bailing.agent-system-info.v1'`、
+`binding: { client_app_id, session_id, workspace }`、`metadata_status`、`revision`、`system`、
+`tool_status`、`availability` 和可选的 `unavailable_reason`。
+`configured` 包含 `system: { name, summary, domains, boundaries }`；`missing` 时 `system` 与
+`revision` 都为 `null`。名称最多 120 字符，简介 400 字符；业务方向和边界各最多六条，分别每条
+120 与 160 字符。未知字段不会透传。
+
+`tool_status` 固定为 `not_loaded`，表示尚未加载，不能解释为没有能力；授权实际允许的动作仍需按需搜索。
+`availability: 'unknown'` 不保证业务系统连通；`unavailable` 可明确标记 `agent_client_disabled` 或
+`agent_direct_disabled`，不表示范围被撤销，更不允许绕开开关。接口不推断工具数量或授权承诺。
+
+旧 SDK 可以没有该方法；旧 Core 明确返回未知接口时，SDK 抛出
+`publicCode: 'system_info_unsupported'`，路由不存在不会误判为旧版不支持。
+错误的说明格式返回 `system_info_invalid`；网络与普通 5xx 保持暂时失败，可对同一原身份重试。
+这些说明失败可以显示定位未知或使用受控本地词典；宿主不能吞掉 401/403、`agent_binding_changed`
+或取消，不能扩大范围或回退其他 Session。此可选接口不改变授权、按需搜索、审批和归档流程，
+也不要求业务侧新增业务 API。
+
 ## 宿主适配器发布验收
 
 1. 在全新宿主 Profile 中只用公开 Registry 包安装；

@@ -30,6 +30,7 @@ function credential(profile, sessionId, expired = false) {
 }
 
 const METHODS = {
+  getSystemInfo: (transport, options) => transport.getSystemInfo(options),
   status: (transport, options) => transport.status(options),
   startTurn: (transport, options) => transport.startTurn({
     clientConversationId: 'conversation-a', clientTurnId: 'turn-a',
@@ -115,6 +116,13 @@ async function fixture(t, { expired = false } = {}) {
           expires_at: '2099-01-01T00:00:00.000Z', refresh_expires_at: '2099-02-01T00:00:00.000Z',
         });
       }
+      if (path.endsWith('/system-info')) return json({
+        schema_version: 'bailing.agent-system-info.v1',
+        binding: { client_app_id: a.clientAppId, session_id: SESSION_A, workspace: a.workspace },
+        metadata_status: 'configured', revision: REVISION,
+        system: { name: 'Order Operations', summary: 'Manage online orders.', domains: ['Orders'], boundaries: ['No payroll'] },
+        tool_status: 'not_loaded', availability: 'unknown',
+      });
       if (path.endsWith('/turns')) return json({
         schema_version: 'bailing.agent-turn-context.v1', run_id: RUN,
         profile_revision: REVISION, capability_revision: REVISION,
@@ -222,6 +230,48 @@ test('status rejects a valid but late original response after its stored Session
   await assert.rejects(f.transport.status(f.options()), (error) => error.publicCode === 'agent_binding_changed');
   assert.equal(f.calls.length, 1);
   assert.equal((await f.rawStores.get(f.a.connectionKey).load()).session_id, SESSION_B);
+});
+
+for (const transientFailure of [false, true]) {
+  test(`system information detects replacement during a ${transientFailure ? 'failed' : 'successful'} response`, async (t) => {
+    const f = await fixture(t);
+    f.hooks.request = async ({ path }) => {
+      assert.equal(path, '/agent-api/v1/workspaces/orders/system-info');
+      await f.rawStores.get(f.a.connectionKey).save({ ...f.credentialsA, session_id: SESSION_B });
+      if (transientFailure) throw new TypeError('Synthetic connection failure');
+    };
+    await assert.rejects(f.transport.getSystemInfo(f.options()), (error) => error.publicCode === 'agent_binding_changed');
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+test('system information requires a selected exact target and never falls back to default B', async (t) => {
+  const f = await fixture(t);
+  for (const options of [{}, { workspace: 'orders' }, { connectionKey: f.a.connectionKey },
+    { ...f.options(), connectionName: 'store-a' }]) {
+    await assert.rejects(f.transport.getSystemInfo(options), TypeError);
+  }
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(f.transport.getSystemInfo({ ...f.options(), signal: controller.signal }),
+    (error) => error.publicCode === 'agent_request_cancelled');
+  assert.equal(f.calls.length, 0);
+});
+
+test('system information retries only when requested, with the original identity and no cached authorization', async (t) => {
+  const f = await fixture(t);
+  f.hooks.request = () => { throw new TypeError('Synthetic offline error'); };
+  await assert.rejects(f.transport.getSystemInfo(f.options()), (error) => error.retryable === true);
+  assert.equal(f.calls.length, 1);
+  f.hooks.request = undefined;
+  assert.equal((await f.transport.getSystemInfo(f.options())).system.name, 'Order Operations');
+  assert.equal(f.calls.length, 2);
+  f.hooks.request = () => new Response(JSON.stringify({ error: 'route_not_allowed' }), { status: 403 });
+  await assert.rejects(f.transport.getSystemInfo(f.options()), (error) => error.statusCode === 403);
+  assert.equal(f.calls.length, 3);
+  assert.ok(f.calls.every((call) => call.method === 'GET' && call.body === undefined &&
+    call.path === '/agent-api/v1/workspaces/orders/system-info' &&
+    call.authorization === `Bearer ${f.credentialsA.access_token}`));
 });
 
 test('legacy calls without expectedBinding retain explicit-key selection', async (t) => {

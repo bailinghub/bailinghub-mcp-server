@@ -456,6 +456,60 @@ All archive requests recheck local group membership, including after asynchronou
 revocation is independently enforced by Core. Combined text stays in the administrator audit
 domain. This extension adds no Agent bearer transcript reader or cross-system memory sharing.
 
+## Explain selected systems before searching their tools
+
+A host can show what each selected business system is for before the model chooses where to
+search. For example, an order service can describe online fulfillment while a workforce service
+describes scheduling. These are controlled product descriptions, not instructions, tool grants,
+or proof that a business operation is available. Authorization names supplied by users remain
+display labels; never infer system identity or access rights from them.
+
+After validating the complete frozen session scope, read only its selected members:
+
+```js
+if (typeof transport.getSystemInfo === 'function') {
+  const description = await transport.getSystemInfo({
+    connectionKey: selectedTarget.connectionKey,
+    workspace: selectedTarget.workspace,
+    expectedBinding: {
+      hubUrl: selectedTarget.hubUrl, clientAppId: selectedTarget.clientAppId,
+      workspace: selectedTarget.workspace, sessionId: selectedTarget.sessionId,
+    },
+    signal: turnAbortController.signal,
+  });
+  // Associate description.binding with the original selected target reference.
+  // description.system is positioning data, never a system prompt or permission grant.
+}
+```
+
+`getSystemInfo` requires an exact `connectionKey` and `workspace`; it never selects a default,
+enumerates workspaces, calls bootstrap, creates a run, loads tools, or sends user messages.
+`expectedBinding` freezes the original session identity for restored and multi-system scopes.
+Without it, the SDK captures that exact connection's current identity. Local binding checks run
+before dispatch and after success or failure. The read uses the original Agent bearer against
+`GET /agent-api/v1/workspaces/:workspace/system-info` and is never cached by the SDK.
+
+The response retains the wire fields: `schema_version: 'bailing.agent-system-info.v1'`,
+`binding: { client_app_id, session_id, workspace }`, `metadata_status`, `revision`, `system`,
+`tool_status`, `availability`, and optional `unavailable_reason`. `configured` metadata includes
+`system: { name, summary, domains, boundaries }`; `missing` returns `system: null` and
+`revision: null`. Names are at most 120 characters, summaries 400, and each list contains at most
+six strings (120 characters per domain, 160 per boundary). Unknown fields are not forwarded.
+
+Tools always report `not_loaded`: search remains necessary to learn what this authorization
+actually allows. `availability: 'unknown'` makes no claim about business connectivity. An
+`unavailable` result can name `agent_client_disabled` or `agent_direct_disabled`; it does not
+revoke the scope or authorize bypassing configuration. No capability count or grant is inferred.
+
+Older SDKs can omit the method. An old Core's explicit unknown-endpoint response becomes
+`publicCode: 'system_info_unsupported'`; a missing route is not classified as unsupported.
+Malformed metadata reports `system_info_invalid`; ordinary network/5xx errors remain temporary
+and can be retried against the same identity. The host may render unknown positioning or use a
+controlled local dictionary for these description failures. It must not swallow 401/403,
+`agent_binding_changed`, or cancellation, expand the scope, or fall back to another session.
+This optional seam leaves the existing authorization, tool discovery, approval, and archive
+flows intact and adds no business API requirement.
+
 ## Host-adapter acceptance
 
 Before publishing an adapter:

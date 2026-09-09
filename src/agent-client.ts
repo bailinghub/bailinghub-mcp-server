@@ -9,6 +9,8 @@ import {
 } from './client.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
+import { normalizeAgentSystemInfo, type AgentSystemInfo } from './system-info.js';
+export type { AgentSystemInfo } from './system-info.js';
 import {
   auditCapabilities, auditCreateBody, auditEvents, auditReceipt, auditUuid, auditView, CONVERSATION_BATCH_BYTES,
   type ConversationAudit, type ConversationAuditAck, type ConversationAuditEvent,
@@ -68,12 +70,15 @@ const PUBLIC_AGENT_ERROR_CODES = new Set([
   'conversation_audit_unavailable',
   'conversation_audit_internal_error',
   'conversation_audit_cross_binding_unavailable',
+  'system_info_unsupported',
 ]);
 
 export const AGENT_CLIENT_V1_PATHS = {
   workspaces: '/agent-api/v1/workspaces',
   bootstrap: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/bootstrap`,
+  systemInfo: (route: string) =>
+    `/agent-api/v1/workspaces/${encodeURIComponent(route)}/system-info`,
   turns: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/turns`,
   capabilitySearch: (route: string) =>
@@ -208,6 +213,7 @@ type AgentRequestOptions = {
   expectedStatus?: number;
   ifNoneMatch?: string;
   acceptedUnknownOnFailure?: boolean;
+  publicErrorCodes?: readonly string[];
 };
 
 function asObject(value: unknown, label = 'response'): Record<string, unknown> {
@@ -497,11 +503,11 @@ async function readJsonWithLimit(response: Response): Promise<unknown> {
   }
 }
 
-async function publicErrorCode(response: Response): Promise<string | undefined> {
+async function publicErrorCode(response: Response, additionalCodes: readonly string[] = []): Promise<string | undefined> {
   try {
     const body = asObject(await readJsonWithLimit(response), 'error response');
     const code = typeof body.error === 'string' ? body.error.trim() : '';
-    return PUBLIC_AGENT_ERROR_CODES.has(code) ? code : undefined;
+    return PUBLIC_AGENT_ERROR_CODES.has(code) || additionalCodes.includes(code) ? code : undefined;
   } catch {
     return undefined;
   }
@@ -584,7 +590,7 @@ export class AgentClientTransport {
         throw safeHttpError(
           response.status,
           options.acceptedUnknownOnFailure === true,
-          await publicErrorCode(response),
+          await publicErrorCode(response, options.publicErrorCodes),
         );
       }
       const value = await readJsonWithLimit(response);
@@ -714,6 +720,23 @@ export class BailingHubAgentClient {
       workspaces,
       ...(response.etag ? { etag: response.etag } : {}),
     };
+  }
+
+  /** Read this exact authorization's product description without creating a run or loading tools. */
+  async getSystemInfo(): Promise<AgentSystemInfo> {
+    let response: AgentTransportResponse;
+    try {
+      response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.systemInfo(this.connection.workspace),
+        undefined, { publicErrorCodes: ['not_found'] });
+    } catch (error) {
+      if (error instanceof BailingHubClientError &&
+          ((error.statusCode === 404 && error.publicCode === 'not_found') || error.publicCode === 'system_info_unsupported')) {
+        throw new BailingHubClientError('This BailingHub does not support system information.',
+          error.statusCode, false, 'system_info_unsupported', 'definitive_rejection');
+      }
+      throw error;
+    }
+    return normalizeAgentSystemInfo(response.body, this.connection);
   }
 
   async bootstrapWorkspace(options: { ifNoneMatch?: string } = {}): Promise<AgentRuntimeProfile> {
