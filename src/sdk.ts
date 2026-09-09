@@ -142,6 +142,16 @@ function expectedAgentBinding(value: unknown): ExpectedAgentBinding {
   };
 }
 
+function callerSignal(value: unknown): AbortSignal | undefined {
+  if (value !== undefined && !(value instanceof AbortSignal)) throw new TypeError('signal must be an AbortSignal.');
+  return value;
+}
+
+function assertRequestActive(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new BailingHubClientError('The Agent request was cancelled before dispatch.',
+    499, false, 'agent_request_cancelled', 'definitive_rejection');
+}
+
 export type AgentClientHostDependencies = {
   /**
    * Host-owned local storage namespace. This dependency setting is not a user connection field,
@@ -310,6 +320,21 @@ export function createAgentClientTransport(
     connections = new AgentConnectionStore(options);
   }
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+
+  function signalFetch(signal: AbortSignal | undefined): typeof fetch {
+    if (!signal) return fetchImpl;
+    return async (url, init) => {
+      assertRequestActive(signal);
+      const combined = init?.signal ? AbortSignal.any([init.signal, signal]) : signal;
+      try {
+        return await fetchImpl(url, { ...init, signal: combined });
+      } catch (error) {
+        if (signal.aborted) throw new BailingHubClientError('The Agent request was cancelled after dispatch.',
+          499, false, 'agent_request_cancelled', init?.method === 'POST' ? 'accepted_unknown' : 'definitive_rejection');
+        throw error;
+      }
+    };
+  }
 
   async function resolveProfile(
     selectorValue: unknown,
@@ -644,10 +669,12 @@ export function createAgentClientTransport(
     });
   }
 
-  async function boundSession(connectionKeyValue: unknown, expected: ExpectedAgentBinding, beforeRequest?: () => Promise<void>) {
+  async function boundSession(connectionKeyValue: unknown, expected: ExpectedAgentBinding, beforeRequest?: () => Promise<void>, signal?: AbortSignal) {
+    assertRequestActive(signal);
     const connectionKey = hostText(connectionKeyValue, 'connectionKey', 37);
     if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new TypeError('Expected bindings require an exact connection key.');
     const profile = await connections.registry.get(connectionKey);
+    assertRequestActive(signal);
     const bindingError = () => new BailingHubClientError(
       'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed',
     );
@@ -656,10 +683,13 @@ export function createAgentClientTransport(
     if (!matches(profile)) throw bindingError();
     const store = connections.credentialStore(connectionKey);
     const assertBinding = async () => {
+      assertRequestActive(signal);
       const current = await connections.registry.get(connectionKey);
+      assertRequestActive(signal);
       // Credential identity is the final observation: registry IO must not leave an earlier
       // Session snapshot usable for a refresh or business request after local replacement.
       const credentials = await store.load();
+      assertRequestActive(signal);
       if (!matches(current) || !credentials || credentials.session_id !== expected.sessionId ||
           credentials.base_url !== expected.hubUrl || credentials.client_app_id !== expected.clientAppId ||
           credentials.route !== expected.workspace) throw bindingError();
@@ -670,7 +700,8 @@ export function createAgentClientTransport(
       if (beforeRequest) await beforeRequest();
       await assertBinding();
       if (!String(url).startsWith(`${expected.hubUrl}/`)) throw bindingError();
-      return fetchImpl(url, init);
+      assertRequestActive(signal);
+      return signalFetch(signal)(url, init);
     };
     const manager = new AgentSessionManager(store, checkedFetch, dependencies.now);
     const client = new BailingHubAgentClient({
@@ -682,7 +713,7 @@ export function createAgentClientTransport(
         await assertBinding();
         return token;
       } },
-    }, { fetchImpl: checkedFetch, allowInsecureHttp: profile!.allowInsecureHttp });
+    }, { fetchImpl: checkedFetch, allowInsecureHttp: profile!.allowInsecureHttp, ...(signal ? { signal } : {}) });
     return { profile: profile!, manager, client, assertBinding };
   }
 
@@ -738,24 +769,29 @@ export function createAgentClientTransport(
     options: Record<string, unknown> = {},
   ): Promise<BailingHubAgentClient> {
     const workspace = normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
+    const signal = callerSignal(options.signal);
+    assertRequestActive(signal);
     if (options.expectedBinding !== undefined) {
       // Copy primitive values before the first await; callers cannot retarget an in-flight request.
       const expected = expectedAgentBinding(options.expectedBinding);
       if (expected.workspace !== workspace || options.connectionName !== undefined) {
         throw new TypeError('Expected binding does not match the explicit target.');
       }
-      return (await boundSession(options.connectionKey, expected)).client;
+      return (await boundSession(options.connectionKey, expected, undefined, signal)).client;
     }
     const profile = await resolveProfile(options.connectionName ?? options.connectionKey, workspace);
-    const session = await sessionFor(profile);
+    assertRequestActive(signal);
+    const requestFetch = signalFetch(signal);
+    const session = signal ? new AgentSessionManager(connections.credentialStore(profile.connectionKey), requestFetch, dependencies.now) : await sessionFor(profile);
     const credentials = await session.loadRequired();
+    assertRequestActive(signal);
     return new BailingHubAgentClient({
       baseUrl: profile.baseUrl,
       clientAppId: profile.clientAppId,
       workspace,
       sessionId: credentials.session_id,
       accessTokenProvider: session,
-    }, { fetchImpl, allowInsecureHttp: profile.allowInsecureHttp });
+    }, { fetchImpl: requestFetch, allowInsecureHttp: profile.allowInsecureHttp, ...(signal ? { signal } : {}) });
   }
 
   return {
@@ -1023,12 +1059,14 @@ export function createAgentClientTransport(
 
     async status(inputValue = {}) {
       const input = hostRecord(inputValue, 'status input');
+      const signal = callerSignal(input.signal);
+      assertRequestActive(signal);
       if (input.expectedBinding !== undefined) {
         const expected = expectedAgentBinding(input.expectedBinding);
         if (input.connectionName !== undefined || (input.workspace !== undefined && input.workspace !== expected.workspace)) {
           throw new TypeError('Expected binding does not match the explicit target.');
         }
-        const bound = await boundSession(input.connectionKey, expected);
+        const bound = await boundSession(input.connectionKey, expected, undefined, signal);
         const session = await bound.manager.getSession();
         await bound.assertBinding();
         if (session.session_id !== expected.sessionId || session.client_app_id !== expected.clientAppId ||
@@ -1044,6 +1082,7 @@ export function createAgentClientTransport(
         };
       }
       const profile = await resolveProfile(input.connectionName ?? input.connectionKey);
+      assertRequestActive(signal);
       const store = connections.credentialStore(profile.connectionKey);
       if (!await store.load()) {
         return {
@@ -1053,7 +1092,8 @@ export function createAgentClientTransport(
       }
       let session;
       try {
-        session = await new AgentSessionManager(store, fetchImpl, dependencies.now).getSession();
+        session = await new AgentSessionManager(store, signalFetch(signal), dependencies.now).getSession();
+        assertRequestActive(signal);
       } catch (error) {
         if (await store.load()) throw error;
         return {

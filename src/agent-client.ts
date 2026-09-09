@@ -551,6 +551,7 @@ export class AgentClientTransport {
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly timeoutMilliseconds = 15_000,
     allowInsecureHttp = false,
+    private readonly callerSignal?: AbortSignal,
   ) {
     this.baseUrl = normalizeBaseUrl(baseUrl, allowInsecureHttp);
     if (!Number.isInteger(timeoutMilliseconds) || timeoutMilliseconds < 1 || timeoutMilliseconds > 120_000) {
@@ -567,10 +568,14 @@ export class AgentClientTransport {
     const expectedStatus = options.expectedStatus ?? 200;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMilliseconds);
+    const signal = this.callerSignal ? AbortSignal.any([controller.signal, this.callerSignal]) : controller.signal;
+    let dispatched = false;
     try {
-      let response = await this.send(method, path, body, false, controller.signal, options.ifNoneMatch);
+      signal.throwIfAborted();
+      const dispatch = () => { dispatched = true; };
+      let response = await this.send(method, path, body, false, signal, options.ifNoneMatch, dispatch);
       if (response.status === 401) {
-        response = await this.send(method, path, body, true, controller.signal, options.ifNoneMatch);
+        response = await this.send(method, path, body, true, signal, options.ifNoneMatch, dispatch);
       }
       if (response.status === 304 && options.ifNoneMatch) {
         return { status: 304, ...(response.headers.get('etag') ? { etag: response.headers.get('etag')! } : {}) };
@@ -590,6 +595,10 @@ export class AgentClientTransport {
       };
     } catch (error) {
       if (error instanceof BailingHubClientError) throw error;
+      if (this.callerSignal?.aborted) {
+        throw new BailingHubClientError('The Agent request was cancelled.', 499, false, 'agent_request_cancelled',
+          options.acceptedUnknownOnFailure && dispatched ? 'accepted_unknown' : 'definitive_rejection');
+      }
       if (error instanceof Error && error.name === 'AbortError') {
         throw new BailingHubClientError(
           'BailingHub Agent request timed out.',
@@ -618,12 +627,16 @@ export class AgentClientTransport {
     forceRefresh: boolean,
     signal: AbortSignal,
     ifNoneMatch?: string,
+    dispatch?: () => void,
   ): Promise<Response> {
     let token: string;
     try {
+      signal.throwIfAborted();
       token = await this.accessTokenProvider.getAccessToken(forceRefresh);
+      signal.throwIfAborted();
     } catch (error) {
       if (error instanceof BailingHubClientError) throw error;
+      if (signal.aborted) throw error;
       throw new BailingHubClientError(
         'The BailingHub Agent login could not be refreshed. Run login again.',
         401,
@@ -638,6 +651,8 @@ export class AgentClientTransport {
     if (ifNoneMatch) headers['If-None-Match'] = identifierText(ifNoneMatch, 'ifNoneMatch', 256);
     const init: RequestInit = { method, headers, redirect: 'error', signal };
     if (body !== undefined) init.body = JSON.stringify(body);
+    signal.throwIfAborted();
+    dispatch?.();
     return await this.fetchImpl(`${this.baseUrl}${path}`, init);
   }
 }
@@ -653,6 +668,7 @@ export class BailingHubAgentClient {
       fetchImpl?: typeof fetch;
       timeoutMilliseconds?: number;
       allowInsecureHttp?: boolean;
+      signal?: AbortSignal;
     } = {},
   ) {
     const baseUrl = normalizeBaseUrl(
@@ -669,6 +685,7 @@ export class BailingHubAgentClient {
       options.fetchImpl,
       options.timeoutMilliseconds,
       options.allowInsecureHttp === true,
+      options.signal,
     );
   }
 

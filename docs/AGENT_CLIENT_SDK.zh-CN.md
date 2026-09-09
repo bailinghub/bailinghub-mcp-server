@@ -357,6 +357,12 @@ await transport.searchCapabilities({ query: targetTask, runId: originalRunId }, 
 原目标、run、revision 和调用 ID；恢复会话范围不等于重建已丢失的调用映射，也不能换用新 Session。
 本地检查不代替 Core 和业务系统的最终授权，更不承诺跨系统事务原子性。
 
+需要取消的 status 和业务调用在同一 options 传入 `signal: turnAbortController.signal`。SDK 在异步读取前
+捕获信号，并与 HTTP 超时信号合并。派发前取消返回 `agent_request_cancelled`（499、不可自动重试、
+`definitive_rejection`）；invoke/resume 已派发后取消则保留 `accepted_unknown` 与原 `invocationId`，
+取消不代表业务动作已撤销，SDK 不自动重放。归档同步应独立于轮次取消；宿主可用独立完成流程记录原目标的
+结束摘要。
+
 跨系统归档成员在原字段之外必须带齐 `hubUrl` 与 `clientAppId`：
 
 ```js

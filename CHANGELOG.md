@@ -15,6 +15,9 @@
 - Keep combined text in the administrator audit domain. This SDK adds neither cross-system
   planning nor a model-visible connection-management tool; hosts own target selection and minimal
   per-target context. Archive retry retains original IDs and never repeats business execution.
+- Forward a host `AbortSignal` through local binding checks, credential refresh and HTTP timeouts.
+  Cancellation before dispatch sends no business request; cancellation after invocation/resume
+  dispatch keeps `accepted_unknown` with the original invocation ID and never automatically replays it.
 
 ## 0.4.0 - 2026-09-08
 

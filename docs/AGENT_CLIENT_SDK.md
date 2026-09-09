@@ -415,6 +415,14 @@ reuse the same run/revision/invocation during recovery. Scope restoration does n
 invocation mapping or authorize a replacement Session. Local checks do not replace Core or the
 business system's final authorization and do not promise an atomic transaction across systems.
 
+Pass `signal: turnAbortController.signal` in the same options for cancellable status and business
+calls. The SDK snapshots the signal before asynchronous reads and combines it with the HTTP timeout.
+Cancellation before dispatch has `agent_request_cancelled` (499, non-retryable,
+`definitive_rejection`). After an invocation or resume has been dispatched, cancellation retains
+`accepted_unknown` and the original `invocationId`: cancellation is not proof the action was undone.
+The SDK does not replay it. Keep archive synchronization independent of turn cancellation; a host
+may use a separate completion lifecycle to record the ended target run's summary.
+
 Cross-system archive members add required `hubUrl` and `clientAppId` to the existing member shape:
 
 ```js
