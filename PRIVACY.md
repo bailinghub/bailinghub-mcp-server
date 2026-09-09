@@ -45,3 +45,10 @@ copied into each authorization's memory. The SDK does not persist a transcript q
 must define and disclose its local durable outbox, retention and retry behavior. Hidden reasoning,
 attachments, arbitrary tool payloads and credentials are not part of the archive DTO. The standalone
 MCP tools do not automatically capture conversations or call this host-only API.
+
+The unreleased cross-system candidate adds each selected member's public Client App and route
+to archive registration, with one independent Session per target on the same Hub. Its capability
+probe sends no conversation body. Frozen Hub URLs and connection keys remain local. Hosts must
+explicitly select the participating systems and limit each system's business input to the task
+it needs; using one Hub is not permission to broadcast other systems' results. Combined text
+retains the same administrator-only audit visibility and is not written into each system's memory.

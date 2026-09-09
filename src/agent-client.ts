@@ -10,9 +10,9 @@ import {
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
 import {
-  auditCreateBody, auditEvents, auditReceipt, auditUuid, auditView, CONVERSATION_BATCH_BYTES,
+  auditCapabilities, auditCreateBody, auditEvents, auditReceipt, auditUuid, auditView, CONVERSATION_BATCH_BYTES,
   type ConversationAudit, type ConversationAuditAck, type ConversationAuditEvent,
-  type CreateConversationAuditInput,
+  type CreateConversationAuditInput, type ConversationAuditCapabilities,
 } from './conversation-audit.js';
 
 const UUID_PATTERN =
@@ -67,6 +67,7 @@ const PUBLIC_AGENT_ERROR_CODES = new Set([
   'conversation_audit_limit',
   'conversation_audit_unavailable',
   'conversation_audit_internal_error',
+  'conversation_audit_cross_binding_unavailable',
 ]);
 
 export const AGENT_CLIENT_V1_PATHS = {
@@ -83,6 +84,7 @@ export const AGENT_CLIENT_V1_PATHS = {
   completeRun: (runId: string) =>
     `/agent-api/v1/runs/${encodeURIComponent(runId)}/complete`,
   conversationAudits: '/agent-api/v1/conversation-audits',
+  conversationAuditCapabilities: '/agent-api/v1/conversation-audits/capabilities',
   confirmConversationAudit: (id: string) => `/agent-api/v1/conversation-audits/${encodeURIComponent(id)}/confirm`,
   conversationAuditEvents: (id: string) => `/agent-api/v1/conversation-audits/${encodeURIComponent(id)}/events`,
 } as const;
@@ -620,7 +622,8 @@ export class AgentClientTransport {
     let token: string;
     try {
       token = await this.accessTokenProvider.getAccessToken(forceRefresh);
-    } catch {
+    } catch (error) {
+      if (error instanceof BailingHubClientError) throw error;
       throw new BailingHubClientError(
         'The BailingHub Agent login could not be refreshed. Run login again.',
         401,
@@ -947,12 +950,34 @@ export class BailingHubAgentClient {
     }
   }
 
+  async getConversationArchiveCapabilities(): Promise<ConversationAuditCapabilities> {
+    try {
+      const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.conversationAuditCapabilities);
+      return auditCapabilities(response.body);
+    } catch (error) {
+      if (!(error instanceof BailingHubClientError) || error.statusCode !== 404) throw error;
+      return { schema: 'bailing.agent-conversation-audit-capabilities.v1', cross_binding_members: false,
+        member_bindings: 'session-client-route.v1' };
+    }
+  }
+
   async createConversationAudit(input: CreateConversationAuditInput): Promise<ConversationAudit> {
     const body = auditCreateBody(input, this.connection.workspace);
+    if (body.schema === 'bailing.agent-conversation-audit-create.v2') {
+      const members = body.members as { session_id: string; client_app_id: string; route: string }[];
+      const writer = members[0]!;
+      if (writer.session_id !== this.connection.sessionId || writer.client_app_id !== this.connection.clientAppId ||
+          writer.route !== this.connection.workspace) throw new TypeError('Conversation writer does not match the original connection.');
+      if (!(await this.getConversationArchiveCapabilities()).cross_binding_members) {
+        throw new BailingHubClientError('This BailingHub does not support cross-system conversation archives.', 503, false,
+          'conversation_audit_cross_binding_unavailable');
+      }
+    }
     const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.conversationAudits, body,
       { acceptedUnknownOnFailure: true });
     const result = auditView(response.body);
-    if (result.member_count !== input.memberSessionIds.length) throw new BailingHubClientError('Conversation membership acknowledgement does not match.');
+    const count = Array.isArray(body.members) ? body.members.length : (body.member_session_ids as string[]).length;
+    if (result.member_count !== count) throw new BailingHubClientError('Conversation membership acknowledgement does not match.');
     return result;
   }
 

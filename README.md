@@ -19,6 +19,11 @@ business system still makes the final authorization decision.
 
 ## What changes in 0.4.0
 
+**Unreleased source candidate:** this checkout also supports a host explicitly selecting several
+business systems on one Hub, each with its own authorized connection. It requires the matching
+Core capability and host integration; the published npm `0.4.0` and Core `0.6.1` do not include
+cross-system conversation archives. See the [candidate integration contract](docs/AGENT_CLIENT_SDK.md#cross-system-source-candidate).
+
 When an Agent Client host enables conversation archiving, a BailingHub administrator can follow
 the user's request, the assistant's visible replies and the resulting business actions together.
 For example, one conversation can compare two separately authorized stores while retaining the

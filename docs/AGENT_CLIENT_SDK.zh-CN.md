@@ -305,7 +305,7 @@ await transport.syncConversationArchive({
 `envelope` 为 `{ clientArchiveId, clientConversationId, events }`：`clientArchiveId` 是宿主先持久化的
 随机 UUID，`clientConversationId` 与原 `startTurn` 一致。成员数组固定为
 `{ connectionKey, workspace, expectedSessionId, label? }[]`，第一项是固定写入者。SDK 校验全部原连接
-属于同一 Hub、客户端应用和 workspace，再使用各自凭据确认成员；全部确认后才上传正文。
+属于同一 Hub、客户端应用和 workspace（公开 0.4.0 的范围），再使用各自凭据确认成员；全部确认后才上传正文。
 改选、重授权、丢失原凭据不能自动替换归档成员。`label` 仅用于显示。
 
 事件包含 `event_id`、从 1 开始连续递增的 `sequence`、原 `client_turn_id` 与 `kind`：
@@ -323,6 +323,68 @@ await transport.syncConversationArchive({
 聚合正文只进入当前部署管理审计域，不复制进各授权的记忆；没有面向业务 Agent Session 的正文读取接口。
 首期只覆盖可见文本和原 run 引用，不包含附件、卡片、隐藏推理或任意本地工具原始输出。
 空选普通聊天不访问 Hub。原文未保留的历史会话不能从执行摘要猜补。
+
+## 跨系统源码候选
+
+本节描述未发布源码，公开 npm 0.4.0 和 Core 0.6.1 尚不具备此能力。配套宿主可以明确选择**同一 Hub**
+下的独立业务系统；每个目标保留自己的 Client App、workspace、Agent Session、run、能力声明与调用记录。
+跨 Hub 和重复 Session 均拒绝。SDK 只负责按目标调用，不负责制定步骤依赖或决定向哪个系统发送用户正文。
+宿主应区分不同系统的工具声明，为每个目标提供完成当前任务所需的最少上下文。
+
+用户选定目标时，捕获并持久化完整公开绑定：
+
+```js
+const expectedBinding = {
+  hubUrl: selected.hubUrl,
+  clientAppId: selected.clientAppId,
+  workspace: selected.workspace,
+  sessionId: selected.sessionId,
+};
+const targetOptions = {
+  connectionKey: selected.connectionKey,
+  workspace: expectedBinding.workspace,
+  expectedBinding,
+};
+await transport.status(targetOptions);
+await transport.startTurn(originalTurnInput, targetOptions);
+await transport.searchCapabilities({ query: targetTask, runId: originalRunId }, targetOptions);
+// invoke/completeRun 使用同一 options；resume(originalInvocationId, {}, targetOptions)。
+```
+
+为兼容旧调用，`expectedBinding` 是可选字段；跨系统宿主必须传入。它要求精确 key，拒绝别名和默认连接。
+这是宿主本地元数据，不进入业务参数或 HTTP DTO。SDK 在刷新凭据、status 和业务 HTTP 派发前核对原注册表
+与凭据身份；身份替换抛出 `publicCode: 'agent_binding_changed'`（403、不可重试）。每条 invocation 固定使用
+原目标、run、revision 和调用 ID；恢复会话范围不等于重建已丢失的调用映射，也不能换用新 Session。
+本地检查不代替 Core 和业务系统的最终授权，更不承诺跨系统事务原子性。
+
+跨系统归档成员在原字段之外必须带齐 `hubUrl` 与 `clientAppId`：
+
+```js
+const members = frozenTargets.map((target) => ({
+  connectionKey: target.connectionKey, hubUrl: target.hubUrl,
+  clientAppId: target.clientAppId, workspace: target.workspace,
+  expectedSessionId: target.sessionId, label: target.label,
+}));
+const support = await transport.getConversationArchiveCapabilities({ members });
+if (!support.cross_binding_members || support.member_bindings !== 'session-client-route.v1') {
+  throw new Error('当前中枢不支持跨系统会话。');
+}
+await transport.syncConversationArchive(originalEnvelope, { members });
+```
+
+启用前先确认 SDK 存在新方法；恢复范围时重新核对能力与原成员。
+`GET /agent-api/v1/conversation-audits/capabilities` 使用固定写入者凭据，不发送正文。
+404 返回 `cross_binding_members: false`，错误的能力格式会拒绝。sync 在跨系统创建前再次协商；不支持时抛出
+`conversation_audit_cross_binding_unavailable`，不降级混写同绑定归档，不向各系统广播完成文本，不重执行业务。
+
+底层 `createConversationAudit` 接受旧 `memberSessionIds/memberLabels` 或新
+`members: [{ sessionId, clientAppId, workspace, label? }]`，不得混用。新 HTTP 请求显式声明
+`schema: 'bailing.agent-conversation-audit-create.v2'`，成员字段为
+`members: [{ session_id, client_app_id, route, label? }]`，首成员必须匹配写入者。
+各成员仍分别用自己的 bearer 确认，Core 核对各自绑定与原 run；注册、确认、ACK 和事件形状保持不变。
+同绑定归档继续发送旧 v1，即使宿主成员已带新冻结字段也不要求新 Core。
+所有归档请求均重新检查本地完整成员组，异步协商结束后也会复核，远端撤销继续由 Core 强制执行。
+完整正文仍只进入管理员审计域，本扩展没有新增 Agent bearer 正文读取或跨系统记忆共享能力。
 
 ## 宿主适配器发布验收
 

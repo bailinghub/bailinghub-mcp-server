@@ -350,7 +350,7 @@ await transport.syncConversationArchive({
 ```
 
 The host persists a random archive UUID and the ordered member set before first upload. Member
-zero is the fixed writer. All members must share one Hub, public client application and workspace;
+zero is the fixed writer. In published 0.4.0, all members must share one Hub, public client application and workspace;
 the current/default connection is never consulted. Core enrolls the group, each member confirms
 with its own original Agent Session, and only the writer can append visible events after all
 members are confirmed and still valid. Labels are display hints, not identity assertions.
@@ -376,6 +376,77 @@ no Agent Session transcript read API. Empty selection must make no SDK request. 
 Core/SDK, revoked members and failed uploads must be reported as incomplete/unsupported archive
 state, not as successful archival or as permission to use another connection. Historical final
 replies not retained by the host cannot be reconstructed from execution summaries.
+
+## Cross-system source candidate
+
+This section describes unreleased source, not npm 0.4.0 or Core 0.6.1. A compatible host may
+select independent systems on **one Hub**. Each target keeps its own Client App, workspace,
+Agent Session, run, declarations and invocation records. Duplicate Sessions and cross-Hub groups
+are rejected. The SDK routes calls; it does not plan dependencies or decide which system receives
+the user's text. A host must explicitly control target selection, separate conflicting tool
+declarations and send only the context needed for each target's task.
+
+Capture and persist the full public binding when the user selects a target:
+
+```js
+const expectedBinding = {
+  hubUrl: selected.hubUrl,
+  clientAppId: selected.clientAppId,
+  workspace: selected.workspace,
+  sessionId: selected.sessionId,
+};
+const targetOptions = {
+  connectionKey: selected.connectionKey,
+  workspace: expectedBinding.workspace,
+  expectedBinding,
+};
+await transport.status(targetOptions);
+await transport.startTurn(originalTurnInput, targetOptions);
+await transport.searchCapabilities({ query: targetTask, runId: originalRunId }, targetOptions);
+// invoke/completeRun use the same options; resume(originalInvocationId, {}, targetOptions).
+```
+
+`expectedBinding` is optional for backward compatibility but required by a cross-system host.
+It requires an exact key; aliases/default selection are rejected. It is local host metadata and
+never enters the business arguments or HTTP DTO. SDK checks the original registry and credential
+binding before refresh/status/business dispatch; identity substitution throws
+`publicCode: 'agent_binding_changed'` (403, non-retryable). Freeze options for each invocation and
+reuse the same run/revision/invocation during recovery. Scope restoration does not recreate a lost
+invocation mapping or authorize a replacement Session. Local checks do not replace Core or the
+business system's final authorization and do not promise an atomic transaction across systems.
+
+Cross-system archive members add required `hubUrl` and `clientAppId` to the existing member shape:
+
+```js
+const members = frozenTargets.map((target) => ({
+  connectionKey: target.connectionKey, hubUrl: target.hubUrl,
+  clientAppId: target.clientAppId, workspace: target.workspace,
+  expectedSessionId: target.sessionId, label: target.label,
+}));
+const support = await transport.getConversationArchiveCapabilities({ members });
+if (!support.cross_binding_members || support.member_bindings !== 'session-client-route.v1') {
+  throw new Error('This Hub does not support cross-system conversations.');
+}
+await transport.syncConversationArchive(originalEnvelope, { members });
+```
+
+Check for the new SDK method before enabling this host mode, and repeat capability and original
+member validation when restoring the scope. `GET /agent-api/v1/conversation-audits/capabilities`
+uses the fixed writer's bearer and sends no text. A 404 yields `cross_binding_members: false`;
+invalid capability data fails closed. Sync negotiates again before cross-system create. A missing
+capability rejects with `conversation_audit_cross_binding_unavailable`; it never falls back to a
+same-binding archive, broadcasts completion text, or repeats business actions.
+
+The low-level `createConversationAudit` accepts either old `memberSessionIds/memberLabels` or
+new `members: [{ sessionId, clientAppId, workspace, label? }]`. New membership is sent as
+`schema: 'bailing.agent-conversation-audit-create.v2'` with
+`members: [{ session_id, client_app_id, route, label? }]`; member zero must match the writer.
+Each original member still confirms with its own bearer and Core verifies each member's binding
+and run links. Registration/confirmation/ACK and event shapes are unchanged. Same-binding host
+archives keep the old v1 request even when their local members include the new frozen fields.
+All archive requests recheck local group membership, including after asynchronous negotiation;
+revocation is independently enforced by Core. Combined text stays in the administrator audit
+domain. This extension adds no Agent bearer transcript reader or cross-system memory sharing.
 
 ## Host-adapter acceptance
 

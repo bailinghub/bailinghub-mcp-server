@@ -107,7 +107,7 @@ test('member replacement after confirmation blocks the combined text even when w
       await credentials.save({ ...await credentials.load(), session_id: ids[2] });
     }
   } });
-  await assert.rejects(f.transport.syncConversationArchive(f.envelope, { members: f.members }), /original conversation authorization/);
+  await assert.rejects(f.transport.syncConversationArchive(f.envelope, { members: f.members }), { publicCode: 'agent_binding_changed' });
   assert.ok(!f.calls.some((call) => call.path.endsWith('/events')));
 });
 

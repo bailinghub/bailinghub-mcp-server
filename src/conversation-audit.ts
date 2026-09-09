@@ -1,4 +1,5 @@
 import { BailingHubClientError } from './client.js';
+import { normalizeAgentRoute, normalizeClientAppId } from './config.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
@@ -28,12 +29,29 @@ export type ConversationAuditAck = {
   conversation_id: string;
   last_sequence: number;
 };
+export type ConversationAuditCapabilities = {
+  schema: 'bailing.agent-conversation-audit-capabilities.v1';
+  cross_binding_members: boolean;
+  member_bindings: 'session-client-route.v1';
+};
+export type ConversationAuditMemberBinding = {
+  sessionId: string;
+  clientAppId: string;
+  workspace: string;
+  label?: string;
+};
 export type CreateConversationAuditInput = {
   clientArchiveId: string;
   clientConversationId: string;
+} & ({
   memberSessionIds: string[];
   memberLabels?: Record<string, string>;
-};
+  members?: never;
+} | {
+  members: ConversationAuditMemberBinding[];
+  memberSessionIds?: never;
+  memberLabels?: never;
+});
 
 export function auditUuid(value: unknown): string {
   if (typeof value !== 'string' || !UUID.test(value)) throw new TypeError('Conversation identifier must be a UUID.');
@@ -89,6 +107,27 @@ export function auditEvents(value: unknown): ConversationAuditEvent[] {
 }
 
 export function auditCreateBody(input: CreateConversationAuditInput, route: string): Record<string, unknown> {
+  if (input.members !== undefined) {
+    if (input.memberSessionIds !== undefined || input.memberLabels !== undefined || !Array.isArray(input.members) ||
+        input.members.length < 1 || input.members.length > 64) throw new TypeError('Conversation requires one frozen member representation.');
+    const members = input.members.map((member) => {
+      const item = object(member);
+      if (item.label !== undefined && (typeof item.label !== 'string' || !item.label.trim() || item.label.length > 128 ||
+          /[\u0000-\u001f\u007f]/.test(item.label))) throw new TypeError('Conversation member label is invalid.');
+      return {
+        session_id: auditUuid(item.sessionId),
+        client_app_id: normalizeClientAppId(typeof item.clientAppId === 'string' ? item.clientAppId : undefined),
+        route: normalizeAgentRoute(typeof item.workspace === 'string' ? item.workspace : undefined),
+        ...(item.label !== undefined ? { label: item.label } : {}),
+      };
+    });
+    if (new Set(members.map((member) => member.session_id)).size !== members.length) throw new TypeError('Conversation members must be unique.');
+    return {
+      schema: 'bailing.agent-conversation-audit-create.v2',
+      client_archive_id: auditUuid(input.clientArchiveId),
+      client_conversation_id: auditId(input.clientConversationId), members,
+    };
+  }
   if (!Array.isArray(input.memberSessionIds) || input.memberSessionIds.length < 1 || input.memberSessionIds.length > 64) {
     throw new TypeError('Conversation requires 1 to 64 frozen members.');
   }
@@ -109,6 +148,16 @@ export function auditCreateBody(input: CreateConversationAuditInput, route: stri
     member_session_ids: members,
     ...(input.memberLabels !== undefined ? { member_labels: labels } : {}),
   };
+}
+
+export function auditCapabilities(value: unknown): ConversationAuditCapabilities {
+  const item = object(value);
+  if (item.schema !== 'bailing.agent-conversation-audit-capabilities.v1' ||
+      typeof item.cross_binding_members !== 'boolean' || item.member_bindings !== 'session-client-route.v1') {
+    throw new BailingHubClientError('BailingHub returned unsupported conversation audit capabilities.', 503, false,
+      'conversation_audit_cross_binding_unavailable');
+  }
+  return { schema: item.schema, cross_binding_members: item.cross_binding_members, member_bindings: item.member_bindings };
 }
 
 export function auditReceipt(value: unknown, expectedId?: string): ConversationAuditAck {

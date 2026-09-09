@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import {
   auditEvents, auditId, auditUuid, CONVERSATION_BATCH_BYTES,
-  type ConversationAuditAck, type ConversationAuditEvent,
+  type ConversationAuditAck, type ConversationAuditEvent, type ConversationAuditCapabilities,
 } from './conversation-audit.js';
 
-export type { ConversationAudit, ConversationAuditAck, ConversationAuditEvent, CreateConversationAuditInput } from './conversation-audit.js';
+export type { ConversationAudit, ConversationAuditAck, ConversationAuditEvent, ConversationAuditCapabilities,
+  ConversationAuditMemberBinding, CreateConversationAuditInput } from './conversation-audit.js';
 
 import {
   BailingHubAgentClient,
@@ -17,7 +18,7 @@ import {
   type SearchAgentCapabilitiesInput,
   type StartAgentTurnInput,
 } from './agent-client.js';
-import type { AgentToolInvocation } from './client.js';
+import { BailingHubClientError, type AgentToolInvocation } from './client.js';
 import {
   AgentSessionManager,
   performAgentLogin,
@@ -123,6 +124,24 @@ export type AgentClientHostConfig = {
   deviceLabel?: string;
 };
 
+/** Host-captured authorization identity; never a model-controlled connection selector. */
+export type ExpectedAgentBinding = {
+  hubUrl: string;
+  clientAppId: string;
+  workspace: string;
+  sessionId: string;
+};
+
+function expectedAgentBinding(value: unknown): ExpectedAgentBinding {
+  const input = hostRecord(value, 'expectedBinding');
+  return {
+    hubUrl: normalizeBaseUrl(hostText(input.hubUrl, 'hubUrl', 2048), true),
+    clientAppId: normalizeClientAppId(hostText(input.clientAppId, 'clientAppId', 64)),
+    workspace: normalizeAgentRoute(hostText(input.workspace, 'workspace', 64)),
+    sessionId: auditUuid(input.sessionId),
+  };
+}
+
 export type AgentClientHostDependencies = {
   /**
    * Host-owned local storage namespace. This dependency setting is not a user connection field,
@@ -156,6 +175,8 @@ export type AgentClientHostTransport = {
   completeRun(runId: string, input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentRunCompletion>;
   /** Host-only visible transcript synchronization; never expose this method as a model tool. */
   syncConversationArchive(input: Record<string, unknown>, options: Record<string, unknown>): Promise<ConversationAuditAck>;
+  /** Read protocol support without creating an archive or uploading conversation text. */
+  getConversationArchiveCapabilities(options: Record<string, unknown>): Promise<ConversationAuditCapabilities>;
 };
 
 function hostRecord(value: unknown, label: string): Record<string, unknown> {
@@ -623,11 +644,108 @@ export function createAgentClientTransport(
     });
   }
 
+  async function boundSession(connectionKeyValue: unknown, expected: ExpectedAgentBinding, beforeRequest?: () => Promise<void>) {
+    const connectionKey = hostText(connectionKeyValue, 'connectionKey', 37);
+    if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new TypeError('Expected bindings require an exact connection key.');
+    const profile = await connections.registry.get(connectionKey);
+    const bindingError = () => new BailingHubClientError(
+      'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed',
+    );
+    const matches = (value: AgentConnectionProfile | null | undefined) => value &&
+      value.baseUrl === expected.hubUrl && value.clientAppId === expected.clientAppId && value.workspace === expected.workspace;
+    if (!matches(profile)) throw bindingError();
+    const store = connections.credentialStore(connectionKey);
+    const assertBinding = async () => {
+      const current = await connections.registry.get(connectionKey);
+      // Credential identity is the final observation: registry IO must not leave an earlier
+      // Session snapshot usable for a refresh or business request after local replacement.
+      const credentials = await store.load();
+      if (!matches(current) || !credentials || credentials.session_id !== expected.sessionId ||
+          credentials.base_url !== expected.hubUrl || credentials.client_app_id !== expected.clientAppId ||
+          credentials.route !== expected.workspace) throw bindingError();
+    };
+    await assertBinding();
+    const checkedFetch: typeof fetch = async (url, init) => {
+      // Protect auth refresh/status as well as business requests, immediately before dispatch.
+      if (beforeRequest) await beforeRequest();
+      await assertBinding();
+      if (!String(url).startsWith(`${expected.hubUrl}/`)) throw bindingError();
+      return fetchImpl(url, init);
+    };
+    const manager = new AgentSessionManager(store, checkedFetch, dependencies.now);
+    const client = new BailingHubAgentClient({
+      baseUrl: expected.hubUrl, clientAppId: expected.clientAppId, workspace: expected.workspace,
+      sessionId: expected.sessionId,
+      accessTokenProvider: { getAccessToken: async (forceRefresh) => {
+        await assertBinding();
+        const token = await manager.getAccessToken(forceRefresh);
+        await assertBinding();
+        return token;
+      } },
+    }, { fetchImpl: checkedFetch, allowInsecureHttp: profile!.allowInsecureHttp });
+    return { profile: profile!, manager, client, assertBinding };
+  }
+
+  async function prepareArchiveMembers(optionsValue: unknown) {
+    const options = hostRecord(optionsValue, 'conversation archive options');
+    if (!Array.isArray(options.members) || options.members.length < 1 || options.members.length > 64) {
+      throw new TypeError('Conversation archive requires an explicit frozen member set.');
+    }
+    // Snapshot every primitive before any asynchronous registry/credential read.
+    const members = options.members.map((value) => {
+      const member = hostRecord(value, 'conversation member');
+      const connectionKey = hostText(member.connectionKey, 'connectionKey', 37);
+      if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new TypeError('Conversation members require exact connection keys.');
+      const explicitBinding = member.hubUrl !== undefined || member.clientAppId !== undefined;
+      return {
+        connectionKey,
+        workspace: normalizeAgentRoute(hostText(member.workspace, 'workspace', 64)),
+        expectedSessionId: auditUuid(member.expectedSessionId),
+        label: optionalHostText(member.label, 'member label', 128),
+        expected: explicitBinding ? expectedAgentBinding({ hubUrl: member.hubUrl, clientAppId: member.clientAppId,
+          workspace: member.workspace, sessionId: member.expectedSessionId }) : undefined,
+      };
+    });
+    if (new Set(members.map((member) => member.connectionKey)).size !== members.length ||
+        new Set(members.map((member) => member.expectedSessionId)).size !== members.length) {
+      throw new TypeError('Conversation archive members must be unique.');
+    }
+    const prepared: Awaited<ReturnType<typeof boundSession>>[] = [];
+    const assertAll = async () => { for (const member of prepared) await member.assertBinding(); };
+    for (const member of members) {
+      const profile = await connections.registry.get(member.connectionKey);
+      if (!profile || profile.workspace !== member.workspace) {
+        throw new BailingHubClientError('A frozen conversation connection is unavailable.', 403, false, 'agent_binding_changed');
+      }
+      const expected = member.expected ?? {
+        hubUrl: profile.baseUrl, clientAppId: profile.clientAppId, workspace: member.workspace, sessionId: member.expectedSessionId,
+      };
+      const bound = await boundSession(member.connectionKey, expected, assertAll);
+      if (prepared[0] && prepared[0].profile.baseUrl !== profile.baseUrl) throw new TypeError('Conversation archive members must share one Hub.');
+      prepared.push(bound);
+    }
+    const crossBinding = prepared.some((member) => member.profile.clientAppId !== prepared[0]!.profile.clientAppId ||
+      member.profile.workspace !== prepared[0]!.profile.workspace);
+    if (crossBinding && members.some((member) => !member.expected)) {
+      throw new TypeError('Cross-system conversation members require frozen hubUrl and clientAppId.');
+    }
+    await assertAll();
+    return { members, prepared, assertAll, crossBinding };
+  }
+
   async function clientFor(
     workspaceValue: unknown,
     options: Record<string, unknown> = {},
   ): Promise<BailingHubAgentClient> {
     const workspace = normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
+    if (options.expectedBinding !== undefined) {
+      // Copy primitive values before the first await; callers cannot retarget an in-flight request.
+      const expected = expectedAgentBinding(options.expectedBinding);
+      if (expected.workspace !== workspace || options.connectionName !== undefined) {
+        throw new TypeError('Expected binding does not match the explicit target.');
+      }
+      return (await boundSession(options.connectionKey, expected)).client;
+    }
     const profile = await resolveProfile(options.connectionName ?? options.connectionKey, workspace);
     const session = await sessionFor(profile);
     const credentials = await session.loadRequired();
@@ -641,76 +759,36 @@ export function createAgentClientTransport(
   }
 
   return {
+    async getConversationArchiveCapabilities(optionsValue) {
+      const { prepared, assertAll } = await prepareArchiveMembers(optionsValue);
+      const capabilities = await prepared[0]!.client.getConversationArchiveCapabilities();
+      await assertAll();
+      return capabilities;
+    },
     async syncConversationArchive(inputValue, optionsValue) {
       const input = hostRecord(inputValue, 'conversation archive');
-      const options = hostRecord(optionsValue, 'conversation archive options');
       const clientArchiveId = auditUuid(input.clientArchiveId);
       const clientConversationId = auditId(input.clientConversationId);
       const events = auditEvents(input.events);
-      if (!Array.isArray(options.members) || options.members.length < 1 || options.members.length > 64) {
-        throw new TypeError('Conversation archive requires an explicit frozen member set.');
-      }
-      const members = options.members.map((value) => {
-        const member = hostRecord(value, 'conversation member');
-        const connectionKey = hostText(member.connectionKey, 'connectionKey', 37);
-        if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new TypeError('Conversation members require exact connection keys.');
-        return {
-          connectionKey,
-          workspace: normalizeAgentRoute(hostText(member.workspace, 'workspace', 64)),
-          expectedSessionId: auditUuid(member.expectedSessionId),
-          label: optionalHostText(member.label, 'member label', 128),
-        };
-      });
-      if (new Set(members.map((member) => member.connectionKey)).size !== members.length ||
-          new Set(members.map((member) => member.expectedSessionId)).size !== members.length) {
-        throw new TypeError('Conversation archive members must be unique.');
-      }
+      const { members, prepared, assertAll, crossBinding } = await prepareArchiveMembers(optionsValue);
       for (const event of events) {
         if (event.kind === 'run_link' && !members.some((member) => member.expectedSessionId === event.member_session_id)) {
           throw new TypeError('Conversation run link is outside the frozen member set.');
         }
       }
-      // Resolve every fixed key before any network request. The current/default connection is never used.
-      const prepared: { profile: AgentConnectionProfile; client: BailingHubAgentClient; assertBinding: () => Promise<void> }[] = [];
-      for (const member of members) {
-        const profile = await connections.registry.get(member.connectionKey);
-        if (!profile || profile.workspace !== member.workspace) throw new Error('A frozen conversation connection is unavailable.');
-        const first = prepared[0]?.profile;
-        if (first && (first.baseUrl !== profile.baseUrl || first.clientAppId !== profile.clientAppId || first.workspace !== profile.workspace)) {
-          throw new Error('Conversation archive members must share one Hub, client application and workspace.');
-        }
-        const manager = await sessionFor(profile);
-        const assertBinding = async () => {
-          const current = await connections.registry.get(member.connectionKey);
-          const credential = await manager.loadRequired();
-          if (!current || current.baseUrl !== profile.baseUrl || current.clientAppId !== profile.clientAppId || current.workspace !== profile.workspace ||
-              credential.session_id !== member.expectedSessionId || credential.base_url !== profile.baseUrl ||
-              credential.client_app_id !== profile.clientAppId || credential.route !== profile.workspace) {
-            throw new Error('The original conversation authorization is no longer available.');
-          }
-        };
-        await assertBinding();
-        const client = new BailingHubAgentClient({
-          baseUrl: profile.baseUrl, clientAppId: profile.clientAppId, workspace: profile.workspace,
-          sessionId: member.expectedSessionId,
-          accessTokenProvider: { getAccessToken: async (forceRefresh) => {
-            await assertBinding();
-            const token = await manager.getAccessToken(forceRefresh);
-            await assertBinding();
-            return token;
-          } },
-        }, { fetchImpl, allowInsecureHttp: profile.allowInsecureHttp });
-        prepared.push({ profile, client, assertBinding });
-      }
       const writer = prepared[0]!.client;
       const memberLabels = Object.fromEntries(members.flatMap((member) => member.label ? [[member.expectedSessionId, member.label]] : []));
       let registration = await writer.createConversationAudit({
         clientArchiveId, clientConversationId,
-        memberSessionIds: members.map((member) => member.expectedSessionId), memberLabels,
+        ...(crossBinding ? { members: members.map((member, index) => ({
+          sessionId: member.expectedSessionId, clientAppId: prepared[index]!.profile.clientAppId, workspace: member.workspace,
+          ...(member.label ? { label: member.label } : {}),
+        })) } : { memberSessionIds: members.map((member) => member.expectedSessionId), memberLabels }),
       });
       for (const member of prepared.slice(1)) {
         registration = await member.client.confirmConversationAudit(registration.conversation_id);
       }
+      await assertAll();
       if (registration.state !== 'ready' || registration.member_count !== members.length || registration.confirmed_count !== members.length) {
         throw new Error('The complete conversation membership has not been confirmed.');
       }
@@ -722,7 +800,7 @@ export function createAgentClientTransport(
       const flush = async () => {
         if (!batch.length) return;
         // A local replacement of any member blocks combined-text upload, including after enrollment.
-        for (const member of prepared) await member.assertBinding();
+        await assertAll();
         receipt = await writer.appendConversationAuditEvents(registration.conversation_id, batch);
         batch = [];
       };
@@ -731,6 +809,7 @@ export function createAgentClientTransport(
         batch.push(event);
       }
       await flush();
+      await assertAll();
       return receipt;
     },
 
@@ -944,6 +1023,26 @@ export function createAgentClientTransport(
 
     async status(inputValue = {}) {
       const input = hostRecord(inputValue, 'status input');
+      if (input.expectedBinding !== undefined) {
+        const expected = expectedAgentBinding(input.expectedBinding);
+        if (input.connectionName !== undefined || (input.workspace !== undefined && input.workspace !== expected.workspace)) {
+          throw new TypeError('Expected binding does not match the explicit target.');
+        }
+        const bound = await boundSession(input.connectionKey, expected);
+        const session = await bound.manager.getSession();
+        await bound.assertBinding();
+        if (session.session_id !== expected.sessionId || session.client_app_id !== expected.clientAppId ||
+            !session.allowed_routes.includes(expected.workspace)) {
+          throw new BailingHubClientError('The original Agent authorization is no longer available.', 403, false, 'agent_binding_changed');
+        }
+        return {
+          state: 'authorized', connectionKey: bound.profile.connectionKey,
+          ...(bound.profile.alias ? { connectionName: bound.profile.alias } : {}),
+          workspace: expected.workspace, sessionId: session.session_id,
+          onBehalfOf: session.on_behalf_of, allowedWorkspaces: session.allowed_routes,
+          expiresAt: session.expires_at, refreshExpiresAt: session.refresh_expires_at,
+        };
+      }
       const profile = await resolveProfile(input.connectionName ?? input.connectionKey);
       const store = connections.credentialStore(profile.connectionKey);
       if (!await store.load()) {
