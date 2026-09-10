@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## Unreleased — shop and inventory in one conversation
+
+See [scenarios and upgrade preparation](docs/NEXT_RELEASE.md) for the shop/inventory example, host responsibilities and package-release boundary.
 
 - Add a source candidate for conversations with separately authorized systems on one Hub.
   Each target keeps its own Client App, workspace and Agent Session; cross-Hub groups and
@@ -18,6 +20,9 @@
 - Forward a host `AbortSignal` through local binding checks, credential refresh and HTTP timeouts.
   Cancellation before dispatch sends no business request; cancellation after invocation/resume
   dispatch keeps `accepted_unknown` with the original invocation ID and never automatically replays it.
+
+- Read controlled system descriptions before first capability search, for selected original targets only. Descriptions create no runs and grant no permissions.
+- Preserve business-supplied authorization subject names through login/status/list and an isolated display cache. Reject malformed Unicode; names, cache failures and renames never replace credentials, original bindings or archive identities.
 
 ## 0.4.0 - 2026-09-08
 

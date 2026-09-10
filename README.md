@@ -17,18 +17,15 @@ The agent does not receive administrator or business-system credentials. Bailing
 the route boundary, approval state, execution record, and audit trail, while the downstream
 business system still makes the final authorization decision.
 
+## Next release in source: shop and inventory in one conversation
+
+A host can let a user ask: “Check tumbler stock; if available, change the corresponding shop product to 59 and list it.” This SDK adds original-target checks for different systems on one Hub, system descriptions before tool search, and business-supplied authorization names. Actions must be exposed by the business systems, product mappings confirmed, and original approvals respected.
+
+**Unreleased:** published Core 0.6.1 / SDK 0.4.0 do not include these extensions. Matched source revisions and host integration are required; the standalone MCP server does not gain a multi-system selection UI.
+
+[Scenarios, changes and upgrade preparation](docs/NEXT_RELEASE.md)
+
 ## What changes in 0.4.0
-
-**Unreleased source candidate:** this checkout also supports a host explicitly selecting several
-business systems on one Hub, each with its own authorized connection. It requires the matching
-Core capability and host integration; the published npm `0.4.0` and Core `0.6.1` do not include
-cross-system conversation archives. See the [candidate integration contract](docs/AGENT_CLIENT_SDK.md#cross-system-source-candidate).
-
-The source candidate also carries a business-provided **authorization name**, such as an organization,
-team, project, account or location. After approval the host can show the approved subject automatically,
-while keeping its internal connection selector separate. This requires the matching Core and host
-candidates; published package version numbers alone do not identify this feature.
-See [authorization subject display](docs/AGENT_CLIENT_SDK.md#authorization-subject-display-source-candidate).
 
 When an Agent Client host enables conversation archiving, a BailingHub administrator can follow
 the user's request, the assistant's visible replies and the resulting business actions together.
