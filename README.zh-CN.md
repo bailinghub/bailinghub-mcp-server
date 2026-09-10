@@ -14,22 +14,22 @@
 智能体不会拿到管理员凭据或业务系统凭据。BailingHub 保留路由边界、审批状态、执行记录
 和审计轨迹，最终能否执行仍由业务系统按照当前登录身份和自身规则决定。
 
-## 下一版源码：一个会话连接商城与库存
+## 0.5.0 带来什么：一个会话连接商城与库存
 
 例如，用户说：“先查保温杯库存，有货再把商城对应商品改为 59 元并上架。”SDK 为宿主提供同一中枢下不同系统的原目标校验、首次工具搜索前的系统说明，以及业务后端提供的授权名称。相关业务能力和商品映射需已准备，原审批继续生效。
 
-**这些增量尚未发布。** 公开 Core 0.6.1 / SDK 0.4.0 不包含它们，需使用配套源码并完成宿主接入；独立 MCP Server 不会自动新增多系统选择界面。
+这些增量配套 **Core 0.7.0 + SDK 0.5.0** 及兼容宿主，范围限同一中枢、同一管理审计域。宿主负责显式选择和持久化会话范围；独立 MCP Server 不会自动新增多系统选择界面。
 
-[看具体变化和升级准备](docs/NEXT_RELEASE.md#简体中文)
+[看具体变化和升级步骤](docs/RELEASE_NOTES_v0.5.0.md#简体中文)
 
-## 0.4.0 带来什么
+## 0.4.0 引入的对话归档
 
 支持归档的 Agent 客户端可以把“用户提出了什么、助手如何回复、最后执行了哪些业务动作”
 连成一条可查看的记录。例如，在一段对话里比较两家已经分别授权的门店，管理员既能看到
-整段可见对话，也能追溯每家门店各自的执行记录。推荐配合 **BailingHub Core 0.6.1**，
+整段可见对话，也能追溯每家门店各自的执行记录。推荐配合 **BailingHub Core 0.7.0**，
 以及负责记录和同步对话的客户端使用；归档接口最低需要 Core 0.6.0。
 
-本次 SDK 新增对话同步接口。SDK 本身不会自动记录聊天；账号选择和会话界面由
+0.4.0 引入了对话同步接口。SDK 本身不会自动记录聊天；账号选择和会话界面由
 [DSH 插件等原生客户端](https://github.com/bailinghub/bailinghub-dsh-plugin)负责。
 独立 MCP Server 的工具入口保持兼容。
 
@@ -37,9 +37,9 @@
 
 | 你的使用方式 | 下一步 |
 | --- | --- |
-| 在 MCP 应用里连接一条固定业务路由 | 按下方[安装说明](#安装)使用 `0.4.0`。原 Client Token 和 Agent Session 用法继续兼容。 |
+| 在 MCP 应用里连接一条固定业务路由 | 按下方[安装说明](#安装)使用 `0.5.0`。原 Client Token 和 Agent Session 用法继续兼容。 |
 | 使用 DSH 等原生 Agent 客户端 | 按客户端配套版本升级，并按其指南选择会话可用账号。单独安装这个 MCP 命令不会增加多账号会话界面。 |
-| 开发自己的 Agent 客户端 | 安装 `bailinghub-mcp-server@0.4.0`，归档配合 Core `0.6.1`，再按 [SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)接入。 |
+| 开发自己的 Agent 客户端 | 安装 `bailinghub-mcp-server@0.5.0`，完整新能力配合 Core `0.7.0`，再按 [SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)接入。 |
 
 升级此 SDK 不需要修改业务 API 声明。原有读写、审批和调用恢复规则继续生效。
 对话补传沿用原事件 ID，不会重新执行业务动作；聚合归档仅供当前部署有权限的管理员读取，
@@ -131,7 +131,7 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
   "mcpServers": {
     "bailinghub": {
       "command": "npx",
-      "args": ["-y", "bailinghub-mcp-server@0.4.0"],
+      "args": ["-y", "bailinghub-mcp-server@0.5.0"],
       "env": {
         "BAILINGHUB_BASE_URL": "https://hub.example.com",
         "BAILINGHUB_CLIENT_TOKEN": "替换为仅允许指定-route-的-client-token",
@@ -148,7 +148,7 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
 route 完成授权：
 
 ```bash
-npm install --global bailinghub-mcp-server@0.4.0
+npm install --global bailinghub-mcp-server@0.5.0
 
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \
@@ -238,7 +238,7 @@ Agent Session 模式另外消费增量的 Agent Auth v1 与 Agent API v1：
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
-宿主 SDK 另外使用从 Core 0.6.0 开始提供的对话归档写入接口，推荐配套版本为 Core 0.6.1。
+宿主 SDK 另外使用从 Core 0.6.0 开始提供的对话归档写入接口，跨系统模式、系统说明和授权名称配套 Core 0.7.0。
 这些接口不作为 MCP 或模型工具开放：
 
 - `POST /agent-api/v1/conversation-audits`

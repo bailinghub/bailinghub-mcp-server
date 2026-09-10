@@ -2,12 +2,14 @@
 
 [简体中文](AGENT_CLIENT_SDK.zh-CN.md) | English
 
-Version 0.4.0 lets a compatible Agent Client preserve a readable conversation alongside its
-business execution records. A user can work with explicitly selected accounts in one system,
-and an administrator can follow the visible conversation back to each original action.
+Version 0.5.0 lets a compatible host use explicitly selected authorizations from different systems
+on one Hub. For example, read inventory, then update the corresponding shop product price and list it,
+using each system's original authorization and approval rules. Controlled system descriptions and
+business-supplied subject names help the host explain the targets before searching for tools.
+The conversation archive introduced in 0.4.0 continues to link visible messages to original actions.
 
-Upgrade your host integration when you need this archive. Install the exact SDK version below,
-use BailingHub Core 0.6.1 for archive support, and implement local capture and retry in the host.
+For this feature set, install the exact SDK version below and use BailingHub Core 0.7.0.
+Implement explicit scope selection, local visible-history capture and retry in the host.
 The SDK does not create an account-selection UI or automatically collect conversations.
 Existing Client Token, browser authorization, business invocation and recovery APIs stay compatible.
 
@@ -25,10 +27,10 @@ resolves the one authorization entry registered for `clientAppId`.
 Install the SDK package version that matches the Agent Client release line:
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.4.0
+npm install --save-exact bailinghub-mcp-server@0.5.0
 ```
 
-Use an exact ordinary dependency for a published host adapter. Publish it only after `0.4.0`
+Use an exact ordinary dependency for a published host adapter. Publish it only after `0.5.0`
 resolves from the public npm registry; never substitute a local path in a public manifest.
 
 Required server surfaces:
@@ -38,7 +40,10 @@ Required server surfaces:
 - route `tools.agent_direct` and `agent_client` configuration;
 - a registered public Client App ID and business authorization page.
 
-The archive API minimum is Core 0.6.0; use Core 0.6.1 for new installations and upgrades.
+Same-binding archives retain a Core 0.6.0 API minimum. Use Core 0.7.0 for cross-system archives,
+controlled system descriptions and authorization subject names, and negotiate server support.
+Follow the [0.5.0 upgrade steps](RELEASE_NOTES_v0.5.0.md#how-to-upgrade), including Core migrations
+058/059 and preservation of the host's credentials, original scopes and archive outbox.
 On Core releases below that minimum, existing Agent Auth/Runtime flows remain available;
 an archive request can return unsupported.
 Display that limitation without claiming the text was saved or retrying a business operation.
@@ -48,7 +53,7 @@ not require `BAILINGHUB_CLIENT_TOKEN`.
 
 ## Configuration ownership
 
-### Authorization subject display (source candidate)
+### Authorization subject display (0.5.0)
 
 This optional addition lets a host show **which authorized subject the user approved**, without asking
 them to type a second name. For example, display `Project Workspace · Example Team` by combining
@@ -58,7 +63,7 @@ is generic and does not require a `store_name` field.
 
 The authorizing business backend reads the real name for the subject the user confirmed and submits
 `subject_display: { name: 'Example Team' }` with authorization approval. Core keeps it separate from
-`principal`, `on_behalf_of`, permissions and system information. The matching Core candidate returns
+`principal`, `on_behalf_of`, permissions and system information. Core 0.7.0 returns
 `subject_display` and `subject_display_status` from both token exchange and Session inspection.
 Only `name` is accepted: inspect the original string for C0/C1 controls and U+2028/U+2029, reject any,
 then trim; require 1–120 JavaScript UTF-16 code units. Names are descriptive data, not instructions.
@@ -105,8 +110,8 @@ use the Client-protected `PUT /agent-auth/v1/sessions/{session_id}/subject-displ
 authorization. The Agent SDK only refreshes through status; it has no Client credential or name-write
 API. Existing scope, API declarations and approvals require no change.
 
-This feature is an unreleased source candidate. Use the coordinated source commits and package
-hashes supplied with that candidate; the unchanged package version does not identify it.
+This optional feature is included in SDK 0.5.0 with Core 0.7.0. Older Core responses remain
+readable and explicitly report missing support; display data never decides whether an authorization is valid.
 
 ### Host connection configuration
 
@@ -170,7 +175,7 @@ the same namespace boundary.
 
 ## Multiple connection lifecycle
 
-These APIs were introduced in 0.3.0 and remain compatible in 0.4.0. Host adapters should depend
+These APIs were introduced in 0.3.0 and remain compatible in 0.5.0. Host adapters should depend
 on the exact SDK version and keep connection management in user-owned commands or settings. A host may publish
 available authorization references for a model to select per call; the host fixes each reference's
 connection binding as described below. Login, connection management, identities, and credentials
@@ -219,7 +224,7 @@ Existing deterministic v1 registry entries remain readable and keep their creden
 registry is written as schema v2 only while at least one named instance exists; the
 instance id is opaque local metadata, not a credential or an identity assertion sent to Core.
 An SDK older than 0.3.0 fails closed on schema v2. Before downgrading below that version, use the
-installed 0.3.0 or 0.4.0 SDK to revoke and remove every
+installed 0.3.0 or later SDK to revoke and remove every
 named instance; after the last one is removed, the registry is written
 back as schema v1. Do not delete credential files or Keychain entries manually.
 
@@ -392,8 +397,9 @@ message ID and payload until Core confirms completion.
 
 ## Visible conversation archive
 
-Version 0.4.0 adds the host-only `syncConversationArchive(envelope, { members })` API. Use
-BailingHub Core 0.6.1; the API minimum is Core 0.6.0. It does not add an MCP/model tool or change
+Version 0.4.0 introduced the host-only `syncConversationArchive(envelope, { members })` API.
+Same-binding usage retains the Core 0.6.0 API minimum; use Core 0.7.0 for the 0.5.0 feature set.
+It does not add an MCP/model tool or change
 business API declarations.
 
 ```js
@@ -412,7 +418,8 @@ await transport.syncConversationArchive({
 ```
 
 The host persists a random archive UUID and the ordered member set before first upload. Member
-zero is the fixed writer. In published 0.4.0, all members must share one Hub, public client application and workspace;
+zero is the fixed writer. In this legacy same-binding form, all members share one Hub, public client
+application and workspace (the scope introduced in 0.4.0);
 the current/default connection is never consulted. Core enrolls the group, each member confirms
 with its own original Agent Session, and only the writer can append visible events after all
 members are confirmed and still valid. Labels are display hints, not identity assertions.
@@ -439,10 +446,10 @@ Core/SDK, revoked members and failed uploads must be reported as incomplete/unsu
 state, not as successful archival or as permission to use another connection. Historical final
 replies not retained by the host cannot be reconstructed from execution summaries.
 
-## Cross-system source candidate
+## Cross-system conversations (0.5.0)
 
-This section describes unreleased source, not npm 0.4.0 or Core 0.6.1. A compatible host may
-select independent systems on **one Hub**. Each target keeps its own Client App, workspace,
+SDK 0.5.0 with Core 0.7.0 supports a compatible host selecting independent systems on **one Hub
+and one administrator audit domain**. Each target keeps its own Client App, workspace,
 Agent Session, run, declarations and invocation records. Duplicate Sessions and cross-Hub groups
 are rejected. The SDK routes calls; it does not plan dependencies or decide which system receives
 the user's text. A host must explicitly control target selection, separate conflicting tool
@@ -582,7 +589,7 @@ Before publishing an adapter:
    logout, and business-side revoke;
 4. confirm BailingHub shows the conversation and governance trace;
    for archives, also check all original members, visible messages, run links, lost-ACK retry,
-   offline recovery and member revocation against Core 0.6.1;
+   offline recovery and member revocation against Core 0.7.0;
 5. scan source, tarballs, logs, screenshots, and connection metadata for secrets/private hosts;
 6. confirm hidden reasoning and raw business payloads never reach Core.
 
