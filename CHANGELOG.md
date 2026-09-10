@@ -23,6 +23,7 @@ See [scenarios and upgrade preparation](docs/NEXT_RELEASE.md) for the shop/inven
 
 - Read controlled system descriptions before first capability search, for selected original targets only. Descriptions create no runs and grant no permissions.
 - Preserve business-supplied authorization subject names through login/status/list and an isolated display cache. Reject malformed Unicode; names, cache failures and renames never replace credentials, original bindings or archive identities.
+- Update the transitive Hono lock entry to 4.13.7 for upstream fixes; public SDK pins and package versions remain unchanged.
 
 ## 0.4.0 - 2026-09-08
 
