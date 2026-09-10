@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## Unreleased — shop and inventory in one conversation
+
+See [scenarios and upgrade preparation](docs/NEXT_RELEASE.md) for the shop/inventory example, host responsibilities and package-release boundary.
+
+- Add a source candidate for conversations with separately authorized systems on one Hub.
+  Each target keeps its own Client App, workspace and Agent Session; cross-Hub groups and
+  duplicate Sessions remain unsupported. The published 0.4.0 package does not include this change.
+- Negotiate `session-client-route.v1` archive membership before any cross-system registration.
+  Freeze each member's Hub/app/workspace/Session, confirm with its own credential and preserve
+  original run links. Older Core installations receive no cross-system archive create or text.
+- Add host-only `getConversationArchiveCapabilities` and optional `expectedBinding` guards for
+  status, start, search, invoke, resume and completion. Check the captured identity before token
+  refresh and HTTP dispatch; mutable aliases, registry replacements and new Sessions cannot
+  substitute for an original target. Existing unguarded calls and same-binding v1 archives stay compatible.
+- Keep combined text in the administrator audit domain. This SDK adds neither cross-system
+  planning nor a model-visible connection-management tool; hosts own target selection and minimal
+  per-target context. Archive retry retains original IDs and never repeats business execution.
+- Forward a host `AbortSignal` through local binding checks, credential refresh and HTTP timeouts.
+  Cancellation before dispatch sends no business request; cancellation after invocation/resume
+  dispatch keeps `accepted_unknown` with the original invocation ID and never automatically replays it.
+
+- Read controlled system descriptions before first capability search, for selected original targets only. Descriptions create no runs and grant no permissions.
+- Preserve business-supplied authorization subject names through login/status/list and an isolated display cache. Reject malformed Unicode; names, cache failures and renames never replace credentials, original bindings or archive identities.
+- Update the transitive Hono lock entry to 4.13.7 for upstream fixes; public SDK pins and package versions remain unchanged.
 
 ## 0.4.0 - 2026-09-08
 

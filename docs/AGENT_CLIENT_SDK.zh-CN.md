@@ -39,6 +39,58 @@ npm install --save-exact bailinghub-mcp-server@0.4.0
 
 ## 配置归属
 
+### 授权主体展示信息（源码候选）
+
+此可选能力用于显示 **用户实际确认了哪个授权对象**，避免授权后再手填一遍名称。例如，将独立的
+系统说明与授权名称组合成“项目协作系统 · 示例团队”。开发者的授权主体可以是组织、团队、项目、
+账号、经营场所或其他业务对象；上游不把它限定为门店，也不要求 `store_name`。
+
+业务授权后端根据用户实际确认的主体读取真实名称，在批准授权时提交
+`subject_display: { name: '示例团队' }`。Core 将其与 `principal`、`on_behalf_of`、权限和系统说明分别
+维护。配套候选会在换码和 Session 查询中返回 `subject_display`、`subject_display_status`。
+展示对象只允许 `name`：先检查原始字符串，拒绝 C0/C1 控制符及 U+2028/U+2029，再 trim；
+非空且最多 120 个 JavaScript UTF-16 码元。名称是展示数据，不是指令。
+未配对的 UTF-16 代理项属于无效文本；有效 emoji 等字符仍可使用。
+
+`login()`、`status()` 和 `connectionsList().connections` 的每行返回：
+
+| 字段 | 含义 |
+| --- | --- |
+| `subjectDisplay` | `{ name: string }` 或 `null`；不从本机别名、principal、设备名称或系统说明推测 |
+| `subjectDisplayStatus` | `provided`：Core 返回有效名称；`missing`：支持此能力但该授权尚无名称；`unsupported`：Session 响应缺少此能力；`unavailable`：尚未读取、可选数据无效或缓存不可用 |
+| `subjectDisplaySource` | `verified`：本次从身份校验通过的 Session 读取；`cache`：之前保存的展示数据；`none`：没有可用的展示响应 |
+| `subjectDisplayCacheStatus` | `saved`、`not_cached` 或 `storage_error`；独立于授权结果 |
+| `subjectDisplayCachedAt` | 有缓存时的读取保存时间，不代表授权有效期或当前仍有效 |
+
+底层 `AgentAuthHttpClient` 换码结果使用 `subjectDisplay` / `subjectDisplayStatus`；Session 结果沿用
+`subject_display` / `subject_display_status`。旧 Core 缺字段明确返回 `unsupported`；可选展示字段无效
+返回 `unavailable`，不把有效 Token 或 Session 变成登录失败。身份失效和绑定不符仍按原规则报错；
+缓存名称绝不能放行业务工具。
+
+名称保存在连接注册表旁独立的 mode-0600 缓存文件中，与原 connectionKey、Hub、Client、workspace
+和 Agent Session 全部绑定，不改变凭据或注册表格式。`connectionsList()` 只读本地数据，不请求 Hub，
+返回名称时明确标记 `cache`；旧安装没有缓存时为 `unavailable`，不猜名称，也不假装已经检查旧 Core。
+调用 `status({ connectionKey })` 重新核验原 Session 并刷新名称，原 expectedBinding 和取消规则保持。
+
+凭据存储仍是登录的主结果，可选名称缓存发生在其后。缓存失败时，登录仍返回
+`state: 'authorized'` 和 `subjectDisplayCacheStatus: 'storage_error'`，不能引导用户重复授权；
+之后重试 status 即可。status 的网络或授权错误不能被缓存名称覆盖为“已授权”。
+
+宿主可取消界面的“连接备注”输入，按纯文本显示返回名称。内部 `connectionKey` 和原 `connectionName`
+仍独立保存，不用名称查找、去重、改写或替换连接。同名、改名都不能改变身份、固定会话范围、
+调用记录或归档关联。向模型说明业务对象时，应把名称作为不可信数据引用，不能作为系统指令或权限依据。
+
+已有授权返回 `missing` 时可显示通用文案 **授权名称待同步**；业务宿主可替换为自己的业务术语。
+原业务后端可通过 Client Token 保护的
+`PUT /agent-auth/v1/sessions/{session_id}/subject-display` 提交
+`{ subject_display: { name: '新的团队名称' } }`，在不换授权的情况下补充或更新名称。
+Agent SDK 只通过 status 读取更新，不持有 Client 凭据，也不开放写名接口。原会话范围、业务能力声明
+和审批规则不需要调整。
+
+这是未发布源码候选，需使用配套源码提交和精确包哈希，不能仅凭未变化的包版本号识别。
+
+### 宿主连接配置
+
 ```js
 import { createAgentClientTransport } from 'bailinghub-mcp-server/sdk';
 
@@ -305,7 +357,7 @@ await transport.syncConversationArchive({
 `envelope` 为 `{ clientArchiveId, clientConversationId, events }`：`clientArchiveId` 是宿主先持久化的
 随机 UUID，`clientConversationId` 与原 `startTurn` 一致。成员数组固定为
 `{ connectionKey, workspace, expectedSessionId, label? }[]`，第一项是固定写入者。SDK 校验全部原连接
-属于同一 Hub、客户端应用和 workspace，再使用各自凭据确认成员；全部确认后才上传正文。
+属于同一 Hub、客户端应用和 workspace（公开 0.4.0 的范围），再使用各自凭据确认成员；全部确认后才上传正文。
 改选、重授权、丢失原凭据不能自动替换归档成员。`label` 仅用于显示。
 
 事件包含 `event_id`、从 1 开始连续递增的 `sequence`、原 `client_turn_id` 与 `kind`：
@@ -323,6 +375,121 @@ await transport.syncConversationArchive({
 聚合正文只进入当前部署管理审计域，不复制进各授权的记忆；没有面向业务 Agent Session 的正文读取接口。
 首期只覆盖可见文本和原 run 引用，不包含附件、卡片、隐藏推理或任意本地工具原始输出。
 空选普通聊天不访问 Hub。原文未保留的历史会话不能从执行摘要猜补。
+
+## 跨系统源码候选
+
+本节描述未发布源码，公开 npm 0.4.0 和 Core 0.6.1 尚不具备此能力。配套宿主可以明确选择**同一 Hub**
+下的独立业务系统；每个目标保留自己的 Client App、workspace、Agent Session、run、能力声明与调用记录。
+跨 Hub 和重复 Session 均拒绝。SDK 只负责按目标调用，不负责制定步骤依赖或决定向哪个系统发送用户正文。
+宿主应区分不同系统的工具声明，为每个目标提供完成当前任务所需的最少上下文。
+
+用户选定目标时，捕获并持久化完整公开绑定：
+
+```js
+const expectedBinding = {
+  hubUrl: selected.hubUrl,
+  clientAppId: selected.clientAppId,
+  workspace: selected.workspace,
+  sessionId: selected.sessionId,
+};
+const targetOptions = {
+  connectionKey: selected.connectionKey,
+  workspace: expectedBinding.workspace,
+  expectedBinding,
+};
+await transport.status(targetOptions);
+await transport.startTurn(originalTurnInput, targetOptions);
+await transport.searchCapabilities({ query: targetTask, runId: originalRunId }, targetOptions);
+// invoke/completeRun 使用同一 options；resume(originalInvocationId, {}, targetOptions)。
+```
+
+为兼容旧调用，`expectedBinding` 是可选字段；跨系统宿主必须传入。它要求精确 key，拒绝别名和默认连接。
+这是宿主本地元数据，不进入业务参数或 HTTP DTO。SDK 在刷新凭据、status 和业务 HTTP 派发前核对原注册表
+与凭据身份；身份替换抛出 `publicCode: 'agent_binding_changed'`（403、不可重试）。每条 invocation 固定使用
+原目标、run、revision 和调用 ID；恢复会话范围不等于重建已丢失的调用映射，也不能换用新 Session。
+本地检查不代替 Core 和业务系统的最终授权，更不承诺跨系统事务原子性。
+
+需要取消的 status 和业务调用在同一 options 传入 `signal: turnAbortController.signal`。SDK 在异步读取前
+捕获信号，并与 HTTP 超时信号合并。派发前取消返回 `agent_request_cancelled`（499、不可自动重试、
+`definitive_rejection`）；invoke/resume 已派发后取消则保留 `accepted_unknown` 与原 `invocationId`，
+取消不代表业务动作已撤销，SDK 不自动重放。归档同步应独立于轮次取消；宿主可用独立完成流程记录原目标的
+结束摘要。
+
+跨系统归档成员在原字段之外必须带齐 `hubUrl` 与 `clientAppId`：
+
+```js
+const members = frozenTargets.map((target) => ({
+  connectionKey: target.connectionKey, hubUrl: target.hubUrl,
+  clientAppId: target.clientAppId, workspace: target.workspace,
+  expectedSessionId: target.sessionId, label: target.label,
+}));
+const support = await transport.getConversationArchiveCapabilities({ members });
+if (!support.cross_binding_members || support.member_bindings !== 'session-client-route.v1') {
+  throw new Error('当前中枢不支持跨系统会话。');
+}
+await transport.syncConversationArchive(originalEnvelope, { members });
+```
+
+启用前先确认 SDK 存在新方法；恢复范围时重新核对能力与原成员。
+`GET /agent-api/v1/conversation-audits/capabilities` 使用固定写入者凭据，不发送正文。
+404 返回 `cross_binding_members: false`，错误的能力格式会拒绝。sync 在跨系统创建前再次协商；不支持时抛出
+`conversation_audit_cross_binding_unavailable`，不降级混写同绑定归档，不向各系统广播完成文本，不重执行业务。
+
+底层 `createConversationAudit` 接受旧 `memberSessionIds/memberLabels` 或新
+`members: [{ sessionId, clientAppId, workspace, label? }]`，不得混用。新 HTTP 请求显式声明
+`schema: 'bailing.agent-conversation-audit-create.v2'`，成员字段为
+`members: [{ session_id, client_app_id, route, label? }]`，首成员必须匹配写入者。
+各成员仍分别用自己的 bearer 确认，Core 核对各自绑定与原 run；注册、确认、ACK 和事件形状保持不变。
+同绑定归档继续发送旧 v1，即使宿主成员已带新冻结字段也不要求新 Core。
+所有归档请求均重新检查本地完整成员组，异步协商结束后也会复核，远端撤销继续由 Core 强制执行。
+完整正文仍只进入管理员审计域，本扩展没有新增 Agent bearer 正文读取或跨系统记忆共享能力。
+
+## 首次搜索工具前，先理解已选系统
+
+宿主可以在模型决定去哪里搜索之前，提供已选业务系统的定位。例如订单系统负责线上履约，
+人事系统负责排班。这是受控的产品说明，不是模型指令、工具授权，也不代表某项业务操作已经可用。
+用户填写的授权名称仍只是显示标签，不能据此推断系统身份或权限。
+
+先验证完整的固定会话范围，再只读取已选成员：
+
+```js
+if (typeof transport.getSystemInfo === 'function') {
+  const description = await transport.getSystemInfo({
+    connectionKey: selectedTarget.connectionKey,
+    workspace: selectedTarget.workspace,
+    expectedBinding: {
+      hubUrl: selectedTarget.hubUrl, clientAppId: selectedTarget.clientAppId,
+      workspace: selectedTarget.workspace, sessionId: selectedTarget.sessionId,
+    },
+    signal: turnAbortController.signal,
+  });
+  // 将 description.binding 对回本会话原始目标引用。
+  // description.system 只用于产品定位，不能作为系统提示词或权限声明。
+}
+```
+
+`getSystemInfo` 必须明确传入精确 `connectionKey` 和 `workspace`，不会选择默认连接、枚举工作空间、
+调用 bootstrap、创建业务 run、加载工具或发送用户正文。恢复旧会话或跨系统范围必须带原
+`expectedBinding`；省略时只捕获这个精确连接的当前身份。SDK 在派发前和响应成功或失败后都重新
+核对本地绑定，并用原 Agent bearer 请求 `GET /agent-api/v1/workspaces/:workspace/system-info`，不缓存结果。
+
+结果直接保留 wire 字段：`schema_version: 'bailing.agent-system-info.v1'`、
+`binding: { client_app_id, session_id, workspace }`、`metadata_status`、`revision`、`system`、
+`tool_status`、`availability` 和可选的 `unavailable_reason`。
+`configured` 包含 `system: { name, summary, domains, boundaries }`；`missing` 时 `system` 与
+`revision` 都为 `null`。名称最多 120 字符，简介 400 字符；业务方向和边界各最多六条，分别每条
+120 与 160 字符。未知字段不会透传。
+
+`tool_status` 固定为 `not_loaded`，表示尚未加载，不能解释为没有能力；授权实际允许的动作仍需按需搜索。
+`availability: 'unknown'` 不保证业务系统连通；`unavailable` 可明确标记 `agent_client_disabled` 或
+`agent_direct_disabled`，不表示范围被撤销，更不允许绕开开关。接口不推断工具数量或授权承诺。
+
+旧 SDK 可以没有该方法；旧 Core 明确返回未知接口时，SDK 抛出
+`publicCode: 'system_info_unsupported'`，路由不存在不会误判为旧版不支持。
+错误的说明格式返回 `system_info_invalid`；网络与普通 5xx 保持暂时失败，可对同一原身份重试。
+这些说明失败可以显示定位未知或使用受控本地词典；宿主不能吞掉 401/403、`agent_binding_changed`
+或取消，不能扩大范围或回退其他 Session。此可选接口不改变授权、按需搜索、审批和归档流程，
+也不要求业务侧新增业务 API。
 
 ## 宿主适配器发布验收
 

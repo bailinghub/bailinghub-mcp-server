@@ -17,6 +17,14 @@ The agent does not receive administrator or business-system credentials. Bailing
 the route boundary, approval state, execution record, and audit trail, while the downstream
 business system still makes the final authorization decision.
 
+## Next release in source: shop and inventory in one conversation
+
+A host can let a user ask: “Check tumbler stock; if available, change the corresponding shop product to 59 and list it.” This SDK adds original-target checks for different systems on one Hub, system descriptions before tool search, and business-supplied authorization names. Actions must be exposed by the business systems, product mappings confirmed, and original approvals respected.
+
+**Unreleased:** published Core 0.6.1 / SDK 0.4.0 do not include these extensions. Matched source revisions and host integration are required; the standalone MCP server does not gain a multi-system selection UI.
+
+[Scenarios, changes and upgrade preparation](docs/NEXT_RELEASE.md)
+
 ## What changes in 0.4.0
 
 When an Agent Client host enables conversation archiving, a BailingHub administrator can follow

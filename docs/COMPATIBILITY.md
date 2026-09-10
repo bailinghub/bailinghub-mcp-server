@@ -30,6 +30,7 @@ the adapter's new version.
 | Standalone MCP Client Token jobs | Existing `bailing.client-api.v1` contract |
 | Browser authorization, Agent turns, governed calls and completion | Existing Agent Auth v1 and Agent Client Runtime v1, including Core 0.5.1 |
 | Host SDK visible conversation archive | Conversation audit v1: Core 0.6.0 API minimum; Core 0.6.1 recommended |
+| Unreleased cross-system archive candidate | Explicit `cross_binding_members: true` and `member_bindings: 'session-client-route.v1'` from the authenticated capabilities endpoint; not available in published SDK 0.4.0/Core 0.6.1 |
 
 The archive is an additive host SDK API. Core releases below 0.6.0 do not implement it; hosts must
 report unsupported archival while preserving the established business flow. Upgrade Core before
@@ -60,6 +61,19 @@ member confirms through its own original Agent Session, and text is readable onl
 administrator audit permissions. Per-authorization runs and memory keep their existing ownership.
 There is no Agent Session transcript-read endpoint. Archive retry reuses original event IDs and
 must not resubmit business invocations.
+
+The source candidate adds an opt-in same-Hub cross-App/workspace member representation. Its
+`getConversationArchiveCapabilities({ members })` is a host-only, body-free probe; 404 means
+unsupported, and malformed capability responses fail closed. The SDK never probes support by
+sending cross-system text or falling back to a v1 registration. New Core accepts old v1 clients;
+new SDK keeps same-binding v1 requests unchanged. Cross-system hosts require the new SDK method,
+freeze `hubUrl/clientAppId/workspace/expectedSessionId` for every exact connection key, and must
+not silently ignore those fields on an older SDK. A separate Session is required for each target.
+
+Optional `expectedBinding` guards are additive to existing per-call methods. They do not change
+business HTTP DTOs, route authority or invocation recovery. Their local identity mismatch code is
+`agent_binding_changed` (403, non-retryable); network failures remain separate. A binding guard
+does not make remote authorization checks or local filesystem changes an atomic distributed transaction.
 
 Agent Session credential storage currently supports macOS Keychain and an explicitly enabled
 current-user-owned mode-0600 file on Linux and other POSIX platforms. Windows uses CurrentUser

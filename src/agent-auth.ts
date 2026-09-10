@@ -9,6 +9,7 @@ import {
 } from './config.js';
 import type { AgentCredentials, CredentialStore } from './credential-store.js';
 import { PACKAGE_VERSION } from './version.js';
+import { parseAgentSubjectDisplay, type AgentSubjectDisplay, type AgentSubjectDisplayStatus, type AgentSubjectDisplayView } from './subject-display.js';
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const REFRESH_SKEW_MILLISECONDS = 30_000;
@@ -19,7 +20,7 @@ type AuthorizationResponse = {
   expiresIn: number;
 };
 
-type TokenResponse = {
+type TokenResponse = AgentSubjectDisplayView & {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
@@ -38,6 +39,8 @@ export type AgentSessionView = {
   created_at: string;
   expires_at: string;
   refresh_expires_at: string;
+  subject_display: AgentSubjectDisplay | null;
+  subject_display_status: AgentSubjectDisplayStatus;
 };
 
 export interface AgentAccessTokenProvider {
@@ -62,6 +65,8 @@ type LoginDependencies = {
   openBrowser?: (url: string) => Promise<void>;
   randomBytesImpl?: typeof randomBytes;
   now?: () => number;
+  /** Runs only after credentials are safely stored; optional display work cannot invalidate login. */
+  onSessionValidated?: (session: AgentSessionView) => Promise<void>;
 };
 
 type LogoutResult = {
@@ -154,11 +159,13 @@ function parseTokenResponse(value: unknown): TokenResponse {
     ),
     sessionId: requiredResponseText(record, 'session_id', 128),
     clientAppId: requiredResponseText(record, 'client_app_id', 64),
+    ...parseAgentSubjectDisplay(record),
   };
 }
 
 function parseSessionView(value: unknown): AgentSessionView {
   const record = asObject(value);
+  const display = parseAgentSubjectDisplay(record);
   const principal = asObject(record.principal);
   const allowedRoutes = record.allowed_routes;
   if (
@@ -180,6 +187,8 @@ function parseSessionView(value: unknown): AgentSessionView {
     created_at: requiredResponseText(record, 'created_at', 100),
     expires_at: requiredResponseText(record, 'expires_at', 100),
     refresh_expires_at: requiredResponseText(record, 'refresh_expires_at', 100),
+    subject_display: display.subjectDisplay,
+    subject_display_status: display.subjectDisplayStatus,
   };
   if (
     !Number.isFinite(Date.parse(session.created_at)) ||
@@ -598,6 +607,7 @@ export async function performAgentLogin(
           .catch(() => undefined);
         throw error;
       }
+      await dependencies.onSessionValidated?.(session).catch(() => undefined);
       return credentials;
     } finally {
       await receiver.close();
@@ -654,7 +664,8 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
       }
       if (
         session.session_id !== credentials.session_id ||
-        session.client_app_id !== credentials.client_app_id
+        session.client_app_id !== credentials.client_app_id ||
+        !session.allowed_routes.includes(credentials.route)
       ) {
         throw new Error('The remote Agent Session does not match the local login.');
       }

@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve, win32 as windowsPath } from 'node:path';
 
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
+import { AgentSubjectDisplayCache } from './subject-display.js';
 import {
   agentStorageNamespaceSegment,
   defaultWindowsAgentStorageRoot,
@@ -288,6 +289,7 @@ export class AgentConnectionRegistry {
   private readonly path: string;
   private readonly mutationLock: LocalAgentOperationLock;
   readonly operationScope: string;
+  readonly subjectDisplayCache: AgentSubjectDisplayCache;
 
   constructor(
     path = defaultConnectionRegistryPath(),
@@ -295,6 +297,7 @@ export class AgentConnectionRegistry {
   ) {
     this.path = resolve(path);
     this.operationScope = `registry:${this.path}`;
+    this.subjectDisplayCache = new AgentSubjectDisplayCache(this.path, this.platform);
     this.mutationLock = new LocalAgentOperationLock(this.operationScope);
   }
 

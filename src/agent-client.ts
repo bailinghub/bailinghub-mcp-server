@@ -9,10 +9,12 @@ import {
 } from './client.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
+import { normalizeAgentSystemInfo, type AgentSystemInfo } from './system-info.js';
+export type { AgentSystemInfo } from './system-info.js';
 import {
-  auditCreateBody, auditEvents, auditReceipt, auditUuid, auditView, CONVERSATION_BATCH_BYTES,
+  auditCapabilities, auditCreateBody, auditEvents, auditReceipt, auditUuid, auditView, CONVERSATION_BATCH_BYTES,
   type ConversationAudit, type ConversationAuditAck, type ConversationAuditEvent,
-  type CreateConversationAuditInput,
+  type CreateConversationAuditInput, type ConversationAuditCapabilities,
 } from './conversation-audit.js';
 
 const UUID_PATTERN =
@@ -67,12 +69,16 @@ const PUBLIC_AGENT_ERROR_CODES = new Set([
   'conversation_audit_limit',
   'conversation_audit_unavailable',
   'conversation_audit_internal_error',
+  'conversation_audit_cross_binding_unavailable',
+  'system_info_unsupported',
 ]);
 
 export const AGENT_CLIENT_V1_PATHS = {
   workspaces: '/agent-api/v1/workspaces',
   bootstrap: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/bootstrap`,
+  systemInfo: (route: string) =>
+    `/agent-api/v1/workspaces/${encodeURIComponent(route)}/system-info`,
   turns: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/turns`,
   capabilitySearch: (route: string) =>
@@ -83,6 +89,7 @@ export const AGENT_CLIENT_V1_PATHS = {
   completeRun: (runId: string) =>
     `/agent-api/v1/runs/${encodeURIComponent(runId)}/complete`,
   conversationAudits: '/agent-api/v1/conversation-audits',
+  conversationAuditCapabilities: '/agent-api/v1/conversation-audits/capabilities',
   confirmConversationAudit: (id: string) => `/agent-api/v1/conversation-audits/${encodeURIComponent(id)}/confirm`,
   conversationAuditEvents: (id: string) => `/agent-api/v1/conversation-audits/${encodeURIComponent(id)}/events`,
 } as const;
@@ -206,6 +213,7 @@ type AgentRequestOptions = {
   expectedStatus?: number;
   ifNoneMatch?: string;
   acceptedUnknownOnFailure?: boolean;
+  publicErrorCodes?: readonly string[];
 };
 
 function asObject(value: unknown, label = 'response'): Record<string, unknown> {
@@ -495,11 +503,11 @@ async function readJsonWithLimit(response: Response): Promise<unknown> {
   }
 }
 
-async function publicErrorCode(response: Response): Promise<string | undefined> {
+async function publicErrorCode(response: Response, additionalCodes: readonly string[] = []): Promise<string | undefined> {
   try {
     const body = asObject(await readJsonWithLimit(response), 'error response');
     const code = typeof body.error === 'string' ? body.error.trim() : '';
-    return PUBLIC_AGENT_ERROR_CODES.has(code) ? code : undefined;
+    return PUBLIC_AGENT_ERROR_CODES.has(code) || additionalCodes.includes(code) ? code : undefined;
   } catch {
     return undefined;
   }
@@ -549,6 +557,7 @@ export class AgentClientTransport {
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly timeoutMilliseconds = 15_000,
     allowInsecureHttp = false,
+    private readonly callerSignal?: AbortSignal,
   ) {
     this.baseUrl = normalizeBaseUrl(baseUrl, allowInsecureHttp);
     if (!Number.isInteger(timeoutMilliseconds) || timeoutMilliseconds < 1 || timeoutMilliseconds > 120_000) {
@@ -565,10 +574,14 @@ export class AgentClientTransport {
     const expectedStatus = options.expectedStatus ?? 200;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMilliseconds);
+    const signal = this.callerSignal ? AbortSignal.any([controller.signal, this.callerSignal]) : controller.signal;
+    let dispatched = false;
     try {
-      let response = await this.send(method, path, body, false, controller.signal, options.ifNoneMatch);
+      signal.throwIfAborted();
+      const dispatch = () => { dispatched = true; };
+      let response = await this.send(method, path, body, false, signal, options.ifNoneMatch, dispatch);
       if (response.status === 401) {
-        response = await this.send(method, path, body, true, controller.signal, options.ifNoneMatch);
+        response = await this.send(method, path, body, true, signal, options.ifNoneMatch, dispatch);
       }
       if (response.status === 304 && options.ifNoneMatch) {
         return { status: 304, ...(response.headers.get('etag') ? { etag: response.headers.get('etag')! } : {}) };
@@ -577,7 +590,7 @@ export class AgentClientTransport {
         throw safeHttpError(
           response.status,
           options.acceptedUnknownOnFailure === true,
-          await publicErrorCode(response),
+          await publicErrorCode(response, options.publicErrorCodes),
         );
       }
       const value = await readJsonWithLimit(response);
@@ -588,6 +601,10 @@ export class AgentClientTransport {
       };
     } catch (error) {
       if (error instanceof BailingHubClientError) throw error;
+      if (this.callerSignal?.aborted) {
+        throw new BailingHubClientError('The Agent request was cancelled.', 499, false, 'agent_request_cancelled',
+          options.acceptedUnknownOnFailure && dispatched ? 'accepted_unknown' : 'definitive_rejection');
+      }
       if (error instanceof Error && error.name === 'AbortError') {
         throw new BailingHubClientError(
           'BailingHub Agent request timed out.',
@@ -616,11 +633,16 @@ export class AgentClientTransport {
     forceRefresh: boolean,
     signal: AbortSignal,
     ifNoneMatch?: string,
+    dispatch?: () => void,
   ): Promise<Response> {
     let token: string;
     try {
+      signal.throwIfAborted();
       token = await this.accessTokenProvider.getAccessToken(forceRefresh);
-    } catch {
+      signal.throwIfAborted();
+    } catch (error) {
+      if (error instanceof BailingHubClientError) throw error;
+      if (signal.aborted) throw error;
       throw new BailingHubClientError(
         'The BailingHub Agent login could not be refreshed. Run login again.',
         401,
@@ -635,6 +657,8 @@ export class AgentClientTransport {
     if (ifNoneMatch) headers['If-None-Match'] = identifierText(ifNoneMatch, 'ifNoneMatch', 256);
     const init: RequestInit = { method, headers, redirect: 'error', signal };
     if (body !== undefined) init.body = JSON.stringify(body);
+    signal.throwIfAborted();
+    dispatch?.();
     return await this.fetchImpl(`${this.baseUrl}${path}`, init);
   }
 }
@@ -650,6 +674,7 @@ export class BailingHubAgentClient {
       fetchImpl?: typeof fetch;
       timeoutMilliseconds?: number;
       allowInsecureHttp?: boolean;
+      signal?: AbortSignal;
     } = {},
   ) {
     const baseUrl = normalizeBaseUrl(
@@ -666,6 +691,7 @@ export class BailingHubAgentClient {
       options.fetchImpl,
       options.timeoutMilliseconds,
       options.allowInsecureHttp === true,
+      options.signal,
     );
   }
 
@@ -694,6 +720,23 @@ export class BailingHubAgentClient {
       workspaces,
       ...(response.etag ? { etag: response.etag } : {}),
     };
+  }
+
+  /** Read this exact authorization's product description without creating a run or loading tools. */
+  async getSystemInfo(): Promise<AgentSystemInfo> {
+    let response: AgentTransportResponse;
+    try {
+      response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.systemInfo(this.connection.workspace),
+        undefined, { publicErrorCodes: ['not_found'] });
+    } catch (error) {
+      if (error instanceof BailingHubClientError &&
+          ((error.statusCode === 404 && error.publicCode === 'not_found') || error.publicCode === 'system_info_unsupported')) {
+        throw new BailingHubClientError('This BailingHub does not support system information.',
+          error.statusCode, false, 'system_info_unsupported', 'definitive_rejection');
+      }
+      throw error;
+    }
+    return normalizeAgentSystemInfo(response.body, this.connection);
   }
 
   async bootstrapWorkspace(options: { ifNoneMatch?: string } = {}): Promise<AgentRuntimeProfile> {
@@ -947,12 +990,34 @@ export class BailingHubAgentClient {
     }
   }
 
+  async getConversationArchiveCapabilities(): Promise<ConversationAuditCapabilities> {
+    try {
+      const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.conversationAuditCapabilities);
+      return auditCapabilities(response.body);
+    } catch (error) {
+      if (!(error instanceof BailingHubClientError) || error.statusCode !== 404) throw error;
+      return { schema: 'bailing.agent-conversation-audit-capabilities.v1', cross_binding_members: false,
+        member_bindings: 'session-client-route.v1' };
+    }
+  }
+
   async createConversationAudit(input: CreateConversationAuditInput): Promise<ConversationAudit> {
     const body = auditCreateBody(input, this.connection.workspace);
+    if (body.schema === 'bailing.agent-conversation-audit-create.v2') {
+      const members = body.members as { session_id: string; client_app_id: string; route: string }[];
+      const writer = members[0]!;
+      if (writer.session_id !== this.connection.sessionId || writer.client_app_id !== this.connection.clientAppId ||
+          writer.route !== this.connection.workspace) throw new TypeError('Conversation writer does not match the original connection.');
+      if (!(await this.getConversationArchiveCapabilities()).cross_binding_members) {
+        throw new BailingHubClientError('This BailingHub does not support cross-system conversation archives.', 503, false,
+          'conversation_audit_cross_binding_unavailable');
+      }
+    }
     const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.conversationAudits, body,
       { acceptedUnknownOnFailure: true });
     const result = auditView(response.body);
-    if (result.member_count !== input.memberSessionIds.length) throw new BailingHubClientError('Conversation membership acknowledgement does not match.');
+    const count = Array.isArray(body.members) ? body.members.length : (body.member_session_ids as string[]).length;
+    if (result.member_count !== count) throw new BailingHubClientError('Conversation membership acknowledgement does not match.');
     return result;
   }
 

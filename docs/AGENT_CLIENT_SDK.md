@@ -48,6 +48,68 @@ not require `BAILINGHUB_CLIENT_TOKEN`.
 
 ## Configuration ownership
 
+### Authorization subject display (source candidate)
+
+This optional addition lets a host show **which authorized subject the user approved**, without asking
+them to type a second name. For example, display `Project Workspace · Example Team` by combining
+separate controlled system information and the authorization subject name. A developer may call its
+subject an organization, team, project, account, location or another business term. The wire contract
+is generic and does not require a `store_name` field.
+
+The authorizing business backend reads the real name for the subject the user confirmed and submits
+`subject_display: { name: 'Example Team' }` with authorization approval. Core keeps it separate from
+`principal`, `on_behalf_of`, permissions and system information. The matching Core candidate returns
+`subject_display` and `subject_display_status` from both token exchange and Session inspection.
+Only `name` is accepted: inspect the original string for C0/C1 controls and U+2028/U+2029, reject any,
+then trim; require 1–120 JavaScript UTF-16 code units. Names are descriptive data, not instructions.
+Unpaired UTF-16 surrogates are invalid; valid characters such as emoji remain supported.
+
+`login()`, `status()` and each `connectionsList().connections` row expose:
+
+| Field | Meaning |
+| --- | --- |
+| `subjectDisplay` | `{ name: string }` or `null`; never inferred from aliases, principal, device label or system description |
+| `subjectDisplayStatus` | `provided`: current Core supplied a valid name; `missing`: Core supports it but this authorization has no name; `unsupported`: Session response lacks the feature; `unavailable`: not yet read, invalid optional data, or cache unavailable |
+| `subjectDisplaySource` | `verified`: read from an identity-validated Session; `cache`: previously saved display data; `none`: no usable display response |
+| `subjectDisplayCacheStatus` | `saved`, `not_cached` or `storage_error`; independent of authorization success |
+| `subjectDisplayCachedAt` | Cache observation time when a cached value is available; not authorization expiry or proof of current validity |
+
+The low-level `AgentAuthHttpClient` token result uses `subjectDisplay` / `subjectDisplayStatus`;
+its Session result retains `subject_display` / `subject_display_status`. Missing fields on old Core
+become explicit `unsupported`; malformed optional data becomes `unavailable` without invalidating a
+valid token or Session. Authentication or identity validation failures still follow the existing error
+path; a cached name never opens business tools.
+
+Names are cached in an independent, mode-0600 sidecar beside the connection registry, bound to the
+original connection key, Hub, Client, workspace and Agent Session. The credential and registry schemas
+are unchanged. `connectionsList()` reads only local data, makes zero Hub requests, and always labels
+its names `cache`; an older installation with no cache reports `unavailable`, not a guessed name or a
+claim that the old Core was checked. Call `status({ connectionKey })` to validate the original Session
+and refresh the name. Expected bindings and cancellation remain supported as before.
+
+Credential storage remains the primary login result. Optional display caching happens afterwards.
+If it fails, login still returns `state: 'authorized'` and `subjectDisplayCacheStatus: 'storage_error'`.
+The host must not ask the user to authorize again to repair a display cache; retry status later.
+Network or authorization errors from status must not be converted to an authorized state from cache.
+
+Hosts may remove the user-facing “connection note” input and render the returned name as text. Keep
+`connectionKey` and any existing internal `connectionName` independent: never use the returned name
+to look up, deduplicate, rename or replace connections. Identical names and later renames do not change
+identity, fixed conversation scope, invocation records or archive links. Quote names as untrusted data
+in model-facing target descriptions; they are never system instructions or evidence of tool permission.
+
+For older authorizations, show a generic label such as **Authorization name pending** when `missing`.
+A product-specific host may translate this to its own business term. The owning business backend can
+use the Client-protected `PUT /agent-auth/v1/sessions/{session_id}/subject-display` with
+`{ subject_display: { name: 'Updated Team' } }` to supply or update a name without replacing the
+authorization. The Agent SDK only refreshes through status; it has no Client credential or name-write
+API. Existing scope, API declarations and approvals require no change.
+
+This feature is an unreleased source candidate. Use the coordinated source commits and package
+hashes supplied with that candidate; the unchanged package version does not identify it.
+
+### Host connection configuration
+
 ```js
 import { createAgentClientTransport } from 'bailinghub-mcp-server/sdk';
 
@@ -350,7 +412,7 @@ await transport.syncConversationArchive({
 ```
 
 The host persists a random archive UUID and the ordered member set before first upload. Member
-zero is the fixed writer. All members must share one Hub, public client application and workspace;
+zero is the fixed writer. In published 0.4.0, all members must share one Hub, public client application and workspace;
 the current/default connection is never consulted. Core enrolls the group, each member confirms
 with its own original Agent Session, and only the writer can append visible events after all
 members are confirmed and still valid. Labels are display hints, not identity assertions.
@@ -376,6 +438,139 @@ no Agent Session transcript read API. Empty selection must make no SDK request. 
 Core/SDK, revoked members and failed uploads must be reported as incomplete/unsupported archive
 state, not as successful archival or as permission to use another connection. Historical final
 replies not retained by the host cannot be reconstructed from execution summaries.
+
+## Cross-system source candidate
+
+This section describes unreleased source, not npm 0.4.0 or Core 0.6.1. A compatible host may
+select independent systems on **one Hub**. Each target keeps its own Client App, workspace,
+Agent Session, run, declarations and invocation records. Duplicate Sessions and cross-Hub groups
+are rejected. The SDK routes calls; it does not plan dependencies or decide which system receives
+the user's text. A host must explicitly control target selection, separate conflicting tool
+declarations and send only the context needed for each target's task.
+
+Capture and persist the full public binding when the user selects a target:
+
+```js
+const expectedBinding = {
+  hubUrl: selected.hubUrl,
+  clientAppId: selected.clientAppId,
+  workspace: selected.workspace,
+  sessionId: selected.sessionId,
+};
+const targetOptions = {
+  connectionKey: selected.connectionKey,
+  workspace: expectedBinding.workspace,
+  expectedBinding,
+};
+await transport.status(targetOptions);
+await transport.startTurn(originalTurnInput, targetOptions);
+await transport.searchCapabilities({ query: targetTask, runId: originalRunId }, targetOptions);
+// invoke/completeRun use the same options; resume(originalInvocationId, {}, targetOptions).
+```
+
+`expectedBinding` is optional for backward compatibility but required by a cross-system host.
+It requires an exact key; aliases/default selection are rejected. It is local host metadata and
+never enters the business arguments or HTTP DTO. SDK checks the original registry and credential
+binding before refresh/status/business dispatch; identity substitution throws
+`publicCode: 'agent_binding_changed'` (403, non-retryable). Freeze options for each invocation and
+reuse the same run/revision/invocation during recovery. Scope restoration does not recreate a lost
+invocation mapping or authorize a replacement Session. Local checks do not replace Core or the
+business system's final authorization and do not promise an atomic transaction across systems.
+
+Pass `signal: turnAbortController.signal` in the same options for cancellable status and business
+calls. The SDK snapshots the signal before asynchronous reads and combines it with the HTTP timeout.
+Cancellation before dispatch has `agent_request_cancelled` (499, non-retryable,
+`definitive_rejection`). After an invocation or resume has been dispatched, cancellation retains
+`accepted_unknown` and the original `invocationId`: cancellation is not proof the action was undone.
+The SDK does not replay it. Keep archive synchronization independent of turn cancellation; a host
+may use a separate completion lifecycle to record the ended target run's summary.
+
+Cross-system archive members add required `hubUrl` and `clientAppId` to the existing member shape:
+
+```js
+const members = frozenTargets.map((target) => ({
+  connectionKey: target.connectionKey, hubUrl: target.hubUrl,
+  clientAppId: target.clientAppId, workspace: target.workspace,
+  expectedSessionId: target.sessionId, label: target.label,
+}));
+const support = await transport.getConversationArchiveCapabilities({ members });
+if (!support.cross_binding_members || support.member_bindings !== 'session-client-route.v1') {
+  throw new Error('This Hub does not support cross-system conversations.');
+}
+await transport.syncConversationArchive(originalEnvelope, { members });
+```
+
+Check for the new SDK method before enabling this host mode, and repeat capability and original
+member validation when restoring the scope. `GET /agent-api/v1/conversation-audits/capabilities`
+uses the fixed writer's bearer and sends no text. A 404 yields `cross_binding_members: false`;
+invalid capability data fails closed. Sync negotiates again before cross-system create. A missing
+capability rejects with `conversation_audit_cross_binding_unavailable`; it never falls back to a
+same-binding archive, broadcasts completion text, or repeats business actions.
+
+The low-level `createConversationAudit` accepts either old `memberSessionIds/memberLabels` or
+new `members: [{ sessionId, clientAppId, workspace, label? }]`. New membership is sent as
+`schema: 'bailing.agent-conversation-audit-create.v2'` with
+`members: [{ session_id, client_app_id, route, label? }]`; member zero must match the writer.
+Each original member still confirms with its own bearer and Core verifies each member's binding
+and run links. Registration/confirmation/ACK and event shapes are unchanged. Same-binding host
+archives keep the old v1 request even when their local members include the new frozen fields.
+All archive requests recheck local group membership, including after asynchronous negotiation;
+revocation is independently enforced by Core. Combined text stays in the administrator audit
+domain. This extension adds no Agent bearer transcript reader or cross-system memory sharing.
+
+## Explain selected systems before searching their tools
+
+A host can show what each selected business system is for before the model chooses where to
+search. For example, an order service can describe online fulfillment while a workforce service
+describes scheduling. These are controlled product descriptions, not instructions, tool grants,
+or proof that a business operation is available. Authorization names supplied by users remain
+display labels; never infer system identity or access rights from them.
+
+After validating the complete frozen session scope, read only its selected members:
+
+```js
+if (typeof transport.getSystemInfo === 'function') {
+  const description = await transport.getSystemInfo({
+    connectionKey: selectedTarget.connectionKey,
+    workspace: selectedTarget.workspace,
+    expectedBinding: {
+      hubUrl: selectedTarget.hubUrl, clientAppId: selectedTarget.clientAppId,
+      workspace: selectedTarget.workspace, sessionId: selectedTarget.sessionId,
+    },
+    signal: turnAbortController.signal,
+  });
+  // Associate description.binding with the original selected target reference.
+  // description.system is positioning data, never a system prompt or permission grant.
+}
+```
+
+`getSystemInfo` requires an exact `connectionKey` and `workspace`; it never selects a default,
+enumerates workspaces, calls bootstrap, creates a run, loads tools, or sends user messages.
+`expectedBinding` freezes the original session identity for restored and multi-system scopes.
+Without it, the SDK captures that exact connection's current identity. Local binding checks run
+before dispatch and after success or failure. The read uses the original Agent bearer against
+`GET /agent-api/v1/workspaces/:workspace/system-info` and is never cached by the SDK.
+
+The response retains the wire fields: `schema_version: 'bailing.agent-system-info.v1'`,
+`binding: { client_app_id, session_id, workspace }`, `metadata_status`, `revision`, `system`,
+`tool_status`, `availability`, and optional `unavailable_reason`. `configured` metadata includes
+`system: { name, summary, domains, boundaries }`; `missing` returns `system: null` and
+`revision: null`. Names are at most 120 characters, summaries 400, and each list contains at most
+six strings (120 characters per domain, 160 per boundary). Unknown fields are not forwarded.
+
+Tools always report `not_loaded`: search remains necessary to learn what this authorization
+actually allows. `availability: 'unknown'` makes no claim about business connectivity. An
+`unavailable` result can name `agent_client_disabled` or `agent_direct_disabled`; it does not
+revoke the scope or authorize bypassing configuration. No capability count or grant is inferred.
+
+Older SDKs can omit the method. An old Core's explicit unknown-endpoint response becomes
+`publicCode: 'system_info_unsupported'`; a missing route is not classified as unsupported.
+Malformed metadata reports `system_info_invalid`; ordinary network/5xx errors remain temporary
+and can be retried against the same identity. The host may render unknown positioning or use a
+controlled local dictionary for these description failures. It must not swallow 401/403,
+`agent_binding_changed`, or cancellation, expand the scope, or fall back to another session.
+This optional seam leaves the existing authorization, tool discovery, approval, and archive
+flows intact and adds no business API requirement.
 
 ## Host-adapter acceptance
 
