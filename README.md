@@ -24,6 +24,12 @@ business systems on one Hub, each with its own authorized connection. It require
 Core capability and host integration; the published npm `0.4.0` and Core `0.6.1` do not include
 cross-system conversation archives. See the [candidate integration contract](docs/AGENT_CLIENT_SDK.md#cross-system-source-candidate).
 
+The source candidate also carries a business-provided **authorization name**, such as an organization,
+team, project, account or location. After approval the host can show the approved subject automatically,
+while keeping its internal connection selector separate. This requires the matching Core and host
+candidates; published package version numbers alone do not identify this feature.
+See [authorization subject display](docs/AGENT_CLIENT_SDK.md#authorization-subject-display-source-candidate).
+
 When an Agent Client host enables conversation archiving, a BailingHub administrator can follow
 the user's request, the assistant's visible replies and the resulting business actions together.
 For example, one conversation can compare two separately authorized stores while retaining the

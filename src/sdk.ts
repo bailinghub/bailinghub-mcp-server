@@ -23,7 +23,10 @@ import { BailingHubClientError, type AgentToolInvocation } from './client.js';
 import {
   AgentSessionManager,
   performAgentLogin,
+  type AgentSessionView,
 } from './agent-auth.js';
+import type { AgentSubjectDisplayBinding } from './subject-display.js';
+export type { AgentSubjectDisplay, AgentSubjectDisplayStatus, AgentSubjectDisplayView } from './subject-display.js';
 import {
   AgentConnectionStore,
   agentConnectionInstanceKey,
@@ -382,8 +385,20 @@ export function createAgentClientTransport(
   ): Promise<Record<string, unknown>> {
     const store = connections.credentialStore(profile.connectionKey);
     const stored = await store.load();
-    if (stored) await connections.load(profile.connectionKey);
-    const loggedIn = Boolean(stored);
+    const loaded = stored ? await connections.load(profile.connectionKey) : undefined;
+    if (loaded && !profileMatches(loaded.profile, profile)) {
+      throw new Error('The selected Agent connection binding changed during listing. Retry connectionsList.');
+    }
+    let display = await cachedSubjectDisplay(profile, loaded?.credentials.session_id);
+    const currentCredentials = await store.load();
+    if (currentCredentials && (currentCredentials.base_url !== profile.baseUrl ||
+        currentCredentials.client_app_id !== profile.clientAppId || currentCredentials.route !== profile.workspace)) {
+      throw new Error('The selected Agent credentials do not match their connection binding.');
+    }
+    if (currentCredentials?.session_id !== loaded?.credentials.session_id) {
+      display = await cachedSubjectDisplay(profile);
+    }
+    const loggedIn = Boolean(currentCredentials);
     return {
       connectionKey: profile.connectionKey,
       ...(profile.alias ? { connectionName: profile.alias } : {}),
@@ -393,9 +408,49 @@ export function createAgentClientTransport(
       allowInsecureHttp: profile.allowInsecureHttp,
       current: profile.connectionKey === currentConnectionKey,
       state: loggedIn ? 'authorized' : 'logged_out',
+      ...display,
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
     };
+  }
+
+  // Sidecar metadata never participates in registry identity, alias allocation, or credential IO.
+  const subjectDisplayCache = connections.registry.subjectDisplayCache;
+  const verifiedSubjectDisplays = new Map<string, { sessionId: string; view: Record<string, unknown> }>();
+  function displayBinding(profile: AgentConnectionProfile, sessionId: string): AgentSubjectDisplayBinding {
+    return { connectionKey: profile.connectionKey, baseUrl: profile.baseUrl, clientAppId: profile.clientAppId,
+      workspace: profile.workspace, sessionId };
+  }
+  async function cachedSubjectDisplay(profile: AgentConnectionProfile, sessionId?: string): Promise<Record<string, unknown>> {
+    const empty = { subjectDisplay: null, subjectDisplayStatus: 'unavailable',
+      subjectDisplaySource: 'none', subjectDisplayCacheStatus: 'not_cached' };
+    if (!sessionId) return empty;
+    try {
+      const cached = await subjectDisplayCache.load(displayBinding(profile, sessionId));
+      return cached ? { ...cached, subjectDisplaySource: 'cache', subjectDisplayCacheStatus: 'saved' } : empty;
+    } catch {
+      return { ...empty, subjectDisplayCacheStatus: 'storage_error' };
+    }
+  }
+  async function rememberSubjectDisplay(profile: AgentConnectionProfile, session: AgentSessionView): Promise<Record<string, unknown>> {
+    const bound = await connections.load(profile.connectionKey);
+    if (!profileMatches(bound.profile, profile) || bound.credentials.session_id !== session.session_id ||
+        session.client_app_id !== profile.clientAppId || !session.allowed_routes.includes(profile.workspace)) {
+      throw new BailingHubClientError('The original Agent connection binding changed.', 403, false, 'agent_binding_changed');
+    }
+    const display = { subjectDisplay: session.subject_display, subjectDisplayStatus: session.subject_display_status };
+    const now = (dependencies.now ?? Date.now)();
+    let cacheStatus = display.subjectDisplayStatus === 'unavailable' ? 'not_cached' : 'saved';
+    if (cacheStatus === 'saved') {
+      try { await subjectDisplayCache.save(displayBinding(profile, session.session_id), display, now); }
+      catch { cacheStatus = 'storage_error'; }
+    }
+    const view = { ...display, subjectDisplaySource: display.subjectDisplayStatus === 'unavailable' ? 'none' : 'verified',
+      subjectDisplayCacheStatus: cacheStatus,
+      ...(cacheStatus === 'saved' ? { subjectDisplayCachedAt: new Date(now).toISOString() } : {}),
+    };
+    verifiedSubjectDisplays.set(profile.connectionKey, { sessionId: session.session_id, view });
+    return view;
   }
 
   async function sessionFor(profile: AgentConnectionProfile): Promise<AgentSessionManager> {
@@ -435,6 +490,7 @@ export function createAgentClientTransport(
           fetchImpl,
           dependencies.now,
         ).getSession();
+        await rememberSubjectDisplay(profile, currentSession);
       } catch {
         if (!await profileStore.load()) {
           throw new Error('The newly authorized Agent Session became invalid and its local login was removed.');
@@ -1026,6 +1082,7 @@ export function createAgentClientTransport(
           ...(dependencies.openBrowser ? { openBrowser: dependencies.openBrowser } : {}),
           ...(dependencies.randomBytesImpl ? { randomBytesImpl: dependencies.randomBytesImpl } : {}),
           ...(dependencies.now ? { now: dependencies.now } : {}),
+          onSessionValidated: async (session) => { await rememberSubjectDisplay(profile, session); },
         });
       } catch (error) {
         if (replacementConnectionKey && !await store.load()) {
@@ -1082,6 +1139,9 @@ export function createAgentClientTransport(
         sessionId: credentials.session_id,
         expiresAt: credentials.access_expires_at,
         refreshExpiresAt: credentials.refresh_expires_at,
+        ...(verifiedSubjectDisplays.get(profile.connectionKey)?.sessionId === credentials.session_id
+          ? verifiedSubjectDisplays.get(profile.connectionKey)!.view
+          : await cachedSubjectDisplay(profile, credentials.session_id)),
         identityReconciliation: reconciliation.identityReconciliation,
         cleanupRequired: reconciliation.cleanupRequired,
         replacedConnections: reconciliation.replacedConnections,
@@ -1107,8 +1167,11 @@ export function createAgentClientTransport(
             !session.allowed_routes.includes(expected.workspace)) {
           throw new BailingHubClientError('The original Agent authorization is no longer available.', 403, false, 'agent_binding_changed');
         }
+        const display = await rememberSubjectDisplay(bound.profile, session);
+        await bound.assertBinding();
         return {
           state: 'authorized', connectionKey: bound.profile.connectionKey,
+          ...display,
           ...(bound.profile.alias ? { connectionName: bound.profile.alias } : {}),
           workspace: expected.workspace, sessionId: session.session_id,
           onBehalfOf: session.on_behalf_of, allowedWorkspaces: session.allowed_routes,
@@ -1121,6 +1184,7 @@ export function createAgentClientTransport(
       if (!await store.load()) {
         return {
           state: 'logged_out', connectionKey: profile.connectionKey,
+          ...await cachedSubjectDisplay(profile),
           ...(profile.alias ? { connectionName: profile.alias } : {}), workspace: profile.workspace,
         };
       }
@@ -1132,11 +1196,15 @@ export function createAgentClientTransport(
         if (await store.load()) throw error;
         return {
           state: 'logged_out', connectionKey: profile.connectionKey,
+          ...await cachedSubjectDisplay(profile),
           ...(profile.alias ? { connectionName: profile.alias } : {}), workspace: profile.workspace,
         };
       }
+      const display = await rememberSubjectDisplay(profile, session);
+      assertRequestActive(signal);
       return {
         state: 'authorized', connectionKey: profile.connectionKey,
+        ...display,
         ...(profile.alias ? { connectionName: profile.alias } : {}),
         workspace: profile.workspace, sessionId: session.session_id,
         onBehalfOf: session.on_behalf_of, allowedWorkspaces: session.allowed_routes,

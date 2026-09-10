@@ -48,6 +48,67 @@ not require `BAILINGHUB_CLIENT_TOKEN`.
 
 ## Configuration ownership
 
+### Authorization subject display (source candidate)
+
+This optional addition lets a host show **which authorized subject the user approved**, without asking
+them to type a second name. For example, display `Project Workspace · Example Team` by combining
+separate controlled system information and the authorization subject name. A developer may call its
+subject an organization, team, project, account, location or another business term. The wire contract
+is generic and does not require a `store_name` field.
+
+The authorizing business backend reads the real name for the subject the user confirmed and submits
+`subject_display: { name: 'Example Team' }` with authorization approval. Core keeps it separate from
+`principal`, `on_behalf_of`, permissions and system information. The matching Core candidate returns
+`subject_display` and `subject_display_status` from both token exchange and Session inspection.
+Only `name` is accepted: inspect the original string for C0/C1 controls and U+2028/U+2029, reject any,
+then trim; require 1–120 JavaScript UTF-16 code units. Names are descriptive data, not instructions.
+
+`login()`, `status()` and each `connectionsList().connections` row expose:
+
+| Field | Meaning |
+| --- | --- |
+| `subjectDisplay` | `{ name: string }` or `null`; never inferred from aliases, principal, device label or system description |
+| `subjectDisplayStatus` | `provided`: current Core supplied a valid name; `missing`: Core supports it but this authorization has no name; `unsupported`: Session response lacks the feature; `unavailable`: not yet read, invalid optional data, or cache unavailable |
+| `subjectDisplaySource` | `verified`: read from an identity-validated Session; `cache`: previously saved display data; `none`: no usable display response |
+| `subjectDisplayCacheStatus` | `saved`, `not_cached` or `storage_error`; independent of authorization success |
+| `subjectDisplayCachedAt` | Cache observation time when a cached value is available; not authorization expiry or proof of current validity |
+
+The low-level `AgentAuthHttpClient` token result uses `subjectDisplay` / `subjectDisplayStatus`;
+its Session result retains `subject_display` / `subject_display_status`. Missing fields on old Core
+become explicit `unsupported`; malformed optional data becomes `unavailable` without invalidating a
+valid token or Session. Authentication or identity validation failures still follow the existing error
+path; a cached name never opens business tools.
+
+Names are cached in an independent, mode-0600 sidecar beside the connection registry, bound to the
+original connection key, Hub, Client, workspace and Agent Session. The credential and registry schemas
+are unchanged. `connectionsList()` reads only local data, makes zero Hub requests, and always labels
+its names `cache`; an older installation with no cache reports `unavailable`, not a guessed name or a
+claim that the old Core was checked. Call `status({ connectionKey })` to validate the original Session
+and refresh the name. Expected bindings and cancellation remain supported as before.
+
+Credential storage remains the primary login result. Optional display caching happens afterwards.
+If it fails, login still returns `state: 'authorized'` and `subjectDisplayCacheStatus: 'storage_error'`.
+The host must not ask the user to authorize again to repair a display cache; retry status later.
+Network or authorization errors from status must not be converted to an authorized state from cache.
+
+Hosts may remove the user-facing “connection note” input and render the returned name as text. Keep
+`connectionKey` and any existing internal `connectionName` independent: never use the returned name
+to look up, deduplicate, rename or replace connections. Identical names and later renames do not change
+identity, fixed conversation scope, invocation records or archive links. Quote names as untrusted data
+in model-facing target descriptions; they are never system instructions or evidence of tool permission.
+
+For older authorizations, show a generic label such as **Authorization name pending** when `missing`.
+A product-specific host may translate this to its own business term. The owning business backend can
+use the Client-protected `PUT /agent-auth/v1/sessions/{session_id}/subject-display` with
+`{ subject_display: { name: 'Updated Team' } }` to supply or update a name without replacing the
+authorization. The Agent SDK only refreshes through status; it has no Client credential or name-write
+API. Existing scope, API declarations and approvals require no change.
+
+This feature is an unreleased source candidate. Use the coordinated source commits and package
+hashes supplied with that candidate; the unchanged package version does not identify it.
+
+### Host connection configuration
+
 ```js
 import { createAgentClientTransport } from 'bailinghub-mcp-server/sdk';
 

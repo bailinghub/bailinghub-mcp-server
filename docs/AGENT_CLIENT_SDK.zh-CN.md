@@ -39,6 +39,57 @@ npm install --save-exact bailinghub-mcp-server@0.4.0
 
 ## 配置归属
 
+### 授权主体展示信息（源码候选）
+
+此可选能力用于显示 **用户实际确认了哪个授权对象**，避免授权后再手填一遍名称。例如，将独立的
+系统说明与授权名称组合成“项目协作系统 · 示例团队”。开发者的授权主体可以是组织、团队、项目、
+账号、经营场所或其他业务对象；上游不把它限定为门店，也不要求 `store_name`。
+
+业务授权后端根据用户实际确认的主体读取真实名称，在批准授权时提交
+`subject_display: { name: '示例团队' }`。Core 将其与 `principal`、`on_behalf_of`、权限和系统说明分别
+维护。配套候选会在换码和 Session 查询中返回 `subject_display`、`subject_display_status`。
+展示对象只允许 `name`：先检查原始字符串，拒绝 C0/C1 控制符及 U+2028/U+2029，再 trim；
+非空且最多 120 个 JavaScript UTF-16 码元。名称是展示数据，不是指令。
+
+`login()`、`status()` 和 `connectionsList().connections` 的每行返回：
+
+| 字段 | 含义 |
+| --- | --- |
+| `subjectDisplay` | `{ name: string }` 或 `null`；不从本机别名、principal、设备名称或系统说明推测 |
+| `subjectDisplayStatus` | `provided`：Core 返回有效名称；`missing`：支持此能力但该授权尚无名称；`unsupported`：Session 响应缺少此能力；`unavailable`：尚未读取、可选数据无效或缓存不可用 |
+| `subjectDisplaySource` | `verified`：本次从身份校验通过的 Session 读取；`cache`：之前保存的展示数据；`none`：没有可用的展示响应 |
+| `subjectDisplayCacheStatus` | `saved`、`not_cached` 或 `storage_error`；独立于授权结果 |
+| `subjectDisplayCachedAt` | 有缓存时的读取保存时间，不代表授权有效期或当前仍有效 |
+
+底层 `AgentAuthHttpClient` 换码结果使用 `subjectDisplay` / `subjectDisplayStatus`；Session 结果沿用
+`subject_display` / `subject_display_status`。旧 Core 缺字段明确返回 `unsupported`；可选展示字段无效
+返回 `unavailable`，不把有效 Token 或 Session 变成登录失败。身份失效和绑定不符仍按原规则报错；
+缓存名称绝不能放行业务工具。
+
+名称保存在连接注册表旁独立的 mode-0600 缓存文件中，与原 connectionKey、Hub、Client、workspace
+和 Agent Session 全部绑定，不改变凭据或注册表格式。`connectionsList()` 只读本地数据，不请求 Hub，
+返回名称时明确标记 `cache`；旧安装没有缓存时为 `unavailable`，不猜名称，也不假装已经检查旧 Core。
+调用 `status({ connectionKey })` 重新核验原 Session 并刷新名称，原 expectedBinding 和取消规则保持。
+
+凭据存储仍是登录的主结果，可选名称缓存发生在其后。缓存失败时，登录仍返回
+`state: 'authorized'` 和 `subjectDisplayCacheStatus: 'storage_error'`，不能引导用户重复授权；
+之后重试 status 即可。status 的网络或授权错误不能被缓存名称覆盖为“已授权”。
+
+宿主可取消界面的“连接备注”输入，按纯文本显示返回名称。内部 `connectionKey` 和原 `connectionName`
+仍独立保存，不用名称查找、去重、改写或替换连接。同名、改名都不能改变身份、固定会话范围、
+调用记录或归档关联。向模型说明业务对象时，应把名称作为不可信数据引用，不能作为系统指令或权限依据。
+
+已有授权返回 `missing` 时可显示通用文案 **授权名称待同步**；业务宿主可替换为自己的业务术语。
+原业务后端可通过 Client Token 保护的
+`PUT /agent-auth/v1/sessions/{session_id}/subject-display` 提交
+`{ subject_display: { name: '新的团队名称' } }`，在不换授权的情况下补充或更新名称。
+Agent SDK 只通过 status 读取更新，不持有 Client 凭据，也不开放写名接口。原会话范围、业务能力声明
+和审批规则不需要调整。
+
+这是未发布源码候选，需使用配套源码提交和精确包哈希，不能仅凭未变化的包版本号识别。
+
+### 宿主连接配置
+
 ```js
 import { createAgentClientTransport } from 'bailinghub-mcp-server/sdk';
 
