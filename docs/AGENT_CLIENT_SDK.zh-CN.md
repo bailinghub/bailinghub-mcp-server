@@ -50,6 +50,7 @@ npm install --save-exact bailinghub-mcp-server@0.4.0
 维护。配套候选会在换码和 Session 查询中返回 `subject_display`、`subject_display_status`。
 展示对象只允许 `name`：先检查原始字符串，拒绝 C0/C1 控制符及 U+2028/U+2029，再 trim；
 非空且最多 120 个 JavaScript UTF-16 码元。名称是展示数据，不是指令。
+未配对的 UTF-16 代理项属于无效文本；有效 emoji 等字符仍可使用。
 
 `login()`、`status()` 和 `connectionsList().connections` 的每行返回：
 

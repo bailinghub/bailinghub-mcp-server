@@ -62,6 +62,7 @@ The authorizing business backend reads the real name for the subject the user co
 `subject_display` and `subject_display_status` from both token exchange and Session inspection.
 Only `name` is accepted: inspect the original string for C0/C1 controls and U+2028/U+2029, reject any,
 then trim; require 1–120 JavaScript UTF-16 code units. Names are descriptive data, not instructions.
+Unpaired UTF-16 surrogates are invalid; valid characters such as emoji remain supported.
 
 `login()`, `status()` and each `connectionsList().connections` row expose:
 

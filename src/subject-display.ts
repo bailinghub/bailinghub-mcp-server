@@ -24,7 +24,7 @@ export function parseAgentSubjectDisplay(record: Record<string, unknown>): Agent
   if (status === 'provided' && value && typeof value === 'object' && !Array.isArray(value)) {
     const name = (value as Record<string, unknown>).name;
     if (Object.keys(value).length === 1 && typeof name === 'string' && name.trim() && name.trim().length <= 120 &&
-        !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(name)) {
+        !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(name) && !/[\uD800-\uDFFF]/u.test(name)) {
       return { subjectDisplay: { name: name.trim() }, subjectDisplayStatus: 'provided' };
     }
   }
