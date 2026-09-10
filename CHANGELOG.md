@@ -1,12 +1,12 @@
 # Changelog
 
-## Unreleased — shop and inventory in one conversation
+## 0.5.0 - 2026-09-10
 
-See [scenarios and upgrade preparation](docs/NEXT_RELEASE.md) for the shop/inventory example, host responsibilities and package-release boundary.
+See [scenarios and upgrade steps](docs/RELEASE_NOTES_v0.5.0.md) for the shop/inventory example, host responsibilities and the Core 0.7.0 pairing.
 
-- Add a source candidate for conversations with separately authorized systems on one Hub.
+- Add support for conversations with separately authorized systems on one Hub.
   Each target keeps its own Client App, workspace and Agent Session; cross-Hub groups and
-  duplicate Sessions remain unsupported. The published 0.4.0 package does not include this change.
+  duplicate Sessions remain unsupported. Version 0.4.0 did not include this change.
 - Negotiate `session-client-route.v1` archive membership before any cross-system registration.
   Freeze each member's Hub/app/workspace/Session, confirm with its own credential and preserve
   original run links. Older Core installations receive no cross-system archive create or text.
@@ -23,7 +23,7 @@ See [scenarios and upgrade preparation](docs/NEXT_RELEASE.md) for the shop/inven
 
 - Read controlled system descriptions before first capability search, for selected original targets only. Descriptions create no runs and grant no permissions.
 - Preserve business-supplied authorization subject names through login/status/list and an isolated display cache. Reject malformed Unicode; names, cache failures and renames never replace credentials, original bindings or archive identities.
-- Update the transitive Hono lock entry to 4.13.7 for upstream fixes; public SDK pins and package versions remain unchanged.
+- Update the transitive Hono lock entry to 4.13.7 for upstream fixes; direct SDK dependency versions remain unchanged.
 
 ## 0.4.0 - 2026-09-08
 

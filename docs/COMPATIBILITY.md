@@ -21,7 +21,7 @@ current BailingHub contract and rejects:
 MCP protocol versions, this npm package version, BailingHub application versions, and Client
 API versions are deliberately independent.
 
-Version 0.4.0 retains Agent Auth v1, Agent Client Runtime v1 and the existing Client Token flow.
+Version 0.5.0 retains Agent Auth v1, Agent Client Runtime v1 and the existing Client Token flow.
 The Client API contract and payload semantics remain unchanged; the consumer declaration records
 the adapter's new version.
 
@@ -29,12 +29,14 @@ the adapter's new version.
 | --- | --- |
 | Standalone MCP Client Token jobs | Existing `bailing.client-api.v1` contract |
 | Browser authorization, Agent turns, governed calls and completion | Existing Agent Auth v1 and Agent Client Runtime v1, including Core 0.5.1 |
-| Host SDK visible conversation archive | Conversation audit v1: Core 0.6.0 API minimum; Core 0.6.1 recommended |
-| Unreleased cross-system archive candidate | Explicit `cross_binding_members: true` and `member_bindings: 'session-client-route.v1'` from the authenticated capabilities endpoint; not available in published SDK 0.4.0/Core 0.6.1 |
+| Host SDK visible conversation archive | Conversation audit v1 in same-binding mode: Core 0.6.0 API minimum; Core 0.7.0 for the complete 0.5.0 feature set |
+| Same-Hub cross-system archives | Core 0.7.0; negotiate explicit `cross_binding_members: true` and `member_bindings: 'session-client-route.v1'` from the authenticated capabilities endpoint |
+| System descriptions before capability search | Core 0.7.0 authorized system-info endpoint; missing support leaves existing discovery usable |
+| Optional authorization subject names | Core 0.7.0 with migration 059; older responses are explicit `unsupported`, not guessed names |
 
 The archive is an additive host SDK API. Core releases below 0.6.0 do not implement it; hosts must
 report unsupported archival while preserving the established business flow. Upgrade Core before
-enabling archiving; use Core 0.6.1 for new installations and upgrades. This SDK does not add a
+enabling archiving; use Core 0.7.0 for new installations and upgrades. This SDK does not add a
 multi-account selector or transcript capture to the standalone MCP tools; native host adapters
 own that interface and durable outbox.
 
@@ -44,7 +46,7 @@ that descriptor; they import `bailinghub-mcp-server/sdk` and use browser-authori
 credentials. These are two installation surfaces of one package, not one shared configuration
 form.
 
-The host-neutral `bailinghub-mcp-server/sdk` export is part of the 0.4 package surface. Host
+The host-neutral `bailinghub-mcp-server/sdk` export remains part of the 0.5 package surface. Host
 adapters must use an exact compatible normal dependency for reproducible installation. A host
 adapter must not depend on an optional peer, a local `file:` path, or copied SDK sources.
 
@@ -56,13 +58,14 @@ business authorization URL; Core resolves the one stable entry registered for th
 Standard v1 login still requests one workspace, and another Hub or route requires another
 connection and authorization.
 
-For combined archives, freeze one explicit ordered member set under that same binding. Every
+For legacy same-binding archives, freeze one explicit ordered member set under that binding. Every
 member confirms through its own original Agent Session, and text is readable only through Core's
 administrator audit permissions. Per-authorization runs and memory keep their existing ownership.
 There is no Agent Session transcript-read endpoint. Archive retry reuses original event IDs and
 must not resubmit business invocations.
 
-The source candidate adds an opt-in same-Hub cross-App/workspace member representation. Its
+Version 0.5.0 adds an opt-in same-Hub, same-administrator-audit-domain cross-App/workspace
+member representation. Its
 `getConversationArchiveCapabilities({ members })` is a host-only, body-free probe; 404 means
 unsupported, and malformed capability responses fail closed. The SDK never probes support by
 sending cross-system text or falling back to a v1 registration. New Core accepts old v1 clients;

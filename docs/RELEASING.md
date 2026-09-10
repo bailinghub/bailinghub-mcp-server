@@ -2,7 +2,7 @@
 
 ## Writing release notes
 
-For each release, lead with a common business scenario and explain the previous limitation, new behavior, affected roles, exact upgrade steps, observable checks and limits. Prefer shop/product/inventory examples; state which business APIs and mappings must already exist. Distinguish newly added features from existing behavior and fixes. Keep English and Chinese facts aligned. Use [the next-release notes](NEXT_RELEASE.md) as the current example, then freeze versions and package instructions only when the artifacts are ready.
+For each release, lead with a common business scenario and explain the previous limitation, new behavior, affected roles, exact upgrade steps, observable checks and limits. Prefer shop/product/inventory examples; state which business APIs and mappings must already exist. Distinguish newly added features from existing behavior and fixes. Keep English and Chinese facts aligned. Use [the 0.5.0 release notes](RELEASE_NOTES_v0.5.0.md) as the current example, then freeze versions and package instructions only when the artifacts are ready.
 
 ## Pre-release Gate
 
@@ -12,8 +12,9 @@ optional peer or local path.
 
 1. Publish through the tag-triggered CI workflow from a fresh ordinary Git clone of the
    immutable release commit. Do not publish from a linked Git worktree.
-2. Confirm the matching BailingHub Core 0.6.1 release exists. SDK 0.4.0's archive API minimum
-   remains Core 0.6.0; Core 0.6.1 is the recommended user installation. Existing Agent Auth v1,
+2. Confirm the matching BailingHub Core 0.7.0 release exists before publishing SDK 0.5.0.
+   Existing same-binding archives retain the Core 0.6.0 API minimum; the new cross-system,
+   system-description and authorization-name features require Core 0.7.0 support. Existing Agent Auth v1,
    Agent Client Runtime v1 and Client API flows stay compatible.
 3. Set one stable version in `package.json`, `package-lock.json`, `src/version.ts`, `server.json`,
    `compatibility/client-api.json`, changelog, Git tag, and release notes; remove private-candidate

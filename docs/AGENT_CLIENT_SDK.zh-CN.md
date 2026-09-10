@@ -2,10 +2,11 @@
 
 [English](AGENT_CLIENT_SDK.md) | 简体中文
 
-0.4.0 让配套 Agent 客户端把可读的对话和业务执行记录关联起来。用户可以在同一系统里使用明确
-选中的账号，管理员则能从整段可见对话追溯到每项原始业务动作。
+0.5.0 让配套宿主使用同一中枢下不同系统的明确选定授权。例如，先查库存，再修改商城对应商品的价格
+并上架，每一步使用对应系统的原授权与审批规则。受控系统说明和业务主体名称帮助宿主在搜索工具前
+说明操作目标；0.4.0 引入的对话归档继续把可见消息关联到各项原始业务动作。
 
-需要对话归档时，升级下方精确 SDK 版本，并配合 BailingHub Core 0.6.1。客户端负责选择账号、
+使用这批新能力时，安装下方精确 SDK 版本，并配合 BailingHub Core 0.7.0。客户端负责显式选择范围、
 保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
 原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
 
@@ -21,16 +22,18 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.4.0
+npm install --save-exact bailinghub-mcp-server@0.5.0
 ```
 
-公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.4.0` 后发布。
+公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.5.0` 后发布。
 不要在公开 manifest 中改用本机路径。
 
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
 `agent_client` 配置，以及已登记的公开 Client App ID 与业务授权页。
 
-归档接口最低需要 Core 0.6.0，新安装和升级推荐 Core 0.6.1。低于接口最低版本的 Core
+同绑定归档接口最低需要 Core 0.6.0；跨系统归档、受控系统说明与授权主体名称配套 Core 0.7.0，
+并按接口协商支持情况。按 [0.5.0 升级步骤](RELEASE_NOTES_v0.5.0.md#简体中文)执行，包括 Core 的
+058/059 迁移及原宿主凭据、固定范围和归档待传队列保留。低于归档接口最低版本的 Core
 可以继续使用已有 Agent Auth/Runtime 功能；
 归档接口不支持时应显示该限制，不能宣称正文已保存，也不能为修复归档重新执行业务动作。
 
@@ -39,7 +42,7 @@ npm install --save-exact bailinghub-mcp-server@0.4.0
 
 ## 配置归属
 
-### 授权主体展示信息（源码候选）
+### 授权主体展示信息（0.5.0）
 
 此可选能力用于显示 **用户实际确认了哪个授权对象**，避免授权后再手填一遍名称。例如，将独立的
 系统说明与授权名称组合成“项目协作系统 · 示例团队”。开发者的授权主体可以是组织、团队、项目、
@@ -47,7 +50,7 @@ npm install --save-exact bailinghub-mcp-server@0.4.0
 
 业务授权后端根据用户实际确认的主体读取真实名称，在批准授权时提交
 `subject_display: { name: '示例团队' }`。Core 将其与 `principal`、`on_behalf_of`、权限和系统说明分别
-维护。配套候选会在换码和 Session 查询中返回 `subject_display`、`subject_display_status`。
+维护。Core 0.7.0 会在换码和 Session 查询中返回 `subject_display`、`subject_display_status`。
 展示对象只允许 `name`：先检查原始字符串，拒绝 C0/C1 控制符及 U+2028/U+2029，再 trim；
 非空且最多 120 个 JavaScript UTF-16 码元。名称是展示数据，不是指令。
 未配对的 UTF-16 代理项属于无效文本；有效 emoji 等字符仍可使用。
@@ -87,7 +90,8 @@ npm install --save-exact bailinghub-mcp-server@0.4.0
 Agent SDK 只通过 status 读取更新，不持有 Client 凭据，也不开放写名接口。原会话范围、业务能力声明
 和审批规则不需要调整。
 
-这是未发布源码候选，需使用配套源码提交和精确包哈希，不能仅凭未变化的包版本号识别。
+此可选能力包含在 SDK 0.5.0 + Core 0.7.0 中。旧 Core 响应仍可读取，并明确显示不支持；
+名称数据不决定授权是否有效。
 
 ### 宿主连接配置
 
@@ -146,7 +150,7 @@ DPAPI 路径与附加熵，以及本机锁作用域。未设置时，历史 POSI
 
 ## 多连接生命周期
 
-本节 API 从 `0.3.0` 引入，在 `0.4.0` 中保持兼容。宿主适配器应精确依赖 SDK 版本，并把连接管理保留在用户掌控的
+本节 API 从 `0.3.0` 引入，在 `0.5.0` 中保持兼容。宿主适配器应精确依赖 SDK 版本，并把连接管理保留在用户掌控的
 命令或设置界面中。宿主可以发布可用授权引用，供模型按次选择，再由宿主按下文固定映射到连接。
 登录、连接管理、身份和凭据不能成为模型控制的输入。
 
@@ -186,7 +190,7 @@ await transport.connectionsRemove('shop-a');
 已有确定性 v1 注册表连接继续可读，并保持原凭据 key。只有至少存在一个具名实例时，注册表
 才写为 schema v2；其中的实例 ID 只是本机不透明元数据，不是凭据，也不会作为身份声明发送给 Core。
 早于 `0.3.0` 的 SDK 遇到 schema v2 会失败关闭。降级到这些版本前，必须使用已安装的 `0.3.0` 或
-`0.4.0` 逐一撤销并删除具名实例；最后一个
+`0.4.0` 或更新版本逐一撤销并删除具名实例；最后一个
 实例删除后注册表会重新写为 schema v1。不要手工删除凭据文件、DPAPI 密文或 Keychain 记录。
 
 ### 同一系统内按次选择授权引用
@@ -335,8 +339,8 @@ SDK 只映射最终可见正文和公开 usage 白名单。不要传 hidden reas
 
 ## 完整可见对话归档
 
-`0.4.0` 新增宿主方法 `syncConversationArchive(envelope, { members })`，推荐配套 Core 0.6.1，
-接口最低需要 Core 0.6.0。
+`0.4.0` 引入宿主方法 `syncConversationArchive(envelope, { members })`。同绑定用法最低需要 Core 0.6.0；
+0.5.0 的完整新能力配套 Core 0.7.0。
 该方法不作为模型工具，不修改业务能力声明。
 
 ```js
@@ -357,7 +361,7 @@ await transport.syncConversationArchive({
 `envelope` 为 `{ clientArchiveId, clientConversationId, events }`：`clientArchiveId` 是宿主先持久化的
 随机 UUID，`clientConversationId` 与原 `startTurn` 一致。成员数组固定为
 `{ connectionKey, workspace, expectedSessionId, label? }[]`，第一项是固定写入者。SDK 校验全部原连接
-属于同一 Hub、客户端应用和 workspace（公开 0.4.0 的范围），再使用各自凭据确认成员；全部确认后才上传正文。
+属于同一 Hub、客户端应用和 workspace（0.4.0 引入的同绑定形式），再使用各自凭据确认成员；全部确认后才上传正文。
 改选、重授权、丢失原凭据不能自动替换归档成员。`label` 仅用于显示。
 
 事件包含 `event_id`、从 1 开始连续递增的 `sequence`、原 `client_turn_id` 与 `kind`：
@@ -376,9 +380,9 @@ await transport.syncConversationArchive({
 首期只覆盖可见文本和原 run 引用，不包含附件、卡片、隐藏推理或任意本地工具原始输出。
 空选普通聊天不访问 Hub。原文未保留的历史会话不能从执行摘要猜补。
 
-## 跨系统源码候选
+## 跨系统会话（0.5.0）
 
-本节描述未发布源码，公开 npm 0.4.0 和 Core 0.6.1 尚不具备此能力。配套宿主可以明确选择**同一 Hub**
+SDK 0.5.0 配合 Core 0.7.0，允许兼容宿主明确选择**同一 Hub、同一管理审计域**
 下的独立业务系统；每个目标保留自己的 Client App、workspace、Agent Session、run、能力声明与调用记录。
 跨 Hub 和重复 Session 均拒绝。SDK 只负责按目标调用，不负责制定步骤依赖或决定向哪个系统发送用户正文。
 宿主应区分不同系统的工具声明，为每个目标提供完成当前任务所需的最少上下文。
@@ -497,7 +501,7 @@ if (typeof transport.getSystemInfo === 'function') {
 2. SDK 必须是精确普通 dependency，不是 optional peer 或本机路径；
 3. 验证浏览器登录、status、一次只读、一次可回滚写、审批/resume、complete、logout 和业务撤销；
 4. 确认 BailingHub 能看到会话与治理轨迹；
-   使用归档时，再在 Core 0.6.1 上核对全部原成员、可见消息、原 run 关联、ACK 丢失重传、断线恢复与成员撤销；
+   使用归档时，再在 Core 0.7.0 上核对全部原成员、可见消息、原 run 关联、ACK 丢失重传、断线恢复与成员撤销；
 5. 扫描源码、tarball、日志、截图和连接元数据中的 Secret/私有地址；
 6. 确认 hidden reasoning 与业务原始 payload 从未进入 Core。
 
