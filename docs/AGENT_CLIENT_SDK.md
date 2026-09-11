@@ -348,8 +348,42 @@ const found = await transport.searchCapabilities({
 });
 ```
 
-The host must replace the previous dynamic business-tool set rather than append schemas forever.
-Only the current run/session/workspace authorization set can be searched.
+The standalone MCP adapter replaces its previous dynamic business-tool set. A host sharing a
+budget across selected shop and inventory authorizations recomputes its session set from those
+selected targets; it must not accumulate schemas without a bound. Already loaded, valid tools
+can be called directly. Only the current run/session/workspace authorization set can be searched.
+
+### Discovery counts and tool-set state (candidate)
+
+The additive `discovery` object is optional on search and turn responses. An older Core response
+leaves it absent in the SDK; the MCP model result uses `discovery: null` to mean unknown.
+Contradictory or invalid optional metadata also becomes unknown while valid tools remain usable.
+Never substitute zero or `tools.length` for an unavailable total.
+
+| Field | Meaning |
+| --- | --- |
+| `mode: 'ranked_candidates'` | Bounded relevant candidates, not a complete match listing |
+| `scope: 'current_authorization'` | Statistics cover only this selected authorized target |
+| `returned_count` | Number of capability definitions returned by this response |
+| `authorized_total` | Available catalog count within this authorization; not query matches |
+| `matched_total: null`, `matched_total_exact: false` | Exact query-match total is unknown |
+| `limit` | This request's return limit, at most 12 |
+| `truncated`, `has_more` | The authorized catalog has entries not returned; these do not promise another page |
+| `truncation_scope: 'authorized_catalog'` | Truncation compares against the authorized catalog |
+| `pagination: 'unsupported'` | No cursor/page traversal contract |
+
+MCP results also include `target.workspace`, the current `active_tools`, and
+`toolset: { update: 'replace', scope: 'mcp_session', active_count, limit: 12, generation,
+omitted_tool_count: 0, conflicting_tool_count: 0 }`. `active_count` counts registered business
+tools on this MCP server, excluding meta tools. `generation` advances when the local set is
+applied; it is distinct from Core's capability revision. These are not another host's shared
+session counts. Hosts such as DSH own their shared-budget counts and target attribution.
+
+The adapter records only names actually registered and then unloaded in this MCP session.
+Calling such a name returns `tool_not_loaded` before any SDK business invocation. Unrecognized
+names outside that history retain the MCP dispatcher behavior. A client host that rejects a tool
+before sending MCP must classify the failure at its own dispatcher; changing an SDK callback
+cannot intercept an earlier rejection.
 
 ## Governed invocation and recovery
 
@@ -367,14 +401,49 @@ The SDK sends the call to BailingHub, not directly to the business endpoint. Cor
 session, route, tool, ACC declaration, approval state, limits, and business authority. Do not let
 the model supply a Hub URL, credential, approval decision, acting subject, or arbitrary route.
 
-If the result is awaiting approval, in progress, retryable before dispatch, or accepted with an
-unknown outcome, preserve the original `invocation_id` and resume it:
+If the result is awaiting approval, in progress, or accepted with an unknown outcome, preserve
+the original `invocation_id` and resume using its original connection and authorization:
 
 ```js
 const resumed = await transport.resume(result.invocation_id);
 ```
 
-Never create a replacement write invocation merely because polling timed out.
+Never create a replacement write invocation merely because polling timed out. An explicit
+pre-dispatch `capability_changed` rejection calls for rediscovery, not resuming a nonexistent
+business dispatch. An HTTP-success `reconciliation_required` result retains that state and
+`auto_retry_allowed: false`, and adds feedback directing the host to inspect the original call.
+
+### Structured failure feedback (candidate)
+
+Relevant SDK errors expose `error.feedback`; `describeAgentFailure(error, context)` is exported
+from both SDK entry points for adapters with authoritative execution context. MCP emits the same
+sanitized `feedback` in JSON text and `structuredContent` so either rendering path is useful.
+The shape is `bailing.agent-feedback.v1` with `category`, allowlisted `code`, `origin`, `operation`,
+`dispatch`, `retryable`, `next_action`, a controlled `message`, and optional original
+`invocation_id` and existing `disposition`. No upstream error body or arbitrary error text is copied.
+
+| Category / condition | Next action |
+| --- | --- |
+| `tool_not_loaded`, proven pre-dispatch `capability_changed` | `rediscover` for the original target |
+| SDK-observed network failure or timeout during discovery | `retry_discovery` |
+| Network failure during authorization/scope verification | `restore_scope` for the original scope and identity |
+| Original binding changed / authorization refused | `restore_scope` / `reauthorize`; never switch automatically |
+| Explicit incompatible response schema | `check_compatibility` |
+| Attempted or uncertain invocation | `resume_original` with its exact original ID |
+| `reconciliation_required`, invocation conflict, blocked original recovery | `inspect_original` |
+| Unclassified failure, including an unexplained 404/503 or unavailable route/dependency | `none`; do not infer unsupported capability or temporary network failure |
+
+`rediscover`, `retry_discovery`, `restore_scope`, and `resume_original` are retryable verification/recovery actions.
+`retryable` applies only to `next_action`. It never permits a new `invoke`, even when a legacy
+transport error's own `retryable` flag is true. A missing schema is an invalid response; an ordinary
+404 is not proof of an unsupported version. Token-refresh network failures remain distinct from
+expired/revoked authorization; an unexplained authentication-service 503 does not become a 401.
+
+Only the layer that knows an operation was not dispatched may state `dispatch: 'not_dispatched'`.
+Unknown invocation exceptions keep `unknown`/`attempted` and the original ID. Discovery retry and
+business recovery remain separate. Preserve the frozen connection key, workspace, expected binding,
+run and invocation association during recovery; unavailable original authorization never permits
+a default connection, a smaller selected subset, or a replacement business operation.
 
 ## Complete the visible run
 

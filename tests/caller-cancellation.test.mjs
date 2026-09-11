@@ -81,6 +81,7 @@ function fixture({ expired = false } = {}) {
 function cancellationBeforeDispatch(error) {
   assert.notEqual(error?.disposition, 'accepted_unknown', 'A request that was never dispatched has a definite cancellation outcome.');
   assert.ok(error?.name === 'AbortError' || error?.disposition === 'definitive_rejection');
+  assert.equal(error.feedback.dispatch, 'not_dispatched');
   return true;
 }
 
@@ -149,6 +150,9 @@ for (const name of ['invoke', 'resume']) {
     assert.equal(forwardedCancellation, true, 'The caller cancellation must reach the actual in-flight fetch.');
     assert.equal(error?.disposition, 'accepted_unknown');
     assert.equal(error?.invocationId, INVOCATION);
+    assert.equal(error.feedback.category, 'invocation_outcome_unknown');
+    assert.equal(error.feedback.invocation_id, INVOCATION);
+    assert.equal(error.feedback.next_action, 'resume_original');
     assert.equal(f.calls.length, 1, 'Cancellation must not automatically invoke, resume or refresh again.');
   });
 }

@@ -970,7 +970,8 @@ test('factory removes remotely revoked credentials and converges status to logge
 
   await assert.rejects(
     revoked.workspaces({ connectionName: 'development' }),
-    /login could not be refreshed/,
+    (error) => error.statusCode === 401 && error.feedback.category === 'authorization_unavailable'
+      && error.feedback.next_action === 'reauthorize',
   );
   assert.equal(await connectionStore.credentialStore(profile.connectionKey).load(), undefined);
   assert.equal((await revoked.status({ connectionName: 'development' })).state, 'logged_out');

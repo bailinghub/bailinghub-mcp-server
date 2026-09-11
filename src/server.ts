@@ -1,3 +1,4 @@
+import { describeAgentFailure, type AgentFailureContext } from './agent-feedback.js';
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
@@ -80,6 +81,8 @@ type AgentToolProjectionState = {
   profileEtag: string | undefined;
   catalogSignature: string;
   tools: Map<string, PreparedAgentTool>;
+  retiredToolNames: Set<string>;
+  generation: number;
   handles: Map<string, RegisteredTool>;
   refreshPromise: Promise<boolean> | undefined;
   timer: NodeJS.Timeout | undefined;
@@ -108,6 +111,7 @@ export type BailingHubMcpInitializationOptions = {
 
 const SERVER_CONTEXTS = new WeakMap<McpServer, ServerContext>();
 const INITIALIZED_AGENT_SERVERS = new WeakSet<McpServer>();
+const AGENT_DISPATCH_STATES = new WeakMap<McpServer, AgentToolProjectionState>();
 
 function success(value: Record<string, unknown>) {
   return {
@@ -125,60 +129,46 @@ function failure(error: unknown) {
   };
 }
 
-function failureText(message: string) {
-  return {
-    isError: true,
-    content: [{ type: 'text' as const, text: message }],
-  };
-}
-
-function safeClientError(error: unknown): string {
-  return error instanceof BailingHubClientError
-    ? error.message
-    : 'The BailingHub operation failed before a confirmed outcome was returned.';
+function agentFailure(error: unknown, context: AgentFailureContext, extra: Record<string, unknown> = {}) {
+  const existing = error instanceof BailingHubClientError ? error.feedback : undefined;
+  const feedback = describeAgentFailure(error, { ...context,
+    origin: existing?.origin ?? context.origin ?? 'sdk',
+    dispatch: existing?.dispatch ?? context.dispatch ?? 'unknown' });
+  const value = { feedback, ...extra };
+  return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(value) }], structuredContent: value };
 }
 
 function invocationFailure(error: unknown, invocationId: string) {
-  if (
-    error instanceof BailingHubClientError &&
-    error.disposition === 'accepted_unknown'
-  ) {
-    return failureText(
-      `${safeClientError(error)} invocation_id=${invocationId}. The Hub may have accepted this ` +
-        'exact invocation. Do not call the business tool again. Call ' +
-        'resume_governed_tool_invocation with this invocation_id to recover its governed outcome.',
-    );
-  }
-  const code =
-    error instanceof BailingHubClientError && error.publicCode
-      ? ` code=${error.publicCode}.`
-      : '';
-  return failureText(
-    `${safeClientError(error)}${code} invocation_id=${invocationId}. The Hub explicitly rejected ` +
-      'this invocation before a confirmed dispatch. Do not call resume for this invocation. ' +
-      'Re-evaluate the request and the currently listed tools.',
-  );
+  return agentFailure(error, { operation: 'invoke', dispatch: 'unknown', invocationId });
 }
 
 function resumeFailure(error: unknown, invocationId: string) {
-  if (
-    error instanceof BailingHubClientError &&
-    error.disposition === 'accepted_unknown'
-  ) {
-    return failureText(
-      `${safeClientError(error)} invocation_id=${invocationId}. Retrying ` +
-        'resume_governed_tool_invocation with this exact invocation_id is safe and does not ' +
-        'create a replacement business invocation.',
-    );
-  }
-  const code =
-    error instanceof BailingHubClientError && error.publicCode
-      ? ` code=${error.publicCode}.`
-      : '';
-  return failureText(
-    `${safeClientError(error)}${code} invocation_id=${invocationId}. The Hub explicitly rejected ` +
-      'this recovery request. Do not create a replacement business invocation.',
-  );
+  return agentFailure(error, { operation: 'resume', dispatch: 'unknown', invocationId });
+}
+
+function localAgentFailure(code: 'tool_not_loaded' | 'invalid_request', operation: AgentFailureContext['operation']) {
+  return agentFailure(new BailingHubClientError('The local Agent request was not dispatched.',
+    undefined, false, code), { operation, origin: 'mcp', dispatch: 'not_dispatched' });
+}
+
+function toolsetState(state: AgentToolProjectionState) {
+  return { update: 'replace' as const, scope: 'mcp_session' as const, active_count: state.tools.size,
+    limit: 12, generation: state.generation, omitted_tool_count: 0, conflicting_tool_count: 0 };
+}
+
+/** Wrap the public request-registration seam before McpServer installs its tools/call handler. */
+function installAgentDispatchFeedback(server: McpServer): void {
+  const register = server.server.setRequestHandler.bind(server.server);
+  server.server.setRequestHandler = (schema, handler) => register(schema, async (request, extra) => {
+    const call = request as unknown as { method: string; params?: { name?: unknown } };
+    const state = AGENT_DISPATCH_STATES.get(server);
+    if (call.method === 'tools/call' && typeof call.params?.name === 'string'
+      && state?.retiredToolNames.has(call.params.name) && !state.tools.has(call.params.name)) {
+      return agentFailure(new BailingHubClientError('The business tool was unloaded.', undefined, false, 'tool_not_loaded'),
+        { operation: 'tool_dispatch', origin: 'mcp', dispatch: 'not_dispatched' }, { toolset: toolsetState(state) });
+    }
+    return await handler(request, extra);
+  });
 }
 
 function normalizeJsonSchemaForMcp(value: unknown, depth = 0): unknown {
@@ -271,7 +261,7 @@ export function createAgentTurnMessageIds(
 function dynamicToolDescription(tool: AgentToolCatalogEntry): string {
   // Shared governance and recovery rules live once in server instructions. Repeating them on
   // every active tool made large catalogs dominate the model context.
-  return tool.description;
+  return `${tool.description}\nUse this tool directly while it is currently listed; after replacement, rediscover capabilities.`;
 }
 
 export function createAgentToolInvocationId(
@@ -370,21 +360,11 @@ function prepareAgentCatalog(
   };
 }
 
-function capabilityChangedFailure(
-  invocationId: string,
-  refreshed: boolean,
-  refreshFailed: boolean,
-) {
-  const catalogState = refreshed
-    ? 'The local MCP tool catalog was refreshed.'
-    : refreshFailed
-      ? 'The local MCP tool catalog could not be refreshed yet.'
-      : 'The local MCP catalog was checked but the Hub returned no newer revision.';
-  return failureText(
-    `BailingHub rejected invocation_id=${invocationId} before dispatch because the capability ` +
-      `catalog changed. ${catalogState} Do not resume or repeat this invocation. Re-list the MCP ` +
-      'tools and let the local Agent choose again from the current catalog.',
-  );
+function capabilityChangedFailure(invocationId: string, refreshed: boolean, refreshFailed: boolean) {
+  return agentFailure(new BailingHubClientError('The capability declaration changed.', 409, false,
+    'capability_changed', 'refresh_required', invocationId),
+  { operation: 'invoke', origin: 'core', dispatch: 'not_dispatched', invocationId },
+  { catalog_refreshed: refreshed, catalog_refresh_failed: refreshFailed });
 }
 
 async function invokeActiveTool(
@@ -394,9 +374,7 @@ async function invokeActiveTool(
   requestId: unknown,
 ) {
   if (!state.runId) {
-    return failureText(
-      'No Agent run is active. Call start_business_turn before invoking a business capability.',
-    );
+    return localAgentFailure('invalid_request', 'invoke');
   }
   let invocationId: string;
   try {
@@ -406,9 +384,7 @@ async function invokeActiveTool(
       requestId,
     );
   } catch {
-    return failureText(
-      'The MCP host supplied an invalid request id. No BailingHub invocation was created.',
-    );
+    return localAgentFailure('invalid_request', 'invoke');
   }
   try {
     return success(
@@ -423,7 +399,9 @@ async function invokeActiveTool(
   } catch (error) {
     if (
       error instanceof BailingHubClientError &&
-      error.publicCode === 'capability_changed'
+      error.publicCode === 'capability_changed' &&
+      error.disposition !== 'accepted_unknown' &&
+      (error.feedback?.dispatch === 'not_dispatched' || (!error.feedback && error.disposition === 'refresh_required'))
     ) {
       let refreshed = false;
       let refreshFailed = false;
@@ -457,18 +435,10 @@ function registerProjectedTool(
       },
     },
     async (argumentsValue, extra) => {
-      try {
-        return await invokeActiveTool(
-          state,
-          tool,
-          asToolArguments(argumentsValue),
-          extra.requestId,
-        );
-      } catch {
-        return failureText(
-          'The MCP host supplied invalid business-tool arguments. No BailingHub invocation was created.',
-        );
-      }
+      let argumentsRecord: Record<string, unknown>;
+      try { argumentsRecord = asToolArguments(argumentsValue); }
+      catch { return localAgentFailure('invalid_request', 'invoke'); }
+      return await invokeActiveTool(state, tool, argumentsRecord, extra.requestId);
     },
   );
 }
@@ -484,6 +454,7 @@ function applyAgentCatalog(
     if (!replacement || replacement.signature !== current.signature) {
       state.handles.get(name)?.remove();
       state.handles.delete(name);
+      state.retiredToolNames.add(name);
       replacedNames.add(name);
     }
   }
@@ -491,11 +462,13 @@ function applyAgentCatalog(
   state.revision = next.revision;
   state.catalogSignature = next.signature;
   for (const [name, prepared] of next.tools) {
+    state.retiredToolNames.delete(name);
     if (!state.handles.has(name) || replacedNames.has(name)) {
       state.handles.set(name, registerProjectedTool(state, prepared));
     }
   }
   state.tools = next.tools;
+  state.generation += 1;
   if (notify) state.server.sendToolListChanged();
 }
 
@@ -552,8 +525,9 @@ export function createBailingHubMcpServer(
           ? 'This Agent Session server lets the local Agent plan and sequence work while BailingHub ' +
             'provides a route-authorized runtime profile, knowledge context, a replaceable active ' +
             'tool set, identity binding, approval, audit, and dispatch governance. Start each user ' +
-            'turn with start_business_turn; use search_business_capabilities when the active tools ' +
-            'are insufficient. Never treat tool arguments as identity, approval, or final business ' +
+            'turn with start_business_turn. Currently listed, valid tools may be called directly. Use ' +
+            'search_business_capabilities when tools are insufficient, unloaded, or the target is unclear. ' +
+            'Search returns bounded ranked candidates, not the complete capability catalog or pages. Never treat tool arguments as identity, approval, or final business ' +
             'authorization. After an uncertain invocation outcome, never repeat the business tool; ' +
             'recover only with resume_governed_tool_invocation and the exact invocation_id.'
           : 'This Client Token server submits untrusted task text to one operator-configured ' +
@@ -565,7 +539,10 @@ export function createBailingHubMcpServer(
 
   SERVER_CONTEXTS.set(server, { client });
 
-  if (config.mode === 'agent') return server;
+  if (config.mode === 'agent') {
+    installAgentDispatchFeedback(server);
+    return server;
+  }
 
   server.registerTool(
     'submit_governed_job',
@@ -713,6 +690,8 @@ export async function initializeBailingHubMcpServer(
     profileEtag: profile.etag,
     catalogSignature: initial.signature,
     tools: new Map(),
+    retiredToolNames: new Set(),
+    generation: 0,
     handles: new Map(),
     refreshPromise: undefined,
     timer: undefined,
@@ -721,6 +700,8 @@ export async function initializeBailingHubMcpServer(
     closed: false,
     lastCompletion: undefined,
   };
+
+  AGENT_DISPATCH_STATES.set(server, state);
 
   server.registerTool(
     'start_business_turn',
@@ -755,7 +736,7 @@ export async function initializeBailingHubMcpServer(
           { user_input, page_context: page_context ?? null, renderers: renderers ?? [] },
         ));
       } catch {
-        return failureText('The MCP host supplied an invalid request id. No Agent turn was created.');
+        return localAgentFailure('invalid_request', 'scope');
       }
       const input: StartAgentTurnInput = {
         clientConversationId: state.clientConversationId,
@@ -781,6 +762,9 @@ export async function initializeBailingHubMcpServer(
           profile_revision: turn.profile_revision,
           capability_revision: turn.capability_revision,
           context: turn.context,
+          discovery: turn.discovery ?? null,
+          target: { workspace: state.config.route },
+          toolset: toolsetState(state),
           active_tools: turn.active_tools.map((tool) => ({
             name: tool.name,
             scope: tool.scope,
@@ -789,7 +773,7 @@ export async function initializeBailingHubMcpServer(
           })),
         });
       } catch (error) {
-        return failure(error);
+        return agentFailure(error, { operation: 'scope' });
       }
     },
   );
@@ -799,8 +783,9 @@ export async function initializeBailingHubMcpServer(
     {
       title: 'Search Business Capabilities',
       description:
-        'Search within the authorized workspace and replace the current active tool set with up ' +
-        'to 12 capabilities relevant to the query or current turn. This grants no new authority.',
+        'Search this authorized target for up to 12 ranked capabilities and replace its current MCP ' +
+        'business-tool set. Use already loaded, valid tools directly. This is not a complete listing ' +
+        'or paginated search; missing discovery metadata means counts are unknown. This grants no new authority.',
       inputSchema: {
         query: z.string().max(2_000).optional(),
         limit: z.number().int().min(1).max(12).default(12),
@@ -815,9 +800,7 @@ export async function initializeBailingHubMcpServer(
     async ({ query, limit }) => {
       const hasQuery = typeof query === 'string' && Boolean(query.trim());
       if (!hasQuery && !state.runId) {
-        return failureText(
-          'A non-empty query or an active Agent run is required to search business capabilities.',
-        );
+        return localAgentFailure('invalid_request', 'search');
       }
       try {
         const result: AgentCapabilitySearchResult = await state.client.searchCapabilities({
@@ -833,6 +816,9 @@ export async function initializeBailingHubMcpServer(
         return success({
           schema: result.schema,
           capability_revision: result.capability_revision,
+          discovery: result.discovery ?? null,
+          target: { workspace: state.config.route },
+          toolset: toolsetState(state),
           active_tools: result.tools.map((tool) => ({
             name: tool.name,
             scope: tool.scope,
@@ -841,7 +827,7 @@ export async function initializeBailingHubMcpServer(
           })),
         });
       } catch (error) {
-        return failure(error);
+        return agentFailure(error, { operation: 'search' });
       }
     },
   );
@@ -867,9 +853,7 @@ export async function initializeBailingHubMcpServer(
     async ({ tool, arguments: argumentsValue }, extra) => {
       const prepared = state.tools.get(tool);
       if (!prepared) {
-        return failureText(
-          'The requested capability is not in the current active set. Start the turn or search capabilities first.',
-        );
+        return localAgentFailure('tool_not_loaded', 'tool_dispatch');
       }
       return await invokeActiveTool(state, prepared.tool, argumentsValue, extra.requestId);
     },
@@ -882,7 +866,8 @@ export async function initializeBailingHubMcpServer(
       description:
         'Safely recover the exact governed business-tool invocation after an uncertain HTTP ' +
         'outcome, pending approval, or in-progress response. Use only the exact invocation_id ' +
-        'returned earlier. This never creates a replacement business invocation.',
+        'returned earlier and its original authorization. Never switch authorization or repeat the business ' +
+        'operation to recover. This never creates a replacement business invocation.',
       inputSchema: {
         invocation_id: z
           .string()
@@ -940,7 +925,7 @@ export async function initializeBailingHubMcpServer(
       if (!state.runId) {
         return state.lastCompletion?.inputSignature === inputSignature
           ? success(state.lastCompletion.result)
-          : failureText('No Agent run is active.');
+          : localAgentFailure('invalid_request', 'scope');
       }
       const runId = state.runId;
       const input: CompleteAgentRunInput = {
@@ -958,7 +943,7 @@ export async function initializeBailingHubMcpServer(
         applyAgentCatalog(state, prepareAgentCatalog(state.revision, []), server.isConnected());
         return success(completed);
       } catch (error) {
-        return failure(error);
+        return agentFailure(error, { operation: 'scope' });
       }
     },
   );

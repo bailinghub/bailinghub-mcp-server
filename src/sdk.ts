@@ -1,3 +1,5 @@
+import { attachAgentFailure, type AgentFailureOperation } from './agent-feedback.js';
+export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
 import { createHash } from 'node:crypto';
 import {
   auditEvents, auditId, auditUuid, CONVERSATION_BATCH_BYTES,
@@ -45,6 +47,7 @@ export {
   BailingHubAgentClient,
   AGENT_CLIENT_V1_PATHS,
   type AgentCapabilitySearchResult,
+  type AgentCapabilityDiscovery,
   type AgentClientConnection,
   type AgentRunCompletion,
   type AgentRuntimeProfile,
@@ -154,7 +157,8 @@ function callerSignal(value: unknown): AbortSignal | undefined {
 
 function assertRequestActive(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new BailingHubClientError('The Agent request was cancelled before dispatch.',
-    499, false, 'agent_request_cancelled', 'definitive_rejection');
+    499, false, 'agent_request_cancelled', 'definitive_rejection', undefined,
+    { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' });
 }
 
 export type AgentClientHostDependencies = {
@@ -737,6 +741,7 @@ export function createAgentClientTransport(
     assertRequestActive(signal);
     const bindingError = () => new BailingHubClientError(
       'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed',
+      'definitive_rejection', undefined, { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' },
     );
     const matches = (value: AgentConnectionProfile | null | undefined) => value &&
       value.baseUrl === expected.hubUrl && value.clientAppId === expected.clientAppId && value.workspace === expected.workspace;
@@ -854,7 +859,7 @@ export function createAgentClientTransport(
     }, { fetchImpl: requestFetch, allowInsecureHttp: profile.allowInsecureHttp, ...(signal ? { signal } : {}) });
   }
 
-  return {
+  const transport: AgentClientHostTransport = {
     async getSystemInfo(optionsValue) {
       const options = hostRecord(optionsValue, 'system information options');
       const connectionKey = hostText(options.connectionKey, 'connectionKey', 37);
@@ -1390,4 +1395,29 @@ export function createAgentClientTransport(
       return (await clientFor(workspace, options)).completeRun(runIdValue, dto);
     },
   };
+  const operations: Partial<Record<keyof AgentClientHostTransport, AgentFailureOperation>> = {
+    startTurn: 'scope', searchCapabilities: 'search', invoke: 'invoke', resume: 'resume',
+    completeRun: 'scope', getSystemInfo: 'scope', status: 'scope', workspaces: 'scope', login: 'authorize',
+  };
+  for (const [name, operation] of Object.entries(operations)) {
+    const method = transport[name as keyof AgentClientHostTransport] as (...args: unknown[]) => Promise<unknown>;
+    Object.defineProperty(transport, name, { enumerable: true, configurable: true, writable: true, value: async (...args: unknown[]) => {
+      try { return await method(...args); }
+      catch (error) {
+        const known = error instanceof BailingHubClientError ? error : undefined;
+        const invocationValue = operation === 'resume' ? args[0]
+          : operation === 'invoke' && args[0] && typeof args[0] === 'object'
+            ? ((args[0] as Record<string, unknown>).invocation_id ?? (args[0] as Record<string, unknown>).invocationId
+              ?? (args[0] as Record<string, unknown>).client_invocation_id) : undefined;
+        const invocationId = known?.invocationId ?? (typeof invocationValue === 'string' && /^[a-f0-9]{64}$/.test(invocationValue)
+          ? invocationValue : undefined);
+        const preflight = known?.publicCode === 'agent_binding_changed' || known?.publicCode === 'agent_request_cancelled'
+          || error instanceof TypeError;
+        throw attachAgentFailure(error, { operation, origin: known?.feedback?.origin ?? 'sdk',
+          dispatch: known?.feedback?.dispatch ?? (preflight || (operation !== 'invoke' && operation !== 'resume') ? 'not_dispatched' : 'unknown'),
+          ...(invocationId ? { invocationId } : {}) });
+      }
+    } });
+  }
+  return transport;
 }

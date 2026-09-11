@@ -281,12 +281,12 @@ test('legacy calls without expectedBinding retain explicit-key selection', async
   assert.ok(f.calls.every((entry) => entry.authorization === `Bearer ${f.credentialsA.access_token}`));
 });
 
-for (const expired of [false, true]) {
-  test(`the final ${expired ? 'refresh' : 'business'} dispatch guard rejects Session replacement during registry IO`, async (t) => {
+for (const expired of [false, true]) for (const operation of ['startTurn', 'invoke', 'resume']) {
+  test(`the final ${operation} ${expired ? 'refresh' : 'business'} dispatch guard rejects Session replacement during registry IO`, async (t) => {
     // Locate the last registry read before the first HTTP using a healthy run,
     // without coupling the test to how many earlier validation reads are needed.
     const baseline = await fixture(t, { expired });
-    await METHODS.startTurn(baseline.transport, baseline.options());
+    await METHODS[operation](baseline.transport, baseline.options());
     const boundary = baseline.calls[0].registryReads;
     assert.equal(baseline.calls[0].path === '/agent-auth/v1/token', expired);
     const f = await fixture(t, { expired });
@@ -297,7 +297,11 @@ for (const expired of [false, true]) {
         await f.rawStores.get(key).save({ ...f.credentialsA, session_id: SESSION_B, access_token: 'synthetic-replacement' });
       }
     };
-    await assert.rejects(METHODS.startTurn(f.transport, f.options()));
+    await assert.rejects(METHODS[operation](f.transport, f.options()), (error) => {
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      assert.equal(error.feedback.category, 'authorization_unavailable');
+      return true;
+    });
     assert.equal(replaced, true, 'The asynchronous dispatch boundary was exercised.');
     assert.equal(f.calls.length, 0, 'Neither refresh credentials nor business input may be sent after replacement.');
     assert.equal((await f.rawStores.get(f.a.connectionKey).load()).session_id, SESSION_B);

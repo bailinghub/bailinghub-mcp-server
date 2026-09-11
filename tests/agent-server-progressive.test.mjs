@@ -187,7 +187,8 @@ test('turn and search replace the active set while typed and generic invocation 
   let listed = await client.listTools();
   assert.equal(listed.tools.some((entry) => entry.name === 'employee_search'), true);
   const employee = listed.tools.find((entry) => entry.name === 'employee_search');
-  assert.equal(employee.description, 'Use employee_search for the authorized tenant.');
+  assert.match(employee.description, /^Use employee_search for the authorized tenant\./);
+  assert.match(employee.description, /Use this tool directly while it is currently listed/);
   assert.equal(JSON.stringify(employee.inputSchema).includes('nullable'), false);
   assert.equal(JSON.stringify(employee.inputSchema).includes('"null"'), true);
 
