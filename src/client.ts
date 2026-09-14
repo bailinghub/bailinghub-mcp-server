@@ -1,3 +1,4 @@
+import { parseInvocationRateLimit, type InvocationRateLimit } from './invocation-rate-limit.js';
 import { describeAgentFailure, reconciliationFeedback, type AgentFailureContext, type AgentFailureFeedback } from './agent-feedback.js';
 import type { BailingHubMcpConfig } from './config.js';
 import type {
@@ -61,6 +62,8 @@ export type AgentToolInvocation = {
   state: AgentToolInvocationState;
   ok: boolean;
   auto_retry_allowed: boolean;
+  retry_after_ms?: number;
+  rate_limit?: InvocationRateLimit;
   text: string;
   business_status?: number;
   approval_id?: number;
@@ -318,6 +321,9 @@ function normalizeAgentToolInvocation(
     auto_retry_allowed: requiredResponseBoolean(body, 'auto_retry_allowed'),
     text: boundedResponseText(body, 'text', CLIENT_API_LIMITS.toolResultText),
   };
+  const rateLimitFields = parseInvocationRateLimit(body);
+  if (!rateLimitFields) throw new BailingHubClientError('BailingHub returned invalid rate limit feedback.');
+  Object.assign(normalized, rateLimitFields);
   if (body.business_status !== undefined) {
     if (
       !Number.isInteger(body.business_status) ||

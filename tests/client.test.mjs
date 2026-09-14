@@ -356,6 +356,17 @@ test('Agent tool invocation sends the frozen contract and filters private respon
   });
 });
 
+test('legacy Agent API preserves rate hints without leaking unrecognized limit metadata', async () => {
+  const client = new BailingHubClient(agentRuntimeConfig(), async () => jsonResponse({
+    schema_version: 'bailing.agent-tool-invocation.v1', invocation_id: INVOCATION_ID, route: 'orders', tool: 'employee_search',
+    state: 'rejected_before_dispatch', ok: false, auto_retry_allowed: true, text: 'Wait before resuming.', retry_after_ms: 3000,
+    rate_limit: { level: 'provider', count: 1000, window_sec: 60, scope: 'tool_provider_shared', source: 'provider_total', private: 'discard' },
+  }));
+  const result = await client.invokeAgentTool({ invocationId: INVOCATION_ID, capabilityRevision: CAPABILITY_REVISION, agentRunId: AGENT_RUN_ID, tool: 'employee_search', arguments: { query: 'Synthetic' } });
+  assert.equal(result.retry_after_ms, 3000);
+  assert.deepEqual(result.rate_limit, { level: 'provider', count: 1000, window_sec: 60, scope: 'tool_provider_shared', source: 'provider_total' });
+});
+
 test('Agent tool resume depends only on the exact invocation id', async () => {
   const calls = [];
   const client = new BailingHubClient(agentRuntimeConfig(), async (url, init) => {

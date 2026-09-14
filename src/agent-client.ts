@@ -1,3 +1,4 @@
+import { parseInvocationRateLimit, type InvocationRateLimit } from './invocation-rate-limit.js';
 import { uploadArtifact, getArtifact, type AgentArtifactInput, type AgentArtifactReceipt } from './agent-artifacts.js';
 import { attachAgentFailure, reconciliationFeedback, type AgentFailureOperation } from './agent-feedback.js';
 export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
@@ -506,6 +507,9 @@ function normalizeInvocation(
     auto_retry_allowed: body.auto_retry_allowed,
     text: body.text,
   };
+  const rateLimitFields = parseInvocationRateLimit(body);
+  if (!rateLimitFields) throw new BailingHubClientError('BailingHub returned invalid rate limit feedback.');
+  Object.assign(result, rateLimitFields);
   if (body.business_status !== undefined) {
     if (!Number.isInteger(body.business_status) || Number(body.business_status) < 100 || Number(body.business_status) > 599) {
       throw new BailingHubClientError('BailingHub returned an invalid business_status.');

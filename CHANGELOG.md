@@ -2,13 +2,15 @@
 
 ## Unreleased
 
+- Preserve Core rate-limit scope, original window and retry delay in both Agent SDK invocation paths. Older responses remain compatible; the SDK never automatically resubmits a business write.
+
 - Add host SDK attachment delivery: register approved conversation image bytes with an
   explicit original target, store PNG/JPEG/WebP files and obtain reusable URLs.
   Recover the original upload after an uncertain response without creating a new attachment.
 - Clarify capability-search counts and preserve structured discovery/dispatch feedback.
   Existing valid tools remain callable; an uncertain business write retains its original invocation.
 - See [Local Agent attachment space](docs/GENERATED_ARTIFACTS.md) for campaign,
-  chart and shop examples, integration requirements and separate known business-recovery limits.
+  chart and shop examples, integration requirements and separate business-call governance.
 
 ## 0.5.0 - 2026-09-10
 

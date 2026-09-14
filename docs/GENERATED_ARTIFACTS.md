@@ -52,6 +52,6 @@ Uploading is separate from applying a business change. For a complete image coll
 
 Hosts with multi-authorization conversations must validate the entire original selected scope before uploading or recovering. Selecting several systems does not grant permission to send files to all of them. Only the explicit selected target receives file bytes.
 
-## Separate known business-recovery limitation
+## Business limits and original-call recovery
 
-In the current Core candidate, recovery after a retryable pre-dispatch rejection can fail because the original business arguments were not persisted. Hour/day tool limits are also normalized to a per-minute limit, which can constrain bursts. Keep this issue separate from successful attachment delivery; the candidate does not promise that every downstream batch action will complete automatically. Do not work around an uncertain write with a new invocation.
+The matching Core candidate provides configurable Hub tool limits and honors original hour/day windows. New pre-dispatch rejections preserve encrypted original arguments. SDK invocation and resume responses retain optional `retry_after_ms` and `rate_limit` (level, count, window_sec, scope, source). These limits are shared per provider/tool across users and conversations. Follow the original invocation after waiting; never replay an uncertain write or reconstruct missing historical arguments. Older Core responses without these fields remain supported.
