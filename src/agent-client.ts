@@ -1,3 +1,4 @@
+import { uploadArtifact, getArtifact, type AgentArtifactInput, type AgentArtifactReceipt } from './agent-artifacts.js';
 import { attachAgentFailure, reconciliationFeedback, type AgentFailureOperation } from './agent-feedback.js';
 export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
 import type { AgentAccessTokenProvider } from './agent-auth.js';
@@ -229,6 +230,7 @@ type AgentTransportResponse = {
 };
 
 type AgentRequestOptions = {
+  binary?: { body: Buffer; contentType: string; metadata: string };
   expectedStatus?: number;
   ifNoneMatch?: string;
   acceptedUnknownOnFailure?: boolean;
@@ -632,9 +634,9 @@ export class AgentClientTransport {
     try {
       signal.throwIfAborted();
       const dispatch = () => { dispatched = true; };
-      let response = await this.send(method, path, body, false, signal, options.ifNoneMatch, dispatch);
+      let response = await this.send(method, path, body, false, signal, options.ifNoneMatch, dispatch, options.binary);
       if (response.status === 401) {
-        response = await this.send(method, path, body, true, signal, options.ifNoneMatch, dispatch);
+        response = await this.send(method, path, body, true, signal, options.ifNoneMatch, dispatch, options.binary);
       }
       if (response.status === 304 && options.ifNoneMatch) {
         return { status: 304, ...(response.headers.get('etag') ? { etag: response.headers.get('etag')! } : {}) };
@@ -686,6 +688,7 @@ export class AgentClientTransport {
     signal: AbortSignal,
     ifNoneMatch?: string,
     dispatch?: () => void,
+    binary?: AgentRequestOptions['binary'],
   ): Promise<Response> {
     let token: string;
     try {
@@ -707,9 +710,11 @@ export class AgentClientTransport {
       'Content-Type': 'application/json',
       'User-Agent': `bailinghub-agent-client/${PACKAGE_VERSION}`,
     };
+    if (binary) { headers['Content-Type'] = binary.contentType; headers['x-bailing-artifact'] = binary.metadata; }
     if (ifNoneMatch) headers['If-None-Match'] = identifierText(ifNoneMatch, 'ifNoneMatch', 256);
     const init: RequestInit = { method, headers, redirect: 'error', signal };
-    if (body !== undefined) init.body = JSON.stringify(body);
+    if (binary) init.body = new Uint8Array(binary.body).buffer;
+    else if (body !== undefined) init.body = JSON.stringify(body);
     signal.throwIfAborted();
     dispatch?.();
     return await this.fetchImpl(`${this.baseUrl}${path}`, init);
@@ -759,6 +764,9 @@ export class BailingHubAgentClient {
         dispatch: known?.feedback?.dispatch ?? 'not_dispatched', ...(invocationId ? { invocationId } : {}) });
     }
   }
+
+  async uploadArtifact(input: AgentArtifactInput): Promise<AgentArtifactReceipt> { return uploadArtifact(this.transport, this.connection, input); }
+  async getArtifact(uploadId: string): Promise<AgentArtifactReceipt> { return getArtifact(this.transport, this.connection, uploadId); }
 
   async listWorkspaces(options: { ifNoneMatch?: string } = {}): Promise<AgentWorkspaceList> {
     const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.workspaces, undefined, {

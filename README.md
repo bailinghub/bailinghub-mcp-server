@@ -230,6 +230,7 @@ See:
 - [Threat model](docs/THREAT_MODEL.md)
 - [Compatibility contract](docs/COMPATIBILITY.md)
 - [Agent Client SDK](docs/AGENT_CLIENT_SDK.md)
+- [Generated image delivery candidate](docs/GENERATED_ARTIFACTS.md)
 - [Privacy](PRIVACY.md)
 - [Security policy](SECURITY.md)
 

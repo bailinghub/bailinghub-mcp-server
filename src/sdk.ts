@@ -1,3 +1,5 @@
+import type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
+export type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
 import { attachAgentFailure, type AgentFailureOperation } from './agent-feedback.js';
 export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
 import { createHash } from 'node:crypto';
@@ -178,6 +180,9 @@ export type AgentClientHostDependencies = {
 };
 
 export type AgentClientHostTransport = {
+  /** Host supplies authorized file bytes, never a model-controlled filesystem path. */
+  uploadArtifact(input: AgentArtifactInput, options: Record<string, unknown>): Promise<AgentArtifactReceipt>;
+  getArtifact(uploadId: string, options: Record<string, unknown>): Promise<AgentArtifactReceipt>;
   connectionsList(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
   connectionsAdd(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   connectionsUse(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -860,6 +865,16 @@ export function createAgentClientTransport(
   }
 
   const transport: AgentClientHostTransport = {
+    async uploadArtifact(input, options) {
+      if (!options?.connectionKey || !options.expectedBinding || !options.workspace) throw new TypeError('Artifact delivery requires the explicit original connection and expectedBinding.');
+      if (!(input.body instanceof Uint8Array) || !input.body.byteLength || input.body.byteLength > 6291456) throw new TypeError('Image body must be a Uint8Array of at most 6 MiB.');
+      const frozen = { ...input, body: Buffer.from(input.body) };
+      return (await clientFor(options.workspace, options)).uploadArtifact(frozen);
+    },
+    async getArtifact(uploadId, options) {
+      if (!options?.connectionKey || !options.expectedBinding || !options.workspace) throw new TypeError('Artifact recovery requires the explicit original connection and expectedBinding.');
+      return (await clientFor(options.workspace, options)).getArtifact(uploadId);
+    },
     async getSystemInfo(optionsValue) {
       const options = hostRecord(optionsValue, 'system information options');
       const connectionKey = hostText(options.connectionKey, 'connectionKey', 37);
