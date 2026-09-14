@@ -1,6 +1,8 @@
-# Generated image delivery (candidate)
+# Local Agent attachment space: host SDK integration (candidate)
 
-Use this when an Agent generates product pictures locally and an online shop accepts image URLs. The host supplies the bytes; BailingHub stores each image and returns its URL. The existing governed tool then updates the product, with its original authorization and approvals.
+Use this when a local Agent produces a file that another system needs through a URL. The host registers an approved image from the current conversation, supplies its bytes, and receives a stored image URL from BailingHub. The Agent can then pass the URL to an existing business tool.
+
+The first increment accepts PNG, JPEG and WebP images. Examples include campaign artwork for a content platform, a chart image for a reporting system, or product pictures for a shop. Each receiving system must already expose the required URL-based action. This is not a claim of general document or video support.
 
 This is an unreleased additive candidate. Install matching Core and SDK sources/packages; stable Core 0.7.0 / SDK 0.5.0 do not include it. It is a host SDK API, not an automatic upload tool added to every MCP server or desktop application.
 
@@ -23,7 +25,7 @@ const target = {
 const uploaded = await transport.uploadArtifact({
   uploadId, // persist a 64-character lowercase hex ID before dispatch
   body: generatedImageBytes, // Uint8Array from the authorized host artifact store
-  name: 'product-front.png',
+  name: 'campaign-banner.png',
   mime: 'image/png',
   sha256: originalDigest,
   clientConversationId: originalConversationId,
@@ -34,7 +36,7 @@ const uploaded = await transport.uploadArtifact({
 
 The SDK freezes the byte buffer before authentication awaits, computes its SHA-256, checks a supplied digest, sends raw bytes, and verifies the returned receipt against the original target and content. It never reads an arbitrary filesystem path or fetches an arbitrary image URL for the model.
 
-First candidate: PNG, JPEG, WebP; 6 MiB maximum per image. The administrator may set a smaller limit or MIME subset. The workspace must explicitly enable `agent_client.artifact_upload` and select a registered storage. This candidate produces public image URLs, suitable for product display. Private documents are outside this first increment. File retention is controlled by the self-hosted deployment; no conversation expiry or cleanup policy is imposed.
+First candidate: PNG, JPEG, WebP; 6 MiB maximum per image. The administrator may set a smaller limit or MIME subset. The workspace must explicitly enable `agent_client.artifact_upload` and select a registered storage. This candidate produces public image URLs for content intended to be publicly readable. File retention is controlled by the self-hosted deployment; no conversation expiry or cleanup policy is imposed.
 
 ## Recovery
 
@@ -44,6 +46,12 @@ After an uncertain response, use `getArtifact(originalUploadId, originalTarget)`
 
 Stable errors include `artifact_unsupported`, `artifact_upload_disabled`, `artifact_storage_unavailable`, `artifact_upload_pending`, `artifact_conflict`, `artifact_storage_changed`, `artifact_content_mismatch`, `artifact_too_large`, and `artifact_type_not_allowed`. HTTP 404 from an older Core is unsupported, while a supported Core's missing receipt remains `artifact_not_found`. Transport timeouts and connection failures preserve the uncertain disposition and are not automatically retried.
 
-Uploading is separate from applying a business change. For a gallery, wait until every required image is ready before submitting the final list; retain images the user did not ask to remove. An uncertain product update must resume the original business invocation, not create another one.
+Once a receipt is ready, use its URL directly. There is no need to ask BailingHub for the address again for every business use. Receipt lookup is for recovering an uncertain upload or restoring saved upload state.
+
+Uploading is separate from applying a business change. For a complete image collection, wait until every required image is ready before submitting the final list; retain images the user did not ask to remove. An uncertain business write must retain its original invocation, not create another one.
 
 Hosts with multi-authorization conversations must validate the entire original selected scope before uploading or recovering. Selecting several systems does not grant permission to send files to all of them. Only the explicit selected target receives file bytes.
+
+## Separate known business-recovery limitation
+
+In the current Core candidate, recovery after a retryable pre-dispatch rejection can fail because the original business arguments were not persisted. Hour/day tool limits are also normalized to a per-minute limit, which can constrain bursts. Keep this issue separate from successful attachment delivery; the candidate does not promise that every downstream batch action will complete automatically. Do not work around an uncertain write with a new invocation.
