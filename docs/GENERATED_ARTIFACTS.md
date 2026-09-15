@@ -55,3 +55,11 @@ Hosts with multi-authorization conversations must validate the entire original s
 ## Business limits and original-call recovery
 
 The matching Core candidate provides configurable Hub tool limits and honors original hour/day windows. New pre-dispatch rejections preserve encrypted original arguments. SDK invocation and resume responses retain optional `retry_after_ms` and `rate_limit` (level, count, window_sec, scope, source). These limits are shared per provider/tool across users and conversations. Follow the original invocation after waiting; never replay an uncertain write or reconstruct missing historical arguments. Older Core responses without these fields remain supported.
+
+## Upload run-link correction (candidate)
+
+`artifact_run_turn_mismatch` is an HTTP 403 rejection before storage. It proves that the referenced run belongs to the original Agent Session, client, workspace and conversation, but to another turn. `artifact_run_mismatch` remains the non-repairable response for other link mismatches. The SDK preserves these distinct codes and never retries, replaces metadata or removes a run ID by itself.
+
+A matching DSH candidate can recover a legacy rejected upload only after this dedicated code and an explicit `artifact_not_found` for the original upload ID. It first persists a separate immutable correction record, then reuses the original upload ID, bytes, authorization, conversation and upload turn without the proven stale optional run ID. Ready receipts are reused; unknown outcomes and local recovery gaps must not be treated as permission to start another upload. Older Core/SDK combinations keep those legacy failures blocked.
+
+Tool names remain compatible. Eligible registered images may come from generation or user-provided files explicitly selected for business use; ordinary chat attachments are not uploaded automatically. Current MIME and size limits are unchanged.

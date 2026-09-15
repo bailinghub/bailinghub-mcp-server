@@ -39,6 +39,13 @@ test('lost upload response is uncertain and never automatically resends', async 
   await assert.rejects(client(async () => { calls++; throw new TypeError('offline'); }).uploadArtifact(input()), { publicCode: 'agent_transport_unavailable', disposition: 'accepted_unknown' });
   assert.equal(calls, 1);
 });
+test('dedicated turn mismatch remains distinct from identity mismatch without retry', async () => {
+  for (const code of ['artifact_run_turn_mismatch', 'artifact_run_mismatch']) {
+    let calls = 0;
+    await assert.rejects(client(async () => { calls++; return Response.json({ error: code }, { status: 403 }); }).uploadArtifact(input()), { publicCode: code, statusCode: 403 });
+    assert.equal(calls, 1);
+  }
+});
 test('host uploader refuses default authorization and paths without reading credentials', async () => {
   const transport = createAgentClientTransport({ hubUrl: 'https://hub.example.com', clientAppId: 'shop-client', workspace: 'shop' });
   await assert.rejects(transport.uploadArtifact(input(), {}), /explicit original connection/);

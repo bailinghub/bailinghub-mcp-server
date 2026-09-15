@@ -4,7 +4,7 @@ import type { AgentClientTransport } from './agent-client.js';
 
 export const ARTIFACT_SCHEMA = 'bailing.agent-artifact.v1';
 export const ARTIFACT_ERROR_CODES = ['artifact_invalid_request', 'artifact_content_mismatch', 'artifact_type_not_allowed', 'artifact_too_large',
-  'artifact_run_mismatch', 'artifact_conflict', 'artifact_storage_changed', 'artifact_upload_disabled', 'artifact_storage_unavailable',
+  'artifact_run_mismatch', 'artifact_run_turn_mismatch', 'artifact_conflict', 'artifact_storage_changed', 'artifact_upload_disabled', 'artifact_storage_unavailable',
   'artifact_upload_pending', 'artifact_unsupported', 'artifact_not_found'];
 export type AgentArtifactInput = { uploadId: string; body: Uint8Array; name: string; mime: string; clientConversationId: string; clientTurnId: string; runId?: string; sha256?: string };
 export type AgentArtifactReceipt = { schema_version: typeof ARTIFACT_SCHEMA; upload_id: string; workspace: string; session_id: string;
@@ -31,7 +31,7 @@ function normalize(value: unknown, expected: { uploadId: string; workspace: stri
 }
 function unsupported(error: unknown): never {
   if (error instanceof BailingHubClientError && ((error.statusCode === 404 && error.publicCode !== 'artifact_not_found') || error.statusCode === 501)) {
-    throw new BailingHubClientError('This Core does not support generated artifact delivery.', error.statusCode, false, 'artifact_unsupported');
+    throw new BailingHubClientError('This Core does not support artifact delivery.', error.statusCode, false, 'artifact_unsupported');
   }
   throw error;
 }
@@ -42,7 +42,7 @@ export async function uploadArtifact(transport: AgentClientTransport, binding: {
     (input.runId !== undefined && !/^[a-f0-9-]{36}$/.test(input.runId))) throw new TypeError('Invalid image artifact metadata or bytes.');
   const body = Buffer.from(input.body); // freeze bytes before authorization and network awaits
   const sha256 = hash(body);
-  if (input.sha256 !== undefined && input.sha256 !== sha256) throw new TypeError('Artifact bytes changed; restore the original generated file.');
+  if (input.sha256 !== undefined && input.sha256 !== sha256) throw new TypeError('Artifact bytes changed; restore the original registered file.');
   const metadata = { name: input.name, mime: input.mime, bytes: body.length, sha256, client_conversation_id: input.clientConversationId,
     client_turn_id: input.clientTurnId, ...(input.runId ? { run_id: input.runId } : {}) };
   const expected = { ...binding, uploadId: input.uploadId };
