@@ -59,6 +59,7 @@ const PUBLIC_AGENT_ERROR_CODES = new Set([
   'invalid_route',
   'invocation_conflict',
   'invocation_not_found',
+  'invocation_record_invalid',
   'page_context_too_large',
   'route_not_allowed',
   'route_unavailable',
@@ -88,6 +89,9 @@ export const AGENT_CLIENT_V1_PATHS = {
   capabilitySearch: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/capabilities/search`,
   invocations: '/agent-api/v1/tool-invocations',
+  invocationInspectionCapabilities: '/agent-api/v1/tool-invocations/inspection-capabilities',
+  invocationReceipt: (invocationId: string) =>
+    `/agent-api/v1/tool-invocations/${encodeURIComponent(invocationId)}/receipt`,
   resumeInvocation: (invocationId: string) =>
     `/agent-api/v1/tool-invocations/${encodeURIComponent(invocationId)}/resume`,
   completeRun: (runId: string) =>
@@ -104,6 +108,29 @@ export type AgentClientConnection = {
   workspace: string;
   sessionId: string;
   accessTokenProvider: AgentAccessTokenProvider;
+};
+
+export type AgentInvocationInspectionCapabilities = {
+  schema_version: 'bailing.agent-invocation-inspection-capabilities.v1';
+  receipt_schema: 'bailing.agent-invocation-receipt.v1';
+  read_only: true;
+};
+
+/** An observation of the original operation; never a request to resume or repeat it. */
+export type AgentInvocationReceipt = {
+  schema_version: 'bailing.agent-invocation-receipt.v1';
+  read_only: true;
+  business_operation_performed: false;
+  invocation_id: string;
+  agent_run_id: string;
+  route: string;
+  tool: string;
+  observed_at: string;
+  result: AgentToolInvocation | null;
+  result_source: 'job' | 'journal' | 'none';
+  dispatch_state: 'not_dispatched' | 'attempted' | 'unknown';
+  approval: { status: 'none' | 'pending' | 'approved' | 'denied'; approval_id?: number };
+  journal_state: 'absent' | 'dispatching' | 'response_recorded' | 'completed' | 'uncertain' | 'evidence_degraded' | 'unknown';
 };
 
 export type AgentWorkspace = {
@@ -472,7 +499,7 @@ function normalizeDiscovery(value: unknown, returnedCount: number): AgentCapabil
 
 function normalizeInvocation(
   value: unknown,
-  expected: { invocationId: string; route: string; tool?: string; operation?: 'invoke' | 'resume' },
+  expected: { invocationId: string; route: string; tool?: string; operation?: 'invoke' | 'resume' | 'inspect' },
 ): AgentToolInvocation {
   const body = asObject(value, 'tool invocation');
   const schema = responseSchema(body);
@@ -526,6 +553,40 @@ function normalizeInvocation(
   return result;
 }
 
+function normalizeInvocationReceipt(value: unknown, invocationId: string, route: string): AgentInvocationReceipt {
+  const body = asObject(value, 'invocation receipt');
+  if (body.schema_version !== 'bailing.agent-invocation-receipt.v1') {
+    throw new BailingHubClientError('BailingHub returned an unsupported invocation receipt.', undefined, false, 'agent_schema_unsupported');
+  }
+  const approval = asObject(body.approval, 'receipt approval');
+  if (body.read_only !== true || body.business_operation_performed !== false
+    || body.invocation_id !== invocationId || body.route !== route
+    || typeof body.agent_run_id !== 'string' || !UUID_PATTERN.test(body.agent_run_id)
+    || typeof body.tool !== 'string' || !TOOL_NAME_PATTERN.test(body.tool)
+    || typeof body.observed_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(body.observed_at)
+    || !Number.isFinite(Date.parse(body.observed_at))
+    || !['job', 'journal', 'none'].includes(String(body.result_source))
+    || !['not_dispatched', 'attempted', 'unknown'].includes(String(body.dispatch_state))
+    || !['none', 'pending', 'approved', 'denied'].includes(String(approval.status))
+    || !['absent', 'dispatching', 'response_recorded', 'completed', 'uncertain', 'evidence_degraded', 'unknown'].includes(String(body.journal_state))
+    || (body.result === null) !== (body.result_source === 'none')
+    || (approval.approval_id !== undefined && (!Number.isSafeInteger(approval.approval_id) || Number(approval.approval_id) < 1))
+    || (approval.status === 'none' ? approval.approval_id !== undefined : approval.approval_id === undefined)) {
+    throw new BailingHubClientError('BailingHub returned an invalid invocation receipt.', undefined, false, 'agent_invalid_response');
+  }
+  const result = body.result === null ? null : normalizeInvocation(body.result, { invocationId, route, tool: body.tool, operation: 'inspect' });
+  // Never forward arguments, credentials, arbitrary journal records, or extra response fields.
+  return {
+    schema_version: 'bailing.agent-invocation-receipt.v1', read_only: true, business_operation_performed: false,
+    invocation_id: invocationId, agent_run_id: body.agent_run_id, route, tool: body.tool, observed_at: body.observed_at,
+    result, result_source: body.result_source as AgentInvocationReceipt['result_source'],
+    dispatch_state: body.dispatch_state as AgentInvocationReceipt['dispatch_state'],
+    approval: { status: approval.status as AgentInvocationReceipt['approval']['status'],
+      ...(approval.approval_id !== undefined ? { approval_id: Number(approval.approval_id) } : {}) },
+    journal_state: body.journal_state as AgentInvocationReceipt['journal_state'],
+  };
+}
+
 async function readJsonWithLimit(response: Response): Promise<unknown> {
   const length = Number(response.headers.get('content-length'));
   if (Number.isFinite(length) && length > CLIENT_API_LIMITS.responseBytes) {
@@ -574,7 +635,9 @@ function safeHttpError(
       'hub_paused', 'route_unavailable', 'run_not_found'].includes(publicCode));
   const disposition = publicCode === 'capability_changed' ? 'refresh_required'
     : acceptedUnknown && !rejectedBeforeDispatch ? 'accepted_unknown' : 'definitive_rejection';
-  const message = status === 401
+  const message = operation === 'inspect' && publicCode === 'invocation_record_invalid'
+    ? 'BailingHub could not validate the original invocation record.'
+    : status === 401
     ? 'BailingHub rejected the Agent Session.'
     : status === 403
       ? 'The Agent Session is not allowed to perform this operation.'
@@ -590,7 +653,8 @@ function safeHttpError(
   return new BailingHubClientError(
     message,
     status,
-    status === 408 || status === 425 || status === 429 || status >= 500,
+    !(operation === 'inspect' && publicCode === 'invocation_record_invalid')
+      && (status === 408 || status === 425 || status === 429 || status >= 500),
     publicCode,
     disposition,
     undefined,
@@ -600,6 +664,8 @@ function safeHttpError(
 
 function requestOperation(path: string): AgentFailureOperation {
   if (path.endsWith('/capabilities/search')) return 'search';
+  if (path === AGENT_CLIENT_V1_PATHS.invocationInspectionCapabilities
+    || (path.includes('/tool-invocations/') && path.endsWith('/receipt'))) return 'inspect';
   if (path.includes('/tool-invocations/') && path.endsWith('/resume')) return 'resume';
   if (path.endsWith('/tool-invocations')) return 'invoke';
   return 'scope';
@@ -771,6 +837,48 @@ export class BailingHubAgentClient {
 
   async uploadArtifact(input: AgentArtifactInput): Promise<AgentArtifactReceipt> { return uploadArtifact(this.transport, this.connection, input); }
   async getArtifact(uploadId: string): Promise<AgentArtifactReceipt> { return getArtifact(this.transport, this.connection, uploadId); }
+
+  async getInvocationInspectionCapabilities(): Promise<AgentInvocationInspectionCapabilities> {
+    return this.withFailure('inspect', async () => {
+      let value: unknown;
+      try {
+        value = (await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.invocationInspectionCapabilities)).body;
+      } catch (error) {
+        if (error instanceof BailingHubClientError && error.statusCode === 404) {
+          throw new BailingHubClientError('This BailingHub version does not support read-only invocation inspection.',
+            404, false, 'agent_schema_unsupported');
+        }
+        throw error;
+      }
+      const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+      if (body.schema_version !== 'bailing.agent-invocation-inspection-capabilities.v1'
+        || body.receipt_schema !== 'bailing.agent-invocation-receipt.v1' || body.read_only !== true) {
+        throw new BailingHubClientError('This BailingHub version does not support the invocation receipt contract.',
+          undefined, false, 'agent_schema_unsupported');
+      }
+      return { schema_version: 'bailing.agent-invocation-inspection-capabilities.v1',
+        receipt_schema: 'bailing.agent-invocation-receipt.v1', read_only: true };
+    });
+  }
+
+  /** Read the original receipt using GET only; this never invokes or resumes a business operation. */
+  async inspectInvocation(invocationIdValue: string): Promise<AgentInvocationReceipt> {
+    return this.withFailure('inspect', async () => {
+      if (typeof invocationIdValue !== 'string' || !INVOCATION_ID_PATTERN.test(invocationIdValue)) {
+        throw new TypeError('invocationId must be a 64-character lowercase digest.');
+      }
+      const workspace = this.connection.workspace;
+      await this.getInvocationInspectionCapabilities();
+      const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.invocationReceipt(invocationIdValue));
+      try {
+        return normalizeInvocationReceipt(response.body, invocationIdValue, workspace);
+      } catch (error) {
+        if (error instanceof BailingHubClientError && error.publicCode) throw error;
+        throw new BailingHubClientError('BailingHub returned an invalid invocation receipt.',
+          undefined, false, 'agent_invalid_response');
+      }
+    }, invocationIdValue);
+  }
 
   async listWorkspaces(options: { ifNoneMatch?: string } = {}): Promise<AgentWorkspaceList> {
     const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.workspaces, undefined, {

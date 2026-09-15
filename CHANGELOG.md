@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add explicit, read-only original-invocation inspection for adapted hosts. A shop
+  listing that is approved but not dispatched can be checked without continuing
+  it. Original result, approval and journal facts remain distinct; `resume` keeps
+  its existing behavior and is never called by inspection.
+- Negotiate support before inspection, require the original explicit binding and
+  distinguish unsupported Core, unavailable transport and a missing original
+  record. See [the receipt contract](docs/INVOCATION_RECEIPTS.md). This candidate
+  adds no new MCP/DSH model tool or task execution policy.
+
 - Preserve Core rate-limit scope, original window and retry delay in both Agent SDK invocation paths. Older responses remain compatible; the SDK never automatically resubmits a business write.
 
 - Add host SDK attachment delivery: register approved conversation image bytes with an

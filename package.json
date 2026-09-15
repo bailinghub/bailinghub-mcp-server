@@ -62,7 +62,8 @@
     "PRIVACY.md",
     "README.zh-CN.md",
     "SECURITY.md",
-    "server.json"
+    "server.json",
+    "docs/INVOCATION_RECEIPTS.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/ensure-bin-executable.mjs",

@@ -18,6 +18,7 @@ import {
   type AgentTurnContext,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentInvocationReceipt,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
   type SearchAgentCapabilitiesInput,
@@ -57,6 +58,8 @@ export {
   type AgentWorkspace,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentInvocationReceipt,
+  type AgentInvocationInspectionCapabilities,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
   type SearchAgentCapabilitiesInput,
@@ -196,6 +199,8 @@ export type AgentClientHostTransport = {
   searchCapabilities(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentCapabilitySearchResult>;
   invoke(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   resume(invocationId: string, input?: unknown, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
+  /** Read the original receipt; requires a frozen original connection and never resumes the operation. */
+  inspectInvocation(invocationId: string, options: Record<string, unknown>): Promise<AgentInvocationReceipt>;
   completeRun(runId: string, input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentRunCompletion>;
   /** Host-only visible transcript synchronization; never expose this method as a model tool. */
   syncConversationArchive(input: Record<string, unknown>, options: Record<string, unknown>): Promise<ConversationAuditAck>;
@@ -1381,6 +1386,26 @@ export function createAgentClientTransport(
       );
     },
 
+    async inspectInvocation(invocationIdValue, optionsValue) {
+      const options = hostRecord(optionsValue, 'invocation inspection options');
+      if (!options.connectionKey || !options.workspace || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Invocation inspection requires the explicit original connection, workspace, and expectedBinding.');
+      }
+      if (typeof invocationIdValue !== 'string' || !INVOCATION_ID_PATTERN.test(invocationIdValue)) {
+        throw new TypeError('invocationId must be a 64-character lowercase digest.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      const workspace = normalizeAgentRoute(hostText(options.workspace, 'workspace', 64));
+      if (expected.workspace !== workspace) throw new TypeError('Expected binding does not match the explicit target.');
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try {
+        return await bound.client.inspectInvocation(invocationIdValue);
+      } finally {
+        // Reject a Session replacement even when it races the final response or a failed inspection.
+        await bound.assertBinding();
+      }
+    },
+
     async completeRun(runIdValue, inputValue, options = {}) {
       const workspace = options.workspace ?? defaultWorkspace;
       if (workspace === undefined) throw new TypeError('workspace is required.');
@@ -1411,7 +1436,7 @@ export function createAgentClientTransport(
     },
   };
   const operations: Partial<Record<keyof AgentClientHostTransport, AgentFailureOperation>> = {
-    startTurn: 'scope', searchCapabilities: 'search', invoke: 'invoke', resume: 'resume',
+    startTurn: 'scope', searchCapabilities: 'search', invoke: 'invoke', resume: 'resume', inspectInvocation: 'inspect',
     completeRun: 'scope', getSystemInfo: 'scope', status: 'scope', workspaces: 'scope', login: 'authorize',
   };
   for (const [name, operation] of Object.entries(operations)) {
@@ -1420,7 +1445,7 @@ export function createAgentClientTransport(
       try { return await method(...args); }
       catch (error) {
         const known = error instanceof BailingHubClientError ? error : undefined;
-        const invocationValue = operation === 'resume' ? args[0]
+        const invocationValue = operation === 'resume' || operation === 'inspect' ? args[0]
           : operation === 'invoke' && args[0] && typeof args[0] === 'object'
             ? ((args[0] as Record<string, unknown>).invocation_id ?? (args[0] as Record<string, unknown>).invocationId
               ?? (args[0] as Record<string, unknown>).client_invocation_id) : undefined;

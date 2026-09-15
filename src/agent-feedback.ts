@@ -3,7 +3,7 @@ export type AgentFailureCategory =
   | 'tool_not_loaded' | 'capability_changed' | 'transport_unavailable'
   | 'authorization_unavailable' | 'unsupported' | 'invocation_outcome_unknown'
   | 'unknown_failure' | 'cancelled' | 'invalid_request';
-export type AgentFailureOperation = 'search' | 'invoke' | 'resume' | 'authorize' | 'scope' | 'tool_dispatch';
+export type AgentFailureOperation = 'search' | 'invoke' | 'resume' | 'inspect' | 'authorize' | 'scope' | 'tool_dispatch';
 export type AgentFailureOrigin = 'core' | 'sdk' | 'mcp' | 'dsh' | 'host';
 export type AgentFailureDispatch = 'not_dispatched' | 'attempted' | 'unknown';
 export type AgentFailureNextAction = 'rediscover' | 'retry_discovery' | 'restore_scope' | 'reauthorize'
@@ -32,7 +32,7 @@ export type AgentFailureContext = {
 const CODES = new Set([
   'agent_client_disabled', 'agent_direct_disabled', 'agent_runtime_unavailable', 'agent_tools_unavailable',
   'arguments_too_large', 'assistant_message_conflict', 'audience_not_allowed', 'capability_changed',
-  'hub_paused', 'invalid_request', 'invalid_route', 'invocation_conflict', 'invocation_not_found',
+  'hub_paused', 'invalid_request', 'invalid_route', 'invocation_conflict', 'invocation_not_found', 'invocation_record_invalid',
   'page_context_too_large', 'route_not_allowed', 'route_unavailable', 'run_completion_conflict',
   'run_not_found', 'tool_not_found', 'turn_conflict', 'conversation_audit_conflict',
   'conversation_audit_not_found', 'conversation_audit_not_ready', 'conversation_audit_authorization_invalid',
@@ -77,6 +77,10 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
     || code === 'conversation_audit_cross_binding_unavailable') category = 'unsupported';
   else if (TRANSPORT_CODES.has(code)) category = 'transport_unavailable';
   else if (INVALID_CODES.has(code)) category = 'invalid_request';
+  if (context.operation === 'inspect' && (code === 'invocation_not_found' || code === 'invocation_record_invalid'
+    || code === 'reconciliation_required')) {
+    category = 'invocation_outcome_unknown';
+  }
 
   // A new error must not erase the unresolved outcome of an already attempted write.
   const uncertainInvocation = disposition === 'accepted_unknown'
@@ -86,7 +90,9 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
   }
   let nextAction: AgentFailureNextAction = 'none';
   if ((code === 'invocation_conflict' || code === 'reconciliation_required') && invocationId) nextAction = 'inspect_original';
-  else if (category === 'invocation_outcome_unknown') nextAction = invocationId ? 'resume_original' : 'inspect_original';
+  else if (context.operation === 'inspect' && (category === 'invocation_outcome_unknown' || category === 'transport_unavailable')) {
+    nextAction = 'inspect_original';
+  } else if (category === 'invocation_outcome_unknown') nextAction = invocationId ? 'resume_original' : 'inspect_original';
   else if (context.operation === 'resume') {
     nextAction = category === 'transport_unavailable' && invocationId ? 'resume_original' : 'inspect_original';
   } else if (category === 'tool_not_loaded' || category === 'capability_changed') {
@@ -102,7 +108,8 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
     schema: 'bailing.agent-feedback.v1', category, code,
     origin: context.origin ?? 'sdk', operation: context.operation, dispatch,
     retryable: nextAction === 'retry_discovery' || nextAction === 'rediscover'
-      || nextAction === 'restore_scope' || nextAction === 'resume_original',
+      || nextAction === 'restore_scope' || nextAction === 'resume_original'
+      || (context.operation === 'inspect' && category === 'transport_unavailable' && nextAction === 'inspect_original'),
     next_action: nextAction,
     ...(invocationId ? { invocation_id: invocationId } : {}),
     ...(disposition ? { disposition } : {}),
@@ -117,7 +124,7 @@ export function attachAgentFailure(error: unknown, context: AgentFailureContext)
 }
 
 /** An HTTP success can still carry an unresolved business result. Keep its existing state and ID. */
-export function reconciliationFeedback(invocationId: string, operation: 'invoke' | 'resume' = 'invoke'): AgentFailureFeedback {
+export function reconciliationFeedback(invocationId: string, operation: 'invoke' | 'resume' | 'inspect' = 'invoke'): AgentFailureFeedback {
   return describeAgentFailure({ publicCode: 'reconciliation_required', disposition: 'accepted_unknown', invocationId },
     { operation, origin: 'core', dispatch: 'attempted', invocationId });
 }

@@ -17,6 +17,15 @@ The agent does not receive administrator or business-system credentials. Bailing
 the route boundary, approval state, execution record, and audit trail, while the downstream
 business system still makes the final authorization decision.
 
+## Candidate: inspect an original operation without continuing it
+
+An approved shop listing may still be waiting for dispatch. The host SDK can
+inspect its stored receipt and current approval without listing the product or
+calling `resume`. This requires the matched Core candidate and original explicit
+binding; the same published version number does not imply support. See the
+[inspection contract](docs/INVOCATION_RECEIPTS.md). Existing host behavior remains
+unchanged; task budgets and controls are separate work.
+
 ## What changes in 0.5.0: shop and inventory in one conversation
 
 A host can let a user ask: “Check tumbler stock; if available, change the corresponding shop product to 59 and list it.” This SDK adds original-target checks for different systems on one Hub, system descriptions before tool search, and business-supplied authorization names. Actions must be exposed by the business systems, product mappings confirmed, and original approvals respected.
