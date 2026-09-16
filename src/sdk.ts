@@ -802,9 +802,8 @@ export function createAgentClientTransport(
       sessionId: expected.sessionId,
       accessTokenProvider: { getAccessToken: async (forceRefresh) => {
         await assertBinding();
-        const token = await manager.getAccessToken(forceRefresh);
-        await assertBinding();
-        return token;
+        try { return await manager.getAccessToken(forceRefresh); }
+        finally { await assertBinding(); }
       } },
     }, { fetchImpl: checkedFetch, allowInsecureHttp: profile!.allowInsecureHttp, ...(signal ? { signal } : {}) });
     const binding = JSON.stringify([expected.hubUrl, expected.clientAppId, expected.workspace, expected.sessionId]);

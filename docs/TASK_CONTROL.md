@@ -40,7 +40,9 @@ SDK 只在同一个 transport、同一原连接的 Hub、App、工作空间和 S
 
 - `AgentSessionManager.getSession()` 收到401并按既有规则移除当前失效凭据后，仍抛出结构化 `AgentAuthHttpError`：HTTP401、`publicCode=agent_authorization_unavailable`、不可自动重试。并发轮换的新凭据不会被当成旧凭据删除。
 - 远端返回的 Session、Client或授权路由与本地原记录不一致时，返回 `agent_binding_changed`，`origin=sdk / operation=scope / dispatch=not_dispatched`。不把响应中的新身份存成本地凭据，也不把冲突当网络故障。
+- 访问令牌刷新返回不同的 Session 或 Client 时，同样返回 HTTP403、不可自动重试的 `agent_binding_changed`；直接管理器反馈为 `origin=sdk / operation=authorize / dispatch=not_dispatched`，宿主 facade 保留当前操作类别。替代令牌不会保存、返回或用于后续 Session/业务请求；本地原凭据保留以便检查，不表示仍有权限。并发等待者共享该次失败，网络故障、429/5xx仍允许按原身份显式重试。该分类不新增自动重新授权、业务重放或永久撤销账本。
 - 带 `expectedBinding` 的 `transport.status()` 在成功或失败返回前都核对原绑定。401清理了原凭据或等待期间发生本地改绑时，返回 `agent_binding_changed`；普通未绑定status的logged_out行为保持兼容。
+- 带原绑定的令牌提供者在刷新成功或失败后都再次检查取消状态和原身份，因此取消优先于晚到的刷新冲突，失败路径也不会绕过并发改绑检查。
 - 对原绑定未变的403、429/5xx、超时/传输错误，保留既有结构化状态；取消仍优先。坐标宿主据此对明确原身份失效整组阻断，对暂时无法验证保留原组重试，不通过改系统、剩余子集或默认连接绕过。
 
 该修复沿用现有错误码和反馈协议，不新增Core接口、任务策略或DSH方法。DSH正式坐标候选可直接使用新SDK；正式坐标的 `AUTHORIZATION_CHANGED` 在同一runtime保持阻断，不会因服务重新返回旧身份而自动ready。这里不新增跨进程永久撤销账本，也不改变宿主明确重新确认未开始草稿的原规则。

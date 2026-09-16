@@ -742,7 +742,9 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
       token.clientAppId !== current.client_app_id ||
       token.sessionId !== current.session_id
     ) {
-      throw new Error('BailingHub returned a refresh token for a different Agent Session.');
+      throw new BailingHubClientError('BailingHub returned a refresh token for a different Agent Session.',
+        403, false, 'agent_binding_changed', 'definitive_rejection', undefined,
+        { operation: 'authorize', origin: 'sdk', dispatch: 'not_dispatched' });
     }
     const next: AgentCredentials = {
       ...current,

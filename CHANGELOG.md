@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Classify a token refresh that returns a different Agent Session or Client as an
+  original-identity conflict. Hosts can block the selected group instead of treating
+  the response as a temporary outage. Replacement tokens are never saved or used;
+  transient refresh failures remain retryable with the original identity.
+
 - Preserve structured identity failures when a host checks selected shop and
   inventory authorizations. Expired Sessions and mismatched remote identities
   no longer look like temporary network uncertainty. Recheck an original bound
