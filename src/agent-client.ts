@@ -643,7 +643,7 @@ function safeHttpError(
     ['capability_changed', 'tool_not_found', 'invalid_request', 'invalid_route', 'arguments_too_large',
       'agent_direct_disabled', 'agent_tools_unavailable', 'route_not_allowed', 'audience_not_allowed',
       'hub_paused', 'route_unavailable', 'run_not_found', ...AGENT_TASK_ERROR_CODES.filter((code) =>
-        code !== 'TASK_UNAVAILABLE' && code !== 'TASK_RECORD_INVALID')].includes(publicCode));
+        code !== 'TASK_UNAVAILABLE' && code !== 'TASK_RECORD_INVALID' && code !== 'TASK_DISPATCH_UNCERTAIN')].includes(publicCode));
   const disposition = publicCode === 'capability_changed' ? 'refresh_required'
     : acceptedUnknown && !rejectedBeforeDispatch ? 'accepted_unknown' : 'definitive_rejection';
   const message = operation === 'inspect' && publicCode === 'invocation_record_invalid'
@@ -670,7 +670,8 @@ function safeHttpError(
     publicCode,
     disposition,
     undefined,
-    { operation, origin: 'core', dispatch: rejectedBeforeDispatch ? 'not_dispatched' : 'attempted' },
+    { operation, origin: 'core', dispatch: (publicCode === 'TASK_DISPATCH_UNCERTAIN' || publicCode === 'TASK_UNAVAILABLE')
+      && (operation === 'invoke' || operation === 'resume') ? 'unknown' : rejectedBeforeDispatch ? 'not_dispatched' : 'attempted' },
   );
 }
 

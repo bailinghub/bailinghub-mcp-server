@@ -78,6 +78,8 @@ SDK 先确认任务控制能力及原只读回执能力，然后发送 `task_bin
 | 网络失败或 `TASK_UNAVAILABLE` | `transport_unavailable`，保持原绑定；scope 查询可重验原范围。不能当作“不支持”。 |
 | `TASK_REQUIRED`、暂停/取消/到期、额度/并发上限、范围/成员/绑定冲突、工具不允许等 | 保留大写 `publicCode` 和反馈 `code`，分类 `task_control`，无自动重试/新建建议。 |
 | 不合格的快照结构或策略计数 | `TASK_RECORD_INVALID`，不返回伪造默认任务或空计数。 |
+| 已支持 Core 返回 `TASK_NOT_FOUND` / `TASK_RUN_INACTIVE` | 保留原任务不存在 / 原 run 不可继续的原因与 HTTP 状态，分类 `task_control`，不误判旧 Core。`TASK_INVALID_INPUT` 分类 `invalid_request`。 |
 | 原写调用已有派发不确定性 | 既有 `accepted_unknown` / `invocation_outcome_unknown` 优先，不因任务错误抹掉原调用事实。 |
+| `TASK_DISPATCH_UNCERTAIN`，或 invoke/resume 返回 `TASK_UNAVAILABLE` | 原调用可能已派发：保留原 ID，`dispatch: unknown`、`next_action: inspect_original`；只读核对，不建议自动 resume 或新建调用。 |
 
 宿主必须优先保留本地 `storage_error`、`unsavedEvents` 和 `recovery_gap`，任务摘要不能覆盖关联未落盘或原调用未知状态。SDK 不创建第二份任务账本或原调用回执协议。配套 Core、宿主持久化和真实 Session 的集成验收需独立记录，SDK 合成 fetch 测试不替代部署验证。

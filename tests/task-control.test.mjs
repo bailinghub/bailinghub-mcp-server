@@ -304,9 +304,42 @@ test('a supported Core missing task is not mistaken for an old unsupported Core'
   });
 });
 
+test('Core task-not-found stays a structured original-task failure after negotiation', async () => {
+  const f = client(({ path }) => path === TASK_PATH ? json({ error: 'TASK_NOT_FOUND' }, 404) : undefined);
+  await assert.rejects(f.api.getTask(TASK, { clientConversationId: CONVERSATION }), (error) => {
+    assert.equal(error.publicCode, 'TASK_NOT_FOUND'); assert.equal(error.statusCode, 404);
+    assert.equal(error.feedback.category, 'task_control'); assert.equal(error.feedback.next_action, 'none');
+    return true;
+  });
+});
+
+for (const [taskCode, status, category] of [['TASK_RUN_INACTIVE', 409, 'task_control'], ['TASK_INVALID_INPUT', 400, 'invalid_request']]) {
+  test(`${taskCode} from the Core turn admission boundary retains its reason`, async () => {
+    const f = client(({ path }) => path === TURNS ? json({ error: taskCode, message: 'not-forwarded' }, status) : undefined);
+    await assert.rejects(f.api.startTurn(turnInput(), { taskBinding: binding() }), code(taskCode, category));
+  });
+}
+
 for (const field of ['task_binding', 'task_id', 'taskId']) test(`misspelled host ${field} never silently downgrades`, async (t) => {
   const f = await hostFixture(t);
   await assert.rejects(f.transport.startTurn(turnInput(), { ...f.options(), [field]: binding() }), TypeError);
   await assert.rejects(f.api.startTurn(turnInput(), { [field]: binding() }), TypeError);
   assert.equal(f.calls.length, 0);
 });
+
+for (const operation of ['invoke', 'resume']) for (const taskCode of ['TASK_DISPATCH_UNCERTAIN', 'TASK_UNAVAILABLE']) {
+  test(`${operation} ${taskCode} requires read-only inspection of the uncertain original operation`, async () => {
+    const f = client(() => json({ error: taskCode, message: 'not-forwarded' }, 503));
+    const action = operation === 'invoke'
+      ? f.api.invoke({ agentRunId: RUN, invocationId: ID, capabilityRevision: REV, tool: 'goods_update', arguments: {} })
+      : f.api.resume(ID);
+    await assert.rejects(action, (error) => {
+      assert.equal(error.publicCode, taskCode); assert.equal(error.feedback.code, taskCode);
+      assert.equal(error.feedback.category, 'invocation_outcome_unknown');
+      assert.equal(error.feedback.dispatch, 'unknown'); assert.equal(error.feedback.invocation_id, ID);
+      assert.equal(error.disposition, 'accepted_unknown'); assert.equal(error.feedback.next_action, 'inspect_original');
+      assert.equal(error.feedback.retryable, false); return true;
+    });
+    assert.equal(f.calls.length, 1);
+  });
+}

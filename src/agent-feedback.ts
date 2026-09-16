@@ -33,6 +33,7 @@ export const AGENT_TASK_ERROR_CODES = [
   'TASK_REQUIRED', 'TASK_UNSUPPORTED', 'TASK_SCOPE_BLOCKED', 'TASK_MEMBER_MISMATCH', 'TASK_BINDING_CONFLICT',
   'TASK_PAUSED', 'TASK_CANCELLED', 'TASK_EXPIRED', 'TASK_WRITE_BUDGET_EXHAUSTED', 'TASK_CONCURRENCY_EXHAUSTED',
   'TASK_TOOL_NOT_ALLOWED', 'TASK_REVISION_CONFLICT', 'TASK_RECORD_INVALID', 'TASK_UNAVAILABLE',
+  'TASK_NOT_FOUND', 'TASK_RUN_INACTIVE', 'TASK_INVALID_INPUT', 'TASK_DISPATCH_UNCERTAIN',
 ] as const;
 const TASK_CODES = new Set<string>(AGENT_TASK_ERROR_CODES);
 const CODES = new Set([
@@ -82,6 +83,8 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
   else if (code === 'agent_request_cancelled') category = 'cancelled';
   else if (code === 'TASK_UNSUPPORTED') category = 'unsupported';
   else if (code === 'TASK_UNAVAILABLE') category = 'transport_unavailable';
+  else if (code === 'TASK_INVALID_INPUT') category = 'invalid_request';
+  else if (code === 'TASK_DISPATCH_UNCERTAIN') category = 'invocation_outcome_unknown';
   else if (TASK_CODES.has(code)) category = 'task_control';
   else if (AUTH_CODES.has(code) || value.statusCode === 401 || value.statusCode === 403) category = 'authorization_unavailable';
   else if (code === 'agent_schema_unsupported' || code === 'system_info_unsupported'
@@ -100,7 +103,9 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
     category = 'invocation_outcome_unknown';
   }
   let nextAction: AgentFailureNextAction = 'none';
-  if ((code === 'invocation_conflict' || code === 'reconciliation_required') && invocationId) nextAction = 'inspect_original';
+  if (code === 'TASK_DISPATCH_UNCERTAIN'
+    || (code === 'TASK_UNAVAILABLE' && (context.operation === 'invoke' || context.operation === 'resume'))) nextAction = 'inspect_original';
+  else if ((code === 'invocation_conflict' || code === 'reconciliation_required') && invocationId) nextAction = 'inspect_original';
   else if (context.operation === 'inspect' && (category === 'invocation_outcome_unknown' || category === 'transport_unavailable')) {
     nextAction = 'inspect_original';
   } else if (category === 'invocation_outcome_unknown') nextAction = invocationId ? 'resume_original' : 'inspect_original';
