@@ -48,6 +48,21 @@ const OLD_CREDENTIALS = {
   refresh_expires_at: '2099-09-25T00:00:00.000Z',
 };
 
+test('session inspection retains the structured 401 after invalid credential cleanup', async () => {
+  const store = new MemoryCredentialStore(OLD_CREDENTIALS);
+  const manager = new AgentSessionManager(store, async () => jsonResponse({}, 401));
+  await assert.rejects(manager.getSession(), error => {
+    assert.equal(error.name, 'AgentAuthHttpError');
+    assert.equal(error.statusCode, 401);
+    assert.equal(error.publicCode, 'agent_authorization_unavailable');
+    assert.equal(error.retryable, false);
+    assert.equal(error.feedback.category, 'authorization_unavailable');
+    assert.equal(error.feedback.dispatch, 'not_dispatched');
+    return true;
+  });
+  assert.equal(await store.load(), undefined);
+});
+
 test('authorization page permits HTTPS or explicit nonzero IP loopback, never localhost HTTP', async () => {
   const responseFor = (authorizationUrl) =>
     new AgentAuthHttpClient('https://hub.example.com', async () =>

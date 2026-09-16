@@ -34,6 +34,19 @@ SDK 只在同一个 transport、同一原连接的 Hub、App、工作空间和 S
 
 **完整成员核验由宿主完成。** 宿主必须用每个原连接读取同一 task，确认任务 ID、`scope_hash`、`member_count` 一致，数量等于全部原选成员，每份快照的自身成员准确对应原范围；不得只绑定成功返回的子集，不支持跨 Hub。服务端仍需每次验证完整成员与实际权限，SDK 快照不是派发授权。
 
+### 身份查询失败保留结构化原因
+
+例如，会话同时选择商城和库存授权，其中一个原授权失效时，宿主应能区分“等待网络恢复”与“原身份已不可用”，不能仅根据异常文本猜测。
+
+- `AgentSessionManager.getSession()` 收到401并按既有规则移除当前失效凭据后，仍抛出结构化 `AgentAuthHttpError`：HTTP401、`publicCode=agent_authorization_unavailable`、不可自动重试。并发轮换的新凭据不会被当成旧凭据删除。
+- 远端返回的 Session、Client或授权路由与本地原记录不一致时，返回 `agent_binding_changed`，`origin=sdk / operation=scope / dispatch=not_dispatched`。不把响应中的新身份存成本地凭据，也不把冲突当网络故障。
+- 带 `expectedBinding` 的 `transport.status()` 在成功或失败返回前都核对原绑定。401清理了原凭据或等待期间发生本地改绑时，返回 `agent_binding_changed`；普通未绑定status的logged_out行为保持兼容。
+- 对原绑定未变的403、429/5xx、超时/传输错误，保留既有结构化状态；取消仍优先。坐标宿主据此对明确原身份失效整组阻断，对暂时无法验证保留原组重试，不通过改系统、剩余子集或默认连接绕过。
+
+该修复沿用现有错误码和反馈协议，不新增Core接口、任务策略或DSH方法。DSH正式坐标候选可直接使用新SDK；正式坐标的 `AUTHORIZATION_CHANGED` 在同一runtime保持阻断，不会因服务重新返回旧身份而自动ready。这里不新增跨进程永久撤销账本，也不改变宿主明确重新确认未开始草稿的原规则。
+
+`CredentialStore.load()` 的空值契约始终是 `undefined`，不是 `null`。失败时不返回坐标、无业务派发、原范围不改等断言应正向执行，不能以预期失败标记代替契约验收。
+
 ## 受管轮次只接受宿主注入
 
 ```ts

@@ -663,8 +663,9 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
       } catch (error) {
         if (!isInvalidAgentSessionError(error)) throw error;
         if (!await this.deleteInvalidCredentialsIfCurrent(credentials)) continue;
-        throw new Error(
+        throw new AgentAuthHttpError(
           'The BailingHub Agent Session is invalid or expired. The local login was removed; run login again.',
+          401,
         );
       }
       if (
@@ -672,7 +673,9 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
         session.client_app_id !== credentials.client_app_id ||
         !session.allowed_routes.includes(credentials.route)
       ) {
-        throw new Error('The remote Agent Session does not match the local login.');
+        throw new BailingHubClientError('The remote Agent Session does not match the local login.',
+          403, false, 'agent_binding_changed', 'definitive_rejection', undefined,
+          { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' });
       }
       return session;
     }

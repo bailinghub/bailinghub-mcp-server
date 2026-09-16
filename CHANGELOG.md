@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve structured identity failures when a host checks selected shop and
+  inventory authorizations. Expired Sessions and mismatched remote identities
+  no longer look like temporary network uncertainty. Recheck an original bound
+  identity after failed status requests as well as successful ones; keep credential
+  cleanup, rotation guards and cancellation behavior. No Core API change is needed.
+
 - Add explicit, read-only original-invocation inspection for adapted hosts. A shop
   listing that is approved but not dispatched can be checked without continuing
   it. Original result, approval and journal facts remain distinct; `resume` keeps

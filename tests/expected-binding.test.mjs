@@ -47,6 +47,68 @@ const METHODS = {
   }, options),
 };
 
+for (const status of [401, 403, 429, 503]) {
+  test(`bound identity HTTP ${status} keeps structured classification on its first failure`, async (t) => {
+    const f = await fixture(t);
+    f.hooks.request = request => {
+      assert.equal(request.path, '/agent-auth/v1/session');
+      return new Response(JSON.stringify({ error: 'synthetic_failure' }), { status });
+    };
+    await assert.rejects(f.transport.status(f.options()), error => {
+      assert.equal(error.statusCode, status === 401 ? 403 : status);
+      assert.equal(error.publicCode, status === 401 ? 'agent_binding_changed'
+        : status === 403 ? 'agent_authorization_unavailable' : 'unknown_failure');
+      assert.equal(error.retryable, status >= 429);
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      return true;
+    });
+    assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), status === 401 ? undefined : f.credentialsA);
+    assert.deepEqual(await f.rawStores.get(f.b.connectionKey).load(), f.credentialsB);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+for (const bound of [false, true]) for (const field of ['session', 'client', 'route']) {
+  test(`${bound ? 'bound' : 'ordinary'} remote ${field} mismatch keeps a definitive identity error without credential replacement`, async (t) => {
+    const f = await fixture(t);
+    f.hooks.request = request => {
+      assert.equal(request.path, '/agent-auth/v1/session');
+      return new Response(JSON.stringify({
+        session_id: field === 'session' ? SESSION_B : SESSION_A,
+        client_app_id: field === 'client' ? 'inventory-app' : f.a.clientAppId,
+        allowed_routes: field === 'route' ? ['inventory'] : [f.a.workspace],
+        device_label: 'synthetic', principal: { id: 'synthetic' }, on_behalf_of: 'synthetic',
+        created_at: '2026-01-01T00:00:00.000Z', expires_at: '2099-01-01T00:00:00.000Z', refresh_expires_at: '2099-02-01T00:00:00.000Z',
+      }), { status: 200 });
+    };
+    await assert.rejects(f.transport.status(bound ? f.options() : { connectionKey: f.a.connectionKey }), error => {
+      assert.equal(error.publicCode, 'agent_binding_changed');
+      assert.equal(error.statusCode, 403);
+      assert.equal(error.retryable, false);
+      assert.equal(error.feedback.category, 'authorization_unavailable');
+      assert.equal(error.feedback.origin, 'sdk');
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      return true;
+    });
+    assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), f.credentialsA);
+    assert.deepEqual(await f.rawStores.get(f.b.connectionKey).load(), f.credentialsB);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+test('a failed bound status response still rechecks a concurrently replaced original identity', async t => {
+  const f = await fixture(t);
+  const replacement = { ...f.credentialsA, session_id: SESSION_B };
+  f.hooks.request = async request => {
+    assert.equal(request.path, '/agent-auth/v1/session');
+    await f.rawStores.get(f.a.connectionKey).save(replacement);
+    return new Response('{}', { status: 503 });
+  };
+  await assert.rejects(f.transport.status(f.options()), error => error.publicCode === 'agent_binding_changed');
+  assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), replacement);
+  assert.equal(f.calls.length, 1);
+});
+
 async function fixture(t, { expired = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-expected-binding-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

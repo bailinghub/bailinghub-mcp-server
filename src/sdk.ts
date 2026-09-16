@@ -1214,8 +1214,9 @@ export function createAgentClientTransport(
           throw new TypeError('Expected binding does not match the explicit target.');
         }
         const bound = await boundSession(input.connectionKey, expected, undefined, signal);
-        const session = await bound.manager.getSession();
-        await bound.assertBinding();
+        let session;
+        try { session = await bound.manager.getSession(); }
+        finally { await bound.assertBinding(); }
         if (session.session_id !== expected.sessionId || session.client_app_id !== expected.clientAppId ||
             !session.allowed_routes.includes(expected.workspace)) {
           throw new BailingHubClientError('The original Agent authorization is no longer available.', 403, false, 'agent_binding_changed');
