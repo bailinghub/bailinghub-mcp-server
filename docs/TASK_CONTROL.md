@@ -26,7 +26,9 @@ const task = await transport.getTask(savedTaskId, {
 
 这两个方法只读取能力和快照，不创建任务、业务 run 或派发许可。它们要求精确的原 `connectionKey` 和完整 `expectedBinding`，不会退回全局默认连接。SDK 在请求前和最终响应成功或失败后都重新核对原绑定，调用期间替换 Session 或删除连接会使结果失效。参数在第一次异步读取之前复制，避免宿主改写调用中的参数导致改绑。普通访问令牌刷新仍可沿用原授权流程。
 
-能力请求为 `GET /agent-api/v1/task-control/capabilities`。`getTask` 先读取能力，再请求 `GET /agent-api/v1/tasks/{task_id}?workspace=...&client_conversation_id=...`。能力和快照不缓存。`supported: false` 是有效能力响应，可同时保留 `mode: required`；不代表存在可执行的受管任务。支持任务控制时必须有 `inspect_invocation: true`。
+能力请求为 `GET /agent-api/v1/task-control/capabilities`。显式 `getTaskControlCapabilities` 每次实时请求，`mode`、`supported: false` 和错误不会缓存。`supported: false` 是有效能力响应，可同时保留 `mode: required`；不代表存在可执行的受管任务。支持任务控制时必须有 `inspect_invocation: true`。
+
+SDK 只在同一个 transport、同一原连接的 Hub、App、工作空间和 Session 下复用严格校验成功的任务/回执协议支持证明。`getTask`、受管 `startTurn` 和 `inspectInvocation` 可据此省去重复协议协商；每次仍真实请求任务快照、创建轮次或读取原回执，身份前后校验与 DTO 校验完整保留。协议证明不包含 enrollment、权限、任务状态、预算或许可，也不提供业务身份检查的多轮 TTL。身份变化、能力否定、协议或请求错误会清除证明；晚到的肯定能力响应不能恢复已失效的证明。任务快照与回执不缓存，Core 仍逐笔执行最终完整成员及业务闸门。
 
 快照沿用 wire 字段。导出类型为 `AgentTaskControlCapabilities`、`AgentTaskSnapshot`、`AgentTaskMember` 和 `AgentTaskBinding`，可从 `/sdk` 或 `/agent-client` 导入。SDK 严格校验版本、标识、状态、安全整数、策略、计数和当前成员的 Session、App、工作空间、会话坐标，并只返回允许字段。其他成员、身份摘要、凭据和任意服务端附加字段不会透传。
 

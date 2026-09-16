@@ -16,6 +16,7 @@ const ID = 'b'.repeat(64);
 const CONVERSATION = 'synthetic-conversation';
 const CAPS = '/agent-api/v1/task-control/capabilities';
 const RECEIPT_CAPS = '/agent-api/v1/tool-invocations/inspection-capabilities';
+const RECEIPT = `/agent-api/v1/tool-invocations/${ID}/receipt`;
 const TASK_PATH = `/agent-api/v1/tasks/${TASK}`;
 const TURNS = '/agent-api/v1/workspaces/inventory/turns';
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
@@ -25,6 +26,10 @@ const capabilities = () => ({ schema_version: 'bailing.agent-task-control-capabi
   controls: ['pause', 'resume', 'cancel'], inspect_invocation: true });
 const inspectionCapabilities = () => ({ schema_version: 'bailing.agent-invocation-inspection-capabilities.v1',
   receipt_schema: 'bailing.agent-invocation-receipt.v1', read_only: true });
+const receipt = () => ({ schema_version: 'bailing.agent-invocation-receipt.v1', invocation_id: ID,
+  agent_run_id: RUN, route: 'inventory', tool: 'goods_update', observed_at: '2026-09-16T00:00:00.000Z',
+  read_only: true, business_operation_performed: false, result: null, result_source: 'none',
+  dispatch_state: 'unknown', approval: { status: 'none' }, journal_state: 'unknown' });
 const snapshot = () => ({ schema_version: 'bailing.agent-task.v1', task_id: TASK, state: 'active', revision: 2,
   ledger_sequence: 4, scope_hash: REV, member_count: 2,
   member: { session_id: SESSION, client_app_id: 'commerce-agent', workspace: 'inventory',
@@ -49,6 +54,7 @@ function client(handler) {
     if (override) return override;
     if (call.path === CAPS) return json(capabilities());
     if (call.path === RECEIPT_CAPS) return json(inspectionCapabilities());
+    if (call.path === RECEIPT) return json(receipt());
     if (call.path === TASK_PATH) return json(snapshot());
     if (call.path === TURNS) return json(turn(Boolean(call.body.task_binding)));
     assert.fail(`Unexpected request ${call.method} ${call.path}`);
@@ -343,3 +349,138 @@ for (const operation of ['invoke', 'resume']) for (const taskCode of ['TASK_DISP
     assert.equal(f.calls.length, 1);
   });
 }
+
+test('fixed host binding shares only positive protocol support while task, turn and receipt requests stay live', async (t) => {
+  const f = await hostFixture(t);
+  await f.transport.getTaskControlCapabilities(f.options());
+  assert.equal((await f.transport.getTask(TASK, f.options())).state, 'active');
+  f.hooks.request = ({ path }) => path === TASK_PATH ? json({ ...snapshot(), state: 'paused', revision: 3 }) : undefined;
+  assert.equal((await f.transport.getTask(TASK, f.options())).state, 'paused');
+  await hostCalls.turn(f, f.options());
+  await hostCalls.turn(f, f.options());
+  await f.transport.inspectInvocation(ID, f.options());
+  await f.transport.inspectInvocation(ID, f.options());
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, TASK_PATH, TASK_PATH, RECEIPT_CAPS, TURNS, TURNS, RECEIPT, RECEIPT]);
+});
+
+test('explicit capability queries observe enrollment changes and false support invalidates prior proof', async (t) => {
+  const f = await hostFixture(t);
+  assert.equal((await f.transport.getTaskControlCapabilities(f.options())).mode, 'optional');
+  f.hooks.request = ({ path }) => path === CAPS ? json({ ...capabilities(), mode: 'required' }) : undefined;
+  assert.equal((await f.transport.getTaskControlCapabilities(f.options())).mode, 'required');
+  f.hooks.request = ({ path }) => path === CAPS ? json({ ...capabilities(), mode: 'required', supported: false, inspect_invocation: false }) : undefined;
+  assert.equal((await f.transport.getTaskControlCapabilities(f.options())).supported, false);
+  await assert.rejects(f.transport.getTask(TASK, f.options()), code('TASK_UNSUPPORTED'));
+  f.hooks.request = undefined;
+  await f.transport.getTask(TASK, f.options());
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, CAPS, CAPS, CAPS, CAPS, TASK_PATH]);
+});
+
+test('optional protocol observation never bypasses a later required-task gate', async (t) => {
+  const f = await hostFixture(t);
+  await f.transport.getTaskControlCapabilities(f.options());
+  f.hooks.request = ({ path }) => path === TURNS ? json({ error: 'TASK_REQUIRED' }, 409) : undefined;
+  await assert.rejects(f.transport.startTurn(turnInput(), f.options()), code('TASK_REQUIRED'));
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, TURNS]);
+});
+
+for (const rejection of ['TASK_SCOPE_BLOCKED', 'TASK_UNAVAILABLE', 'future_schema', 'network']) {
+  test(`live task ${rejection} clears support without hiding the original failure`, async (t) => {
+    const f = await hostFixture(t); await f.transport.getTask(TASK, f.options());
+    f.hooks.request = ({ path }) => {
+      if (path !== TASK_PATH) return undefined;
+      if (rejection === 'network') throw new TypeError('synthetic transport loss');
+      if (rejection === 'future_schema') return json({ ...snapshot(), schema_version: 'future' });
+      return json({ error: rejection }, 503);
+    };
+    await assert.rejects(f.transport.getTask(TASK, f.options()), code(rejection === 'network' ? 'agent_transport_unavailable'
+      : rejection === 'future_schema' ? 'TASK_UNSUPPORTED' : rejection));
+    f.hooks.request = undefined;
+    await f.transport.getTask(TASK, f.options());
+    assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, TASK_PATH, TASK_PATH, CAPS, TASK_PATH]);
+  });
+}
+
+test('explicit capability network failure clears an earlier positive proof and is never cached', async (t) => {
+  const f = await hostFixture(t); await f.transport.getTask(TASK, f.options());
+  f.hooks.request = ({ path }) => { if (path === CAPS) throw new TypeError('synthetic outage'); };
+  await assert.rejects(f.transport.getTaskControlCapabilities(f.options()), code('agent_transport_unavailable'));
+  f.hooks.request = undefined;
+  await f.transport.getTask(TASK, f.options());
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, TASK_PATH, CAPS, CAPS, TASK_PATH]);
+});
+
+test('late positive capability response cannot restore proof invalidated by a concurrent negative response', async () => {
+  let release; let entered;
+  const blocked = new Promise((resolve) => { entered = resolve; });
+  const pending = new Promise((resolve) => { release = resolve; });
+  let first = true;
+  const f = client(async ({ path }) => {
+    if (path !== CAPS) return;
+    if (first) { first = false; entered(); await pending; return json(capabilities()); }
+    return json({ ...capabilities(), supported: false, inspect_invocation: false });
+  });
+  const earlier = f.api.getTaskControlCapabilities(); await blocked;
+  assert.equal((await f.api.getTaskControlCapabilities()).supported, false);
+  release(); await earlier;
+  await assert.rejects(f.api.getTask(TASK, { clientConversationId: CONVERSATION }), code('TASK_UNSUPPORTED'));
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, CAPS, CAPS]);
+});
+
+test('same connection with a new Session must negotiate independently even when the old Session is later restored', async (t) => {
+  const f = await hostFixture(t); await f.transport.getTask(TASK, f.options());
+  await f.store.credentialStore(f.a.connectionKey).save(credentials(f.a, OTHER_SESSION));
+  f.hooks.request = ({ path }) => {
+    if (path !== TASK_PATH) return;
+    const value = snapshot(); value.member.session_id = OTHER_SESSION; return json(value);
+  };
+  const next = f.options(); next.expectedBinding.sessionId = OTHER_SESSION;
+  await f.transport.getTask(TASK, next);
+  await f.store.credentialStore(f.a.connectionKey).save(credentials(f.a)); f.hooks.request = undefined;
+  await f.transport.getTask(TASK, f.options());
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, TASK_PATH, CAPS, TASK_PATH, CAPS, TASK_PATH]);
+});
+
+test('cached proof never hides late Session replacement and is invalidated even if that Session is restored', async (t) => {
+  const f = await hostFixture(t); await f.transport.getTask(TASK, f.options());
+  f.hooks.request = async ({ path }) => { if (path === TASK_PATH) await f.store.credentialStore(f.a.connectionKey).save(credentials(f.a, OTHER_SESSION)); };
+  await assert.rejects(f.transport.getTask(TASK, f.options()), code('agent_binding_changed'));
+  await f.store.credentialStore(f.a.connectionKey).save(credentials(f.a)); f.hooks.request = undefined;
+  await f.transport.getTask(TASK, f.options());
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, TASK_PATH, TASK_PATH, CAPS, TASK_PATH]);
+});
+
+test('cached protocol support still freezes mutable expected binding and rejects cancellation before requests', async (t) => {
+  const f = await hostFixture(t); await f.transport.getTask(TASK, f.options());
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(f.transport.getTask(TASK, { ...f.options(), signal: controller.signal }), code('agent_request_cancelled'));
+  const options = f.options(); const get = f.registry.get.bind(f.registry);
+  f.registry.get = async (key) => { options.expectedBinding.sessionId = OTHER_SESSION; return get(key); };
+  await f.transport.getTask(TASK, options);
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, TASK_PATH, TASK_PATH]);
+  assert.ok(f.calls.every(({ authorization }) => authorization === `Bearer synthetic-${SESSION}`));
+});
+
+test('a formerly unsupported Core is renegotiated and a warm managed turn still obeys current Core gates', async (t) => {
+  const f = await hostFixture(t);
+  f.hooks.request = () => json({ error: 'not_found' }, 404);
+  await assert.rejects(hostCalls.turn(f, f.options()), code('TASK_UNSUPPORTED'));
+  f.hooks.request = undefined;
+  await hostCalls.turn(f, f.options());
+  f.hooks.request = ({ path }) => path === TURNS ? json({ error: 'TASK_PAUSED' }, 409) : undefined;
+  await assert.rejects(hostCalls.turn(f, f.options()), code('TASK_PAUSED'));
+  f.hooks.request = undefined;
+  await hostCalls.turn(f, f.options());
+  assert.deepEqual(f.calls.map(({ path }) => path), [CAPS, CAPS, RECEIPT_CAPS, TURNS, TURNS, CAPS, RECEIPT_CAPS, TURNS]);
+});
+
+test('receipt polling reuses only schema proof, and receipt failures force negotiation before another GET', async (t) => {
+  const f = await hostFixture(t);
+  await f.transport.inspectInvocation(ID, f.options());
+  f.hooks.request = ({ path }) => path === RECEIPT ? json({ error: 'invocation_record_invalid' }, 503) : undefined;
+  await assert.rejects(f.transport.inspectInvocation(ID, f.options()), code('invocation_record_invalid'));
+  f.hooks.request = undefined;
+  await f.transport.inspectInvocation(ID, f.options());
+  assert.deepEqual(f.calls.map(({ path }) => path), [RECEIPT_CAPS, RECEIPT, RECEIPT, RECEIPT_CAPS, RECEIPT]);
+  assert.ok(f.calls.every(({ method }) => method === 'GET'));
+});

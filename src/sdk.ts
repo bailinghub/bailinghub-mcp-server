@@ -1,6 +1,8 @@
 import type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
 export type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
 import { attachAgentFailure, type AgentFailureOperation } from './agent-feedback.js';
+import { agentProtocolSupport, clearAgentProtocolSupport, newAgentProtocolSupport,
+  type AgentProtocolSupport } from './agent-protocol-support.js';
 import { taskBinding, taskConversationInput, taskIdInput,
   type AgentTaskControlCapabilities, type AgentTaskSnapshot } from './task-control.js';
 export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
@@ -438,6 +440,12 @@ export function createAgentClientTransport(
   // Sidecar metadata never participates in registry identity, alias allocation, or credential IO.
   const subjectDisplayCache = connections.registry.subjectDisplayCache;
   const verifiedSubjectDisplays = new Map<string, { sessionId: string; view: Record<string, unknown> }>();
+  const protocolSupports = new Map<string, { binding: string; support: AgentProtocolSupport }>();
+  function clearProtocolSupport(connectionKey: string) {
+    const existing = protocolSupports.get(connectionKey);
+    if (existing) clearAgentProtocolSupport(existing.support);
+    protocolSupports.delete(connectionKey);
+  }
   function displayBinding(profile: AgentConnectionProfile, sessionId: string): AgentSubjectDisplayBinding {
     return { connectionKey: profile.connectionKey, baseUrl: profile.baseUrl, clientAppId: profile.clientAppId,
       workspace: profile.workspace, sessionId };
@@ -756,10 +764,13 @@ export function createAgentClientTransport(
     if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new TypeError('Expected bindings require an exact connection key.');
     const profile = await connections.registry.get(connectionKey);
     assertRequestActive(signal);
-    const bindingError = () => new BailingHubClientError(
-      'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed',
-      'definitive_rejection', undefined, { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' },
-    );
+    const bindingError = () => {
+      clearProtocolSupport(connectionKey);
+      return new BailingHubClientError(
+        'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed',
+        'definitive_rejection', undefined, { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' },
+      );
+    };
     const matches = (value: AgentConnectionProfile | null | undefined) => value &&
       value.baseUrl === expected.hubUrl && value.clientAppId === expected.clientAppId && value.workspace === expected.workspace;
     if (!matches(profile)) throw bindingError();
@@ -796,6 +807,16 @@ export function createAgentClientTransport(
         return token;
       } },
     }, { fetchImpl: checkedFetch, allowInsecureHttp: profile!.allowInsecureHttp, ...(signal ? { signal } : {}) });
+    const binding = JSON.stringify([expected.hubUrl, expected.clientAppId, expected.workspace, expected.sessionId]);
+    if (protocolSupports.get(connectionKey)?.binding !== binding) clearProtocolSupport(connectionKey);
+    let entry = protocolSupports.get(connectionKey);
+    if (!entry) {
+      // Bound memory use; eviction only causes protocol negotiation to happen again.
+      if (protocolSupports.size >= 128) clearProtocolSupport(protocolSupports.keys().next().value!);
+      entry = { binding, support: newAgentProtocolSupport() };
+      protocolSupports.set(connectionKey, entry);
+    }
+    agentProtocolSupport(client, binding, entry.support);
     return { profile: profile!, manager, client, assertBinding };
   }
 

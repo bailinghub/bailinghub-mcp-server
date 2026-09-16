@@ -16,6 +16,7 @@ import {
 } from './client.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
+import { agentProtocolSupport, clearAgentProtocolSupport } from './agent-protocol-support.js';
 import { normalizeAgentSystemInfo, type AgentSystemInfo } from './system-info.js';
 export type { AgentSystemInfo } from './system-info.js';
 import {
@@ -851,6 +852,7 @@ export class BailingHubAgentClient {
   private async withFailure<T>(operation: AgentFailureOperation, action: () => Promise<T>, invocationValue?: unknown): Promise<T> {
     try { return await action(); }
     catch (error) {
+      clearAgentProtocolSupport(this.protocolSupport());
       const known = error instanceof BailingHubClientError ? error : undefined;
       const invocationId = known?.invocationId ?? (typeof invocationValue === 'string' && INVOCATION_ID_PATTERN.test(invocationValue)
         ? invocationValue : undefined);
@@ -860,12 +862,28 @@ export class BailingHubAgentClient {
     }
   }
 
+  private protocolSupport() {
+    const { baseUrl, clientAppId, workspace, sessionId } = this.connection;
+    return agentProtocolSupport(this, JSON.stringify([baseUrl, clientAppId, workspace, sessionId]));
+  }
+
+  private async requireTaskProtocol(): Promise<void> {
+    if (this.protocolSupport().task) return;
+    if (!(await this.getTaskControlCapabilities()).supported) throw taskError('TASK_UNSUPPORTED');
+  }
+
+  private async requireInspectionProtocol(): Promise<void> {
+    if (!this.protocolSupport().inspection) await this.getInvocationInspectionCapabilities();
+  }
+
   async uploadArtifact(input: AgentArtifactInput): Promise<AgentArtifactReceipt> { return uploadArtifact(this.transport, this.connection, input); }
   async getArtifact(uploadId: string): Promise<AgentArtifactReceipt> { return getArtifact(this.transport, this.connection, uploadId); }
 
   /** Read protocol support with the original Agent bearer. No task or run is created. */
   async getTaskControlCapabilities(): Promise<AgentTaskControlCapabilities> {
     return this.withFailure('scope', async () => {
+      const support = this.protocolSupport();
+      const generation = support.generation;
       let value: unknown;
       try {
         value = (await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.taskControlCapabilities)).body;
@@ -874,7 +892,10 @@ export class BailingHubAgentClient {
           && (!error.publicCode || error.publicCode === 'TASK_UNSUPPORTED')) throw taskError('TASK_UNSUPPORTED');
         throw taskReadFailure(error);
       }
-      return taskCapabilities(value);
+      const capabilities = taskCapabilities(value);
+      if (!capabilities.supported) clearAgentProtocolSupport(support);
+      else if (support.generation === generation) support.task = true;
+      return capabilities;
     });
   }
 
@@ -883,8 +904,7 @@ export class BailingHubAgentClient {
     return this.withFailure('scope', async () => {
       const taskId = taskIdInput(taskIdValue);
       const clientConversationId = taskConversationInput(options?.clientConversationId);
-      const capabilities = await this.getTaskControlCapabilities();
-      if (!capabilities.supported) throw taskError('TASK_UNSUPPORTED');
+      await this.requireTaskProtocol();
       const query = new URLSearchParams({ workspace: this.connection.workspace, client_conversation_id: clientConversationId });
       let response: AgentTransportResponse;
       try { response = await this.transport.request('GET', `${AGENT_CLIENT_V1_PATHS.task(taskId)}?${query}`); }
@@ -895,6 +915,8 @@ export class BailingHubAgentClient {
 
   async getInvocationInspectionCapabilities(): Promise<AgentInvocationInspectionCapabilities> {
     return this.withFailure('inspect', async () => {
+      const support = this.protocolSupport();
+      const generation = support.generation;
       let value: unknown;
       try {
         value = (await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.invocationInspectionCapabilities)).body;
@@ -911,6 +933,7 @@ export class BailingHubAgentClient {
         throw new BailingHubClientError('This BailingHub version does not support the invocation receipt contract.',
           undefined, false, 'agent_schema_unsupported');
       }
+      if (support.generation === generation) support.inspection = true;
       return { schema_version: 'bailing.agent-invocation-inspection-capabilities.v1',
         receipt_schema: 'bailing.agent-invocation-receipt.v1', read_only: true };
     });
@@ -923,7 +946,7 @@ export class BailingHubAgentClient {
         throw new TypeError('invocationId must be a 64-character lowercase digest.');
       }
       const workspace = this.connection.workspace;
-      await this.getInvocationInspectionCapabilities();
+      await this.requireInspectionProtocol();
       const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.invocationReceipt(invocationIdValue));
       try {
         return normalizeInvocationReceipt(response.body, invocationIdValue, workspace);
@@ -1098,9 +1121,8 @@ export class BailingHubAgentClient {
     if (requestRenderers) body.renderers = requestRenderers;
     if (binding) {
       taskConversationInput(body.client_conversation_id);
-      const capabilities = await this.getTaskControlCapabilities();
-      if (!capabilities.supported) throw taskError('TASK_UNSUPPORTED');
-      await this.getInvocationInspectionCapabilities();
+      await this.requireTaskProtocol();
+      await this.requireInspectionProtocol();
       body.task_binding = binding;
     }
     const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.turns(this.connection.workspace), body);
