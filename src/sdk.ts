@@ -1,6 +1,8 @@
 import type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
 export type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
 import { attachAgentFailure, type AgentFailureOperation } from './agent-feedback.js';
+import { taskBinding, taskConversationInput, taskIdInput,
+  type AgentTaskControlCapabilities, type AgentTaskSnapshot } from './task-control.js';
 export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
 import { createHash } from 'node:crypto';
 import {
@@ -112,6 +114,8 @@ export {
 } from './credential-store.js';
 
 export { BailingHubClientError } from './client.js';
+export type { StartAgentTurnOptions, AgentTaskBinding, AgentTaskControlCapabilities,
+  AgentTaskMember, AgentTaskSnapshot } from './agent-client.js';
 
 const CONNECTION_KEY_PATTERN = /^conn_[a-f0-9]{32}$/;
 const INVOCATION_ID_PATTERN = /^[a-f0-9]{64}$/;
@@ -201,6 +205,9 @@ export type AgentClientHostTransport = {
   resume(invocationId: string, input?: unknown, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   /** Read the original receipt; requires a frozen original connection and never resumes the operation. */
   inspectInvocation(invocationId: string, options: Record<string, unknown>): Promise<AgentInvocationReceipt>;
+  /** Read-only host API; requires the original connection and authorization binding. */
+  getTaskControlCapabilities(options?: Record<string, unknown>): Promise<AgentTaskControlCapabilities>;
+  getTask(taskId: string, options: Record<string, unknown>): Promise<AgentTaskSnapshot>;
   completeRun(runId: string, input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentRunCompletion>;
   /** Host-only visible transcript synchronization; never expose this method as a model tool. */
   syncConversationArchive(input: Record<string, unknown>, options: Record<string, unknown>): Promise<ConversationAuditAck>;
@@ -1313,6 +1320,13 @@ export function createAgentClientTransport(
 
     async startTurn(inputValue, options = {}) {
       const input = hostRecord(inputValue, 'startTurn input');
+      if (['taskBinding', 'task_binding', 'task_id', 'taskId'].some((key) => key in input)) {
+        throw new TypeError('Task bindings must be supplied through trusted host options.');
+      }
+      if (['task_binding', 'task_id', 'taskId'].some((key) => key in options)) {
+        throw new TypeError('Trusted host options require taskBinding.');
+      }
+      const binding = options.taskBinding === undefined ? undefined : taskBinding(options.taskBinding, true);
       const workspace = options.workspace ?? defaultWorkspace;
       if (workspace === undefined) throw new TypeError('workspace is required.');
       const dto: StartAgentTurnInput = {
@@ -1339,7 +1353,15 @@ export function createAgentClientTransport(
         }
         dto.renderers = normalized;
       }
-      return (await clientFor(workspace, options)).startTurn(dto);
+      if (!binding) return (await clientFor(workspace, options)).startTurn(dto);
+      if (!options.connectionKey || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Managed turns require the explicit original connection and expectedBinding.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      if (expected.workspace !== workspace) throw new TypeError('Expected binding does not match the explicit target.');
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try { return await bound.client.startTurn(dto, { taskBinding: binding }); }
+      finally { await bound.assertBinding(); }
     },
 
     async searchCapabilities(inputValue, options = {}) {
@@ -1406,6 +1428,34 @@ export function createAgentClientTransport(
       }
     },
 
+    async getTaskControlCapabilities(optionsValue = {}) {
+      const options = hostRecord(optionsValue, 'task capability options');
+      if (!options.connectionKey || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Task capabilities require the explicit original connection and expectedBinding.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      if (options.workspace !== undefined && options.workspace !== expected.workspace) {
+        throw new TypeError('Expected binding does not match the explicit target.');
+      }
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try { return await bound.client.getTaskControlCapabilities(); }
+      finally { await bound.assertBinding(); }
+    },
+
+    async getTask(taskIdValue, optionsValue) {
+      const options = hostRecord(optionsValue, 'task snapshot options');
+      const taskId = taskIdInput(taskIdValue);
+      const conversation = taskConversationInput(options.clientConversationId);
+      if (!options.connectionKey || !options.workspace || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Task snapshots require the explicit original connection, workspace, and expectedBinding.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      if (expected.workspace !== options.workspace) throw new TypeError('Expected binding does not match the explicit target.');
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try { return await bound.client.getTask(taskId, { clientConversationId: conversation }); }
+      finally { await bound.assertBinding(); }
+    },
+
     async completeRun(runIdValue, inputValue, options = {}) {
       const workspace = options.workspace ?? defaultWorkspace;
       if (workspace === undefined) throw new TypeError('workspace is required.');
@@ -1438,6 +1488,7 @@ export function createAgentClientTransport(
   const operations: Partial<Record<keyof AgentClientHostTransport, AgentFailureOperation>> = {
     startTurn: 'scope', searchCapabilities: 'search', invoke: 'invoke', resume: 'resume', inspectInvocation: 'inspect',
     completeRun: 'scope', getSystemInfo: 'scope', status: 'scope', workspaces: 'scope', login: 'authorize',
+    getTaskControlCapabilities: 'scope', getTask: 'scope',
   };
   for (const [name, operation] of Object.entries(operations)) {
     const method = transport[name as keyof AgentClientHostTransport] as (...args: unknown[]) => Promise<unknown>;

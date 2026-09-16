@@ -565,3 +565,12 @@ if (typeof transport.getSystemInfo === 'function') {
 
 完整 Core/业务/宿主接入见
 [BailingHub Agent Client v1 接入指南](https://github.com/bailinghub/bailinghub/blob/main/docs/AGENT_CLIENT_QUICKSTART.md)。
+
+## 原任务控制（本地候选）
+
+新增宿主只读方法 `getTaskControlCapabilities({ connectionKey, expectedBinding })` 与
+`getTask(taskId, { connectionKey, workspace, clientConversationId, expectedBinding })`。
+受管 `startTurn` 通过宿主 options 的 `taskBinding: { schema_version, task_id, scope_hash }`
+传入原关联并校验回显；模型 turn input 不能选择任务。SDK 不提供任务创建、暂停、继续或取消的
+管理方法，不携带管理员凭据。包版本仍为 `0.5.0`，公开同版本包不代表已包含这份未发布候选。
+完整成员校验、计量含义、旧 Core 行为和商城/库存场景见[任务控制接缝](TASK_CONTROL.md)。

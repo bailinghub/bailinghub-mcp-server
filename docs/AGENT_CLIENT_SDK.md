@@ -664,3 +664,13 @@ Before publishing an adapter:
 
 For the complete Core/business/host setup, see the
 [BailingHub Agent Client v1 Integration Guide](https://github.com/bailinghub/bailinghub/blob/main/docs/AGENT_CLIENT_QUICKSTART.en.md).
+
+## Original task control (local candidate)
+
+The host-only read methods are `getTaskControlCapabilities({ connectionKey, expectedBinding })`
+and `getTask(taskId, { connectionKey, workspace, clientConversationId, expectedBinding })`.
+Managed turns accept `taskBinding: { schema_version, task_id, scope_hash }` only through trusted
+host options, negotiate both task and receipt support, and require an identical response echo.
+There are no SDK task creation or administration methods. See [task control](TASK_CONTROL.md) for
+full-member checks, compatibility, metering and Chinese business scenarios. This unpublished
+candidate retains package version `0.5.0`; public packages with that version may lack these APIs.

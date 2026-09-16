@@ -1,8 +1,11 @@
 import { parseInvocationRateLimit, type InvocationRateLimit } from './invocation-rate-limit.js';
 import { uploadArtifact, getArtifact, type AgentArtifactInput, type AgentArtifactReceipt } from './agent-artifacts.js';
-import { attachAgentFailure, reconciliationFeedback, type AgentFailureOperation } from './agent-feedback.js';
+import { AGENT_TASK_ERROR_CODES, attachAgentFailure, reconciliationFeedback, type AgentFailureOperation } from './agent-feedback.js';
 export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
 import type { AgentAccessTokenProvider } from './agent-auth.js';
+import { taskBinding, taskCapabilities, taskConversationInput, taskError, taskIdInput, taskSnapshot,
+  type AgentTaskBinding, type AgentTaskControlCapabilities, type AgentTaskSnapshot } from './task-control.js';
+export type { AgentTaskBinding, AgentTaskControlCapabilities, AgentTaskMember, AgentTaskSnapshot } from './task-control.js';
 import {
   AGENT_TOOL_INVOCATION_STATES,
   BailingHubClientError,
@@ -46,6 +49,7 @@ const USAGE_KEYS = new Set([
   'cost_usd',
 ]);
 const PUBLIC_AGENT_ERROR_CODES = new Set([
+  ...AGENT_TASK_ERROR_CODES,
   'agent_client_disabled',
   'agent_direct_disabled',
   'agent_runtime_unavailable',
@@ -90,6 +94,8 @@ export const AGENT_CLIENT_V1_PATHS = {
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/capabilities/search`,
   invocations: '/agent-api/v1/tool-invocations',
   invocationInspectionCapabilities: '/agent-api/v1/tool-invocations/inspection-capabilities',
+  taskControlCapabilities: '/agent-api/v1/task-control/capabilities',
+  task: (taskId: string) => `/agent-api/v1/tasks/${encodeURIComponent(taskId)}`,
   invocationReceipt: (invocationId: string) =>
     `/agent-api/v1/tool-invocations/${encodeURIComponent(invocationId)}/receipt`,
   resumeInvocation: (invocationId: string) =>
@@ -181,6 +187,9 @@ export type StartAgentTurnInput = {
   renderers?: string[];
 };
 
+/** Trusted host state, deliberately separate from model-visible turn input. */
+export type StartAgentTurnOptions = { taskBinding?: AgentTaskBinding };
+
 export type AgentTurnContext = {
   schema: 'bailing.agent-turn-context.v1';
   run_id: string;
@@ -198,6 +207,7 @@ export type AgentTurnContext = {
   };
   active_tools: AgentToolCatalogEntry[];
   discovery?: AgentCapabilityDiscovery;
+  task_binding?: AgentTaskBinding;
 };
 
 export type SearchAgentCapabilitiesInput = {
@@ -632,7 +642,8 @@ function safeHttpError(
   const rejectedBeforeDispatch = status === 401 || status === 403 || (publicCode !== undefined &&
     ['capability_changed', 'tool_not_found', 'invalid_request', 'invalid_route', 'arguments_too_large',
       'agent_direct_disabled', 'agent_tools_unavailable', 'route_not_allowed', 'audience_not_allowed',
-      'hub_paused', 'route_unavailable', 'run_not_found'].includes(publicCode));
+      'hub_paused', 'route_unavailable', 'run_not_found', ...AGENT_TASK_ERROR_CODES.filter((code) =>
+        code !== 'TASK_UNAVAILABLE' && code !== 'TASK_RECORD_INVALID')].includes(publicCode));
   const disposition = publicCode === 'capability_changed' ? 'refresh_required'
     : acceptedUnknown && !rejectedBeforeDispatch ? 'accepted_unknown' : 'definitive_rejection';
   const message = operation === 'inspect' && publicCode === 'invocation_record_invalid'
@@ -654,6 +665,7 @@ function safeHttpError(
     message,
     status,
     !(operation === 'inspect' && publicCode === 'invocation_record_invalid')
+      && !AGENT_TASK_ERROR_CODES.some((code) => code === publicCode && code !== 'TASK_UNAVAILABLE')
       && (status === 408 || status === 425 || status === 429 || status >= 500),
     publicCode,
     disposition,
@@ -669,6 +681,18 @@ function requestOperation(path: string): AgentFailureOperation {
   if (path.includes('/tool-invocations/') && path.endsWith('/resume')) return 'resume';
   if (path.endsWith('/tool-invocations')) return 'invoke';
   return 'scope';
+}
+
+function taskReadFailure(error: unknown): unknown {
+  if (!(error instanceof BailingHubClientError) || error.publicCode) return error;
+  if (error.statusCode !== undefined && error.statusCode >= 500) {
+    return new BailingHubClientError('The governed task service is temporarily unavailable.', error.statusCode,
+      true, 'TASK_UNAVAILABLE', 'definitive_rejection', undefined,
+      { operation: 'scope', origin: 'core', dispatch: 'not_dispatched' });
+  }
+  // JSON/response-size failures from the transport are protocol failures, never an empty task.
+  if (error.statusCode === undefined && !error.retryable) return taskError('TASK_RECORD_INVALID');
+  return error;
 }
 
 /** Host-neutral HTTP boundary for Agent Client API v1. */
@@ -837,6 +861,36 @@ export class BailingHubAgentClient {
 
   async uploadArtifact(input: AgentArtifactInput): Promise<AgentArtifactReceipt> { return uploadArtifact(this.transport, this.connection, input); }
   async getArtifact(uploadId: string): Promise<AgentArtifactReceipt> { return getArtifact(this.transport, this.connection, uploadId); }
+
+  /** Read protocol support with the original Agent bearer. No task or run is created. */
+  async getTaskControlCapabilities(): Promise<AgentTaskControlCapabilities> {
+    return this.withFailure('scope', async () => {
+      let value: unknown;
+      try {
+        value = (await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.taskControlCapabilities)).body;
+      } catch (error) {
+        if (error instanceof BailingHubClientError && [404, 405, 501].includes(error.statusCode ?? 0)
+          && (!error.publicCode || error.publicCode === 'TASK_UNSUPPORTED')) throw taskError('TASK_UNSUPPORTED');
+        throw taskReadFailure(error);
+      }
+      return taskCapabilities(value);
+    });
+  }
+
+  /** Observe one original task member. The host must also verify every other selected member. */
+  async getTask(taskIdValue: string, options: { clientConversationId: string }): Promise<AgentTaskSnapshot> {
+    return this.withFailure('scope', async () => {
+      const taskId = taskIdInput(taskIdValue);
+      const clientConversationId = taskConversationInput(options?.clientConversationId);
+      const capabilities = await this.getTaskControlCapabilities();
+      if (!capabilities.supported) throw taskError('TASK_UNSUPPORTED');
+      const query = new URLSearchParams({ workspace: this.connection.workspace, client_conversation_id: clientConversationId });
+      let response: AgentTransportResponse;
+      try { response = await this.transport.request('GET', `${AGENT_CLIENT_V1_PATHS.task(taskId)}?${query}`); }
+      catch (error) { throw taskReadFailure(error); }
+      return taskSnapshot(response.body, { ...this.connection, taskId, clientConversationId });
+    });
+  }
 
   async getInvocationInspectionCapabilities(): Promise<AgentInvocationInspectionCapabilities> {
     return this.withFailure('inspect', async () => {
@@ -1019,11 +1073,18 @@ export class BailingHubAgentClient {
     };
   }
 
-  async startTurn(input: StartAgentTurnInput): Promise<AgentTurnContext> {
-    return this.withFailure('scope', () => this.startTurnResult(input));
+  async startTurn(input: StartAgentTurnInput, options: StartAgentTurnOptions = {}): Promise<AgentTurnContext> {
+    return this.withFailure('scope', () => this.startTurnResult(input, options));
   }
 
-  private async startTurnResult(input: StartAgentTurnInput): Promise<AgentTurnContext> {
+  private async startTurnResult(input: StartAgentTurnInput, options: StartAgentTurnOptions): Promise<AgentTurnContext> {
+    if ('taskBinding' in input || 'task_binding' in input || 'task_id' in input || 'taskId' in input) {
+      throw new TypeError('Task bindings must be supplied through trusted host options.');
+    }
+    if (['task_binding', 'task_id', 'taskId'].some((key) => key in options)) {
+      throw new TypeError('Trusted host options require taskBinding.');
+    }
+    const binding = options.taskBinding === undefined ? undefined : taskBinding(options.taskBinding, true);
     const body: Record<string, unknown> = {
       client_conversation_id: identifierText(input.clientConversationId, 'clientConversationId', 128),
       client_turn_id: identifierText(input.clientTurnId, 'clientTurnId', 128),
@@ -1034,10 +1095,21 @@ export class BailingHubAgentClient {
     const requestRenderers = normalizedRenderers(input.renderers);
     if (requestPageContext) body.page_context = requestPageContext;
     if (requestRenderers) body.renderers = requestRenderers;
+    if (binding) {
+      taskConversationInput(body.client_conversation_id);
+      const capabilities = await this.getTaskControlCapabilities();
+      if (!capabilities.supported) throw taskError('TASK_UNSUPPORTED');
+      await this.getInvocationInspectionCapabilities();
+      body.task_binding = binding;
+    }
     const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.turns(this.connection.workspace), body);
     const value = asObject(response.body, 'turn context');
     if (responseSchema(value) !== 'bailing.agent-turn-context.v1') {
       throw new BailingHubClientError('BailingHub returned an unsupported Agent turn context.', undefined, false, 'agent_schema_unsupported');
+    }
+    const echo = value.task_binding === undefined ? undefined : taskBinding(value.task_binding);
+    if (binding ? !echo || echo.task_id !== binding.task_id || echo.scope_hash !== binding.scope_hash : echo !== undefined) {
+      throw taskError('TASK_BINDING_CONFLICT');
     }
     const runId = requiredString(value.run_id, 'run_id', 36);
     if (!UUID_PATTERN.test(runId)) throw new BailingHubClientError('BailingHub returned an invalid run_id.');
@@ -1078,6 +1150,7 @@ export class BailingHubAgentClient {
       },
       active_tools: activeTools,
       ...(discovery ? { discovery } : {}),
+      ...(echo ? { task_binding: echo } : {}),
     };
   }
 

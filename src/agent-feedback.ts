@@ -2,7 +2,7 @@
 export type AgentFailureCategory =
   | 'tool_not_loaded' | 'capability_changed' | 'transport_unavailable'
   | 'authorization_unavailable' | 'unsupported' | 'invocation_outcome_unknown'
-  | 'unknown_failure' | 'cancelled' | 'invalid_request';
+  | 'unknown_failure' | 'cancelled' | 'invalid_request' | 'task_control';
 export type AgentFailureOperation = 'search' | 'invoke' | 'resume' | 'inspect' | 'authorize' | 'scope' | 'tool_dispatch';
 export type AgentFailureOrigin = 'core' | 'sdk' | 'mcp' | 'dsh' | 'host';
 export type AgentFailureDispatch = 'not_dispatched' | 'attempted' | 'unknown';
@@ -29,7 +29,14 @@ export type AgentFailureContext = {
   invocationId?: string;
 };
 
+export const AGENT_TASK_ERROR_CODES = [
+  'TASK_REQUIRED', 'TASK_UNSUPPORTED', 'TASK_SCOPE_BLOCKED', 'TASK_MEMBER_MISMATCH', 'TASK_BINDING_CONFLICT',
+  'TASK_PAUSED', 'TASK_CANCELLED', 'TASK_EXPIRED', 'TASK_WRITE_BUDGET_EXHAUSTED', 'TASK_CONCURRENCY_EXHAUSTED',
+  'TASK_TOOL_NOT_ALLOWED', 'TASK_REVISION_CONFLICT', 'TASK_RECORD_INVALID', 'TASK_UNAVAILABLE',
+] as const;
+const TASK_CODES = new Set<string>(AGENT_TASK_ERROR_CODES);
 const CODES = new Set([
+  ...AGENT_TASK_ERROR_CODES,
   'agent_client_disabled', 'agent_direct_disabled', 'agent_runtime_unavailable', 'agent_tools_unavailable',
   'arguments_too_large', 'assistant_message_conflict', 'audience_not_allowed', 'capability_changed',
   'hub_paused', 'invalid_request', 'invalid_route', 'invocation_conflict', 'invocation_not_found', 'invocation_record_invalid',
@@ -56,6 +63,7 @@ const MESSAGES: Record<AgentFailureCategory, string> = {
   unknown_failure: 'The operation failed without a classified outcome. Do not infer that the system lacks this capability.',
   cancelled: 'The request was cancelled. Cancellation does not undo a dispatched business operation.',
   invalid_request: 'The request could not be accepted. Review the current tool and its arguments.',
+  task_control: 'The original governed task does not permit this operation. Preserve its binding and inspect its current state; do not create a replacement task or invocation.',
 };
 
 /** Classify only stable codes, typed status, and dispatch facts supplied by the producing layer. */
@@ -72,6 +80,9 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
   if (code === 'tool_not_loaded') category = 'tool_not_loaded';
   else if (code === 'capability_changed') category = 'capability_changed';
   else if (code === 'agent_request_cancelled') category = 'cancelled';
+  else if (code === 'TASK_UNSUPPORTED') category = 'unsupported';
+  else if (code === 'TASK_UNAVAILABLE') category = 'transport_unavailable';
+  else if (TASK_CODES.has(code)) category = 'task_control';
   else if (AUTH_CODES.has(code) || value.statusCode === 401 || value.statusCode === 403) category = 'authorization_unavailable';
   else if (code === 'agent_schema_unsupported' || code === 'system_info_unsupported'
     || code === 'conversation_audit_cross_binding_unavailable') category = 'unsupported';
@@ -93,6 +104,7 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
   else if (context.operation === 'inspect' && (category === 'invocation_outcome_unknown' || category === 'transport_unavailable')) {
     nextAction = 'inspect_original';
   } else if (category === 'invocation_outcome_unknown') nextAction = invocationId ? 'resume_original' : 'inspect_original';
+  else if (category === 'task_control') nextAction = 'none';
   else if (context.operation === 'resume') {
     nextAction = category === 'transport_unavailable' && invocationId ? 'resume_original' : 'inspect_original';
   } else if (category === 'tool_not_loaded' || category === 'capability_changed') {
