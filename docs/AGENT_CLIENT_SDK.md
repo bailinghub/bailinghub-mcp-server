@@ -8,7 +8,7 @@ using each system's original authorization and approval rules. Controlled system
 business-supplied subject names help the host explain the targets before searching for tools.
 The conversation archive introduced in 0.4.0 continues to link visible messages to original actions.
 
-For this feature set, install the exact SDK version below and use BailingHub Core 0.7.0.
+For the complete current release, install SDK 0.6.0 with Core 0.8.0. See the [upgrade guide](UPGRADE_v0.6.0.en.md) for attachments, original receipts and task controls.
 Implement explicit scope selection, local visible-history capture and retry in the host.
 The SDK does not create an account-selection UI or automatically collect conversations.
 Existing Client Token, browser authorization, business invocation and recovery APIs stay compatible.
@@ -27,10 +27,10 @@ resolves the one authorization entry registered for `clientAppId`.
 Install the SDK package version that matches the Agent Client release line:
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.5.0
+npm install --save-exact bailinghub-mcp-server@0.6.0
 ```
 
-Use an exact ordinary dependency for a published host adapter. Publish it only after `0.5.0`
+Use an exact ordinary dependency for a published host adapter. Publish it only after `0.6.0`
 resolves from the public npm registry; never substitute a local path in a public manifest.
 
 Required server surfaces:
@@ -353,7 +353,7 @@ budget across selected shop and inventory authorizations recomputes its session 
 selected targets; it must not accumulate schemas without a bound. Already loaded, valid tools
 can be called directly. Only the current run/session/workspace authorization set can be searched.
 
-### Discovery counts and tool-set state (candidate)
+### Discovery counts and tool-set state (0.6.0)
 
 The additive `discovery` object is optional on search and turn responses. An older Core response
 leaves it absent in the SDK; the MCP model result uses `discovery: null` to mean unknown.
@@ -413,7 +413,7 @@ pre-dispatch `capability_changed` rejection calls for rediscovery, not resuming 
 business dispatch. An HTTP-success `reconciliation_required` result retains that state and
 `auto_retry_allowed: false`, and adds feedback directing the host to inspect the original call.
 
-### Structured failure feedback (candidate)
+### Structured failure feedback (0.6.0)
 
 Relevant SDK errors expose `error.feedback`; `describeAgentFailure(error, context)` is exported
 from both SDK entry points for adapters with authoritative execution context. MCP emits the same
@@ -665,12 +665,11 @@ Before publishing an adapter:
 For the complete Core/business/host setup, see the
 [BailingHub Agent Client v1 Integration Guide](https://github.com/bailinghub/bailinghub/blob/main/docs/AGENT_CLIENT_QUICKSTART.en.md).
 
-## Original task control (local candidate)
+## Original task control (0.6.0)
 
 The host-only read methods are `getTaskControlCapabilities({ connectionKey, expectedBinding })`
 and `getTask(taskId, { connectionKey, workspace, clientConversationId, expectedBinding })`.
 Managed turns accept `taskBinding: { schema_version, task_id, scope_hash }` only through trusted
 host options, negotiate both task and receipt support, and require an identical response echo.
 There are no SDK task creation or administration methods. See [task control](TASK_CONTROL.md) for
-full-member checks, compatibility, metering and Chinese business scenarios. This unpublished
-candidate retains package version `0.5.0`; public packages with that version may lack these APIs.
+full-member checks, compatibility, metering and Chinese business scenarios. Use SDK 0.6.0 with Core 0.8.0.

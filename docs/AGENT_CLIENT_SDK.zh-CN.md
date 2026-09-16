@@ -6,7 +6,7 @@
 并上架，每一步使用对应系统的原授权与审批规则。受控系统说明和业务主体名称帮助宿主在搜索工具前
 说明操作目标；0.4.0 引入的对话归档继续把可见消息关联到各项原始业务动作。
 
-使用这批新能力时，安装下方精确 SDK 版本，并配合 BailingHub Core 0.7.0。客户端负责显式选择范围、
+当前完整版本配套 SDK 0.6.0 与 BailingHub Core 0.8.0，新增附件、只读回执与任务控制见[升级指南](UPGRADE_v0.6.0.md)。客户端负责显式选择范围、
 保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
 原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
 
@@ -22,10 +22,10 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.5.0
+npm install --save-exact bailinghub-mcp-server@0.6.0
 ```
 
-公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.5.0` 后发布。
+公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.6.0` 后发布。
 不要在公开 manifest 中改用本机路径。
 
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
@@ -297,7 +297,7 @@ const found = await transport.searchCapabilities({
 不能把 schema 永久累加到上下文。已经加载、仍有效且目标明确的工具可直接调用，无需逐次搜索。
 检索范围始终限制在当前 run/session/workspace 的授权交集内。
 
-### 发现数量与工具集状态（候选）
+### 发现数量与工具集状态（0.6.0）
 
 搜索与轮次响应新增可选 `discovery` 对象。旧 Core 缺字段时，SDK 保持缺失，MCP 面向模型返回
 `discovery: null` 表示未知；矛盾或无效的可选统计也降级为未知，保留有效工具。不能用 0 或本次 `tools.length` 补成总数。
@@ -349,7 +349,7 @@ const resumed = await transport.resume(result.invocation_id);
 不能把它当成已经派发的业务操作恢复。HTTP 成功但业务状态为 `reconciliation_required` 时，保留原状态和
 `auto_retry_allowed: false`，新增反馈要求核对原调用。
 
-### 结构化失败反馈（候选）
+### 结构化失败反馈（0.6.0）
 
 相关 SDK 异常带 `error.feedback`；两个 SDK 入口均导出 `describeAgentFailure(error, context)`，
 供掌握真实执行上下文的适配器使用。MCP 的 JSON 文本和 `structuredContent` 同时保留相同脱敏 `feedback`。
@@ -566,11 +566,11 @@ if (typeof transport.getSystemInfo === 'function') {
 完整 Core/业务/宿主接入见
 [BailingHub Agent Client v1 接入指南](https://github.com/bailinghub/bailinghub/blob/main/docs/AGENT_CLIENT_QUICKSTART.md)。
 
-## 原任务控制（本地候选）
+## 原任务控制（0.6.0）
 
 新增宿主只读方法 `getTaskControlCapabilities({ connectionKey, expectedBinding })` 与
 `getTask(taskId, { connectionKey, workspace, clientConversationId, expectedBinding })`。
 受管 `startTurn` 通过宿主 options 的 `taskBinding: { schema_version, task_id, scope_hash }`
 传入原关联并校验回显；模型 turn input 不能选择任务。SDK 不提供任务创建、暂停、继续或取消的
-管理方法，不携带管理员凭据。包版本仍为 `0.5.0`，公开同版本包不代表已包含这份未发布候选。
+管理方法，不携带管理员凭据。使用 SDK 0.6.0 和 Core 0.8.0。
 完整成员校验、计量含义、旧 Core 行为和商城/库存场景见[任务控制接缝](TASK_CONTROL.md)。

@@ -1,6 +1,8 @@
 # Read the outcome of an original operation
 
-这是尚未公开发布的只读回执候选。它解决的是“刚才那次操作到底进行到哪一步”：例如商城商品上架已经通过审批，但还没有实际派发，客户端查询回执时可以看到“已批准、未派发”，查询本身不会让商品上架。若上架请求发出后断网，也应保留原调用 ID 和原授权读取已有证据，不能把查询失败当成重新上架的依据。这批只增加查询接口；主动恢复执行仍属于既有恢复流程，接入方需要分别处理。
+配套版本：Core 0.8.0 / SDK 0.6.0 / DSH 0.6.0。新能力需部署方升级并按宿主契约接入；业务权限、审批和原身份约束保持。
+
+它解决的是“刚才那次操作到底进行到哪一步”：例如商城商品上架已经通过审批，但还没有实际派发，客户端查询回执时可以看到“已批准、未派发”，查询本身不会让商品上架。若上架请求发出后断网，也应保留原调用 ID 和原授权读取已有证据，不能把查询失败当成重新上架的依据。这批只增加查询接口；主动恢复执行仍属于既有恢复流程，接入方需要分别处理。
 
 A local assistant submitted a product change and the connection dropped before it received the result. A host can inspect the original receipt to see the evidence BailingHub currently holds. Inspection does not repeat the product change, approve it, or resume a waiting operation.
 
@@ -68,4 +70,4 @@ Unresolved evidence stays unresolved. The SDK returns only the documented receip
 | Original authorization is unavailable or its binding changed | Keep the original record. Follow the authorization/scope feedback without substituting a default connection or another Agent Session. |
 | Invalid receipt or mismatched ID/workspace | Reject the receipt. Do not present it as an authoritative business result. |
 
-The additive feedback operation is `inspect`. Hosts must preserve it when presenting structured failures. This candidate adds a host SDK interface; it does not automatically add a DSH model tool, alter business backends, or deploy Core.
+The additive feedback operation is `inspect`. Hosts must preserve it when presenting structured failures. This feature adds a host SDK interface; it does not automatically add a DSH model tool, alter business backends, or deploy Core.

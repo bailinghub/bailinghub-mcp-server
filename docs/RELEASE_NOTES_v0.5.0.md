@@ -46,7 +46,7 @@ Release maintainers publish Core first, then SDK 0.5.0. DSH 0.5.0 must use an ex
 
 One Hub/audit domain, distinct original Sessions, no implicit product mapping, no distributed transaction or durable business task engine. Hosts own the selected scope and persistence. Combined visible text belongs to the administrator audit domain, not an individual authorization's memory or a new transcript-read API for the Agent.
 
-See [SDK contract](AGENT_CLIENT_SDK.md), [compatibility](COMPATIBILITY.md), [release procedure](RELEASING.md) and the [Core scenario guide](https://github.com/bailinghub/bailinghub/blob/v0.7.0/docs/RELEASE_NOTES_v0.7.0.en.md).
+See [SDK contract](AGENT_CLIENT_SDK.md), [compatibility](COMPATIBILITY.md), [release procedure](https://github.com/bailinghub/bailinghub-mcp-server/blob/v0.5.0/docs/RELEASING.md) and the [Core scenario guide](https://github.com/bailinghub/bailinghub/blob/v0.7.0/docs/RELEASE_NOTES_v0.7.0.en.md).
 
 ## 简体中文
 
@@ -82,4 +82,4 @@ npm install --save-exact bailinghub-mcp-server@0.5.0
 
 已有业务动作无需为多系统会话重写声明；名称提交与主动撤销由业务后端对接 Core/业务 SDK，独立于本包。发布顺序为 Core、SDK 0.5.0、DSH 0.5.0；DSH 使用 SDK 0.5.0 精确普通依赖及公开注册表锁文件。GitHub 已有源码不等于 npm 已有可安装包。
 
-范围限同 Hub、同审计域的独立原 Session，不提供自动商品映射、跨系统事务或持久业务任务引擎。完整正文保留在管理审计域，不回灌各授权记忆。见[SDK 契约](AGENT_CLIENT_SDK.zh-CN.md)、[兼容说明](COMPATIBILITY.md)、[发布流程](RELEASING.md)和[Core 场景说明](https://github.com/bailinghub/bailinghub/blob/v0.7.0/docs/RELEASE_NOTES_v0.7.0.md)。
+范围限同 Hub、同审计域的独立原 Session，不提供自动商品映射、跨系统事务或持久业务任务引擎。完整正文保留在管理审计域，不回灌各授权记忆。见[SDK 契约](AGENT_CLIENT_SDK.zh-CN.md)、[兼容说明](COMPATIBILITY.md)、[发布流程](https://github.com/bailinghub/bailinghub-mcp-server/blob/v0.5.0/docs/RELEASING.md)和[Core 场景说明](https://github.com/bailinghub/bailinghub/blob/v0.7.0/docs/RELEASE_NOTES_v0.7.0.md)。

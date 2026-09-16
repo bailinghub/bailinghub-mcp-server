@@ -1,10 +1,10 @@
-# Local Agent attachment space: host SDK integration (candidate)
+# Local Agent attachment space: host SDK integration
 
 Use this when a local Agent produces a file that another system needs through a URL. The host registers an approved image from the current conversation, supplies its bytes, and receives a stored image URL from BailingHub. The Agent can then pass the URL to an existing business tool.
 
 The first increment accepts PNG, JPEG and WebP images. Examples include campaign artwork for a content platform, a chart image for a reporting system, or product pictures for a shop. Each receiving system must already expose the required URL-based action. This is not a claim of general document or video support.
 
-This is an unreleased additive candidate. Install matching Core and SDK sources/packages; stable Core 0.7.0 / SDK 0.5.0 do not include it. It is a host SDK API, not an automatic upload tool added to every MCP server or desktop application.
+Pair Core 0.8.0 / SDK 0.6.0 / DSH 0.6.0. Hosts must integrate the documented interfaces; original identities, permissions and approvals remain enforced.
 
 ## Host interface
 
@@ -36,7 +36,7 @@ const uploaded = await transport.uploadArtifact({
 
 The SDK freezes the byte buffer before authentication awaits, computes its SHA-256, checks a supplied digest, sends raw bytes, and verifies the returned receipt against the original target and content. It never reads an arbitrary filesystem path or fetches an arbitrary image URL for the model.
 
-First candidate: PNG, JPEG, WebP; 6 MiB maximum per image. The administrator may set a smaller limit or MIME subset. The workspace must explicitly enable `agent_client.artifact_upload` and select a registered storage. This candidate produces public image URLs for content intended to be publicly readable. File retention is controlled by the self-hosted deployment; no conversation expiry or cleanup policy is imposed.
+Initial support: PNG, JPEG, WebP; 6 MiB maximum per image. The administrator may set a smaller limit or MIME subset. The workspace must explicitly enable `agent_client.artifact_upload` and select a registered storage. This release produces public image URLs for content intended to be publicly readable. File retention is controlled by the self-hosted deployment; no conversation expiry or cleanup policy is imposed.
 
 ## Recovery
 
@@ -54,12 +54,12 @@ Hosts with multi-authorization conversations must validate the entire original s
 
 ## Business limits and original-call recovery
 
-The matching Core candidate provides configurable Hub tool limits and honors original hour/day windows. New pre-dispatch rejections preserve encrypted original arguments. SDK invocation and resume responses retain optional `retry_after_ms` and `rate_limit` (level, count, window_sec, scope, source). These limits are shared per provider/tool across users and conversations. Follow the original invocation after waiting; never replay an uncertain write or reconstruct missing historical arguments. Older Core responses without these fields remain supported.
+The matching Core release provides configurable Hub tool limits and honors original hour/day windows. New pre-dispatch rejections preserve encrypted original arguments. SDK invocation and resume responses retain optional `retry_after_ms` and `rate_limit` (level, count, window_sec, scope, source). These limits are shared per provider/tool across users and conversations. Follow the original invocation after waiting; never replay an uncertain write or reconstruct missing historical arguments. Older Core responses without these fields remain supported.
 
-## Upload run-link correction (candidate)
+## Upload run-link correction
 
 `artifact_run_turn_mismatch` is an HTTP 403 rejection before storage. It proves that the referenced run belongs to the original Agent Session, client, workspace and conversation, but to another turn. `artifact_run_mismatch` remains the non-repairable response for other link mismatches. The SDK preserves these distinct codes and never retries, replaces metadata or removes a run ID by itself.
 
-A matching DSH candidate can recover a legacy rejected upload only after this dedicated code and an explicit `artifact_not_found` for the original upload ID. It first persists a separate immutable correction record, then reuses the original upload ID, bytes, authorization, conversation and upload turn without the proven stale optional run ID. Ready receipts are reused; unknown outcomes and local recovery gaps must not be treated as permission to start another upload. Older Core/SDK combinations keep those legacy failures blocked.
+A matching DSH release can recover a legacy rejected upload only after this dedicated code and an explicit `artifact_not_found` for the original upload ID. It first persists a separate immutable correction record, then reuses the original upload ID, bytes, authorization, conversation and upload turn without the proven stale optional run ID. Ready receipts are reused; unknown outcomes and local recovery gaps must not be treated as permission to start another upload. Older Core/SDK combinations keep those legacy failures blocked.
 
 Tool names remain compatible. Eligible registered images may come from generation or user-provided files explicitly selected for business use; ordinary chat attachments are not uploaded automatically. Current MIME and size limits are unchanged.

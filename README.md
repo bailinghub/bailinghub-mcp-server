@@ -1,5 +1,12 @@
 # BailingHub MCP Server
 
+## 0.6.0: longer tasks, attachments and original-call recovery
+
+Retain the correct target while moving between edits and queries, reuse uploaded image URLs and inspect original calls after reopening. Task budgets survive turn changes. Pair Core 0.8.0 / SDK 0.6.0 / DSH 0.6.0; host integration is required for task binding and opt-in cross-turn reuse.
+
+[Changes](docs/RELEASE_NOTES_v0.6.0.en.md) · [Upgrade](docs/UPGRADE_v0.6.0.en.md)
+
+
 [简体中文](README.zh-CN.md) | English
 
 Let an MCP-compatible AI agent use natural-language requests to query and operate your
@@ -17,20 +24,12 @@ The agent does not receive administrator or business-system credentials. Bailing
 the route boundary, approval state, execution record, and audit trail, while the downstream
 business system still makes the final authorization decision.
 
-## Candidate: inspect an original operation without continuing it
 
-An approved shop listing may still be waiting for dispatch. The host SDK can
-inspect its stored receipt and current approval without listing the product or
-calling `resume`. This requires the matched Core candidate and original explicit
-binding; the same published version number does not imply support. See the
-[inspection contract](docs/INVOCATION_RECEIPTS.md). Existing host behavior remains
-unchanged; task budgets and controls are separate work.
-
-## What changes in 0.5.0: shop and inventory in one conversation
+## Previously introduced in 0.5.0: shop and inventory in one conversation
 
 A host can let a user ask: “Check tumbler stock; if available, change the corresponding shop product to 59 and list it.” This SDK adds original-target checks for different systems on one Hub, system descriptions before tool search, and business-supplied authorization names. Actions must be exposed by the business systems, product mappings confirmed, and original approvals respected.
 
-Use **Core 0.7.0 + SDK 0.5.0** and a compatible host for these extensions, within one Hub and one administrator audit domain. The host owns explicit selection and persistent scope; the standalone MCP server does not gain a multi-system selection UI.
+Use **Core 0.8.0 + SDK 0.6.0** and a compatible host for these extensions, within one Hub and one administrator audit domain. The host owns explicit selection and persistent scope; the standalone MCP server does not gain a multi-system selection UI.
 
 [Scenarios, changes and upgrade steps](docs/RELEASE_NOTES_v0.5.0.md)
 
@@ -50,9 +49,9 @@ selection and conversation interface. The standalone MCP server keeps its existi
 
 | Your setup | Next step |
 | --- | --- |
-| You use an MCP application with a fixed business route | Install this package at `0.5.0` using the [MCP setup below](#install). Your existing Client Token and Agent Session flows remain compatible. |
+| You use an MCP application with a fixed business route | Install this package at `0.6.0` using the [MCP setup below](#install). Your existing Client Token and Agent Session flows remain compatible. |
 | You use a native Agent Client, such as DSH | Upgrade through that host's matching release and follow its account-selection guide. Installing this MCP command alone does not add a multi-account conversation UI. |
-| You build an Agent Client host | Install `bailinghub-mcp-server@0.5.0`, use Core `0.7.0` for the complete feature set, and follow the [SDK guide](docs/AGENT_CLIENT_SDK.md). |
+| You build an Agent Client host | Install `bailinghub-mcp-server@0.6.0`, use Core `0.8.0` for the complete feature set, and follow the [SDK guide](docs/AGENT_CLIENT_SDK.md). |
 
 You do not need to change business API declarations for this SDK upgrade. Existing read/write,
 approval and invocation recovery behavior stays in place. Conversation upload retries use the
@@ -153,7 +152,7 @@ For the legacy static-job mode, configure an MCP host to spawn:
   "mcpServers": {
     "bailinghub": {
       "command": "npx",
-      "args": ["-y", "bailinghub-mcp-server@0.5.0"],
+      "args": ["-y", "bailinghub-mcp-server@0.6.0"],
       "env": {
         "BAILINGHUB_BASE_URL": "https://hub.example.com",
         "BAILINGHUB_CLIENT_TOKEN": "replace-with-a-route-scoped-client-token",
@@ -170,7 +169,7 @@ Authorize one registered public Agent client and one fixed route before starting
 host without a Client Token:
 
 ```bash
-npm install --global bailinghub-mcp-server@0.5.0
+npm install --global bailinghub-mcp-server@0.6.0
 
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \

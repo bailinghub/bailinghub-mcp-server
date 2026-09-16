@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-09-16
+
+See [scenarios and upgrade](docs/RELEASE_NOTES_v0.6.0.md) · [English](docs/RELEASE_NOTES_v0.6.0.en.md).
+
+- Add task support negotiation, original task reads and trusted host-only taskBinding. Keep complete original identity checks and distinguish task policy errors from uncertain dispatch.
 
 - Classify a token refresh that returns a different Agent Session or Client as an
   original-identity conflict. Hosts can block the selected group instead of treating
@@ -19,8 +23,7 @@
   its existing behavior and is never called by inspection.
 - Negotiate support before inspection, require the original explicit binding and
   distinguish unsupported Core, unavailable transport and a missing original
-  record. See [the receipt contract](docs/INVOCATION_RECEIPTS.md). This candidate
-  adds no new MCP/DSH model tool or task execution policy.
+  record. See [the receipt contract](docs/INVOCATION_RECEIPTS.md). This receipt method does not add an MCP management tool or change task policy.
 
 - Preserve Core rate-limit scope, original window and retry delay in both Agent SDK invocation paths. Older responses remain compatible; the SDK never automatically resubmits a business write.
 

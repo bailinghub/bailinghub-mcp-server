@@ -1,3 +1,7 @@
+# Current 0.6.0 pairing
+
+Use Core 0.8.0, SDK 0.6.0 and DSH 0.6.0 for attachments, original receipts and task controls. Existing unenrolled flows retain their earlier protocol minima. Task enrollment persists: older hosts cannot omit task binding. See [upgrade](UPGRADE_v0.6.0.en.md).
+
 # BailingHub Client API Compatibility
 
 This adapter consumes `bailing.client-api.v1`.
