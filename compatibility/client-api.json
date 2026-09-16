@@ -1,7 +1,7 @@
 {
   "schema_version": "bailing.client-api.consumer.v1",
   "consumer": "bailinghub-mcp-server",
-  "adapter_version": "0.5.0",
+  "adapter_version": "0.6.0",
   "contract": "bailing.client-api",
   "contract_major": 1,
   "tested_contract_version": "1.0.0",
@@ -19,20 +19,52 @@
   },
   "requests": {
     "run.submit": {
-      "fields_sent": ["request_id", "route", "input"]
+      "fields_sent": [
+        "request_id",
+        "route",
+        "input"
+      ]
     }
   },
   "responses": {
     "run.submit": {
-      "required_fields": ["job_id", "request_id", "status"]
+      "required_fields": [
+        "job_id",
+        "request_id",
+        "status"
+      ]
     },
     "jobs.get": {
-      "required_fields": ["job_id", "request_id", "status"]
+      "required_fields": [
+        "job_id",
+        "request_id",
+        "status"
+      ]
     }
   },
-  "known_job_statuses": ["queued", "running", "dispatched", "done", "error", "rejected"],
-  "terminal_job_statuses": ["done", "error", "rejected"],
-  "handled_http_errors": [400, 401, 403, 404, 409, 413, 429, 503],
+  "known_job_statuses": [
+    "queued",
+    "running",
+    "dispatched",
+    "done",
+    "error",
+    "rejected"
+  ],
+  "terminal_job_statuses": [
+    "done",
+    "error",
+    "rejected"
+  ],
+  "handled_http_errors": [
+    400,
+    401,
+    403,
+    404,
+    409,
+    413,
+    429,
+    503
+  ],
   "limits": {
     "request_id_max_length": 128,
     "route_max_length": 64,

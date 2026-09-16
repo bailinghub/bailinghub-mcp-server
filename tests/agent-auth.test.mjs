@@ -48,6 +48,21 @@ const OLD_CREDENTIALS = {
   refresh_expires_at: '2099-09-25T00:00:00.000Z',
 };
 
+test('session inspection retains the structured 401 after invalid credential cleanup', async () => {
+  const store = new MemoryCredentialStore(OLD_CREDENTIALS);
+  const manager = new AgentSessionManager(store, async () => jsonResponse({}, 401));
+  await assert.rejects(manager.getSession(), error => {
+    assert.equal(error.name, 'AgentAuthHttpError');
+    assert.equal(error.statusCode, 401);
+    assert.equal(error.publicCode, 'agent_authorization_unavailable');
+    assert.equal(error.retryable, false);
+    assert.equal(error.feedback.category, 'authorization_unavailable');
+    assert.equal(error.feedback.dispatch, 'not_dispatched');
+    return true;
+  });
+  assert.equal(await store.load(), undefined);
+});
+
 test('authorization page permits HTTPS or explicit nonzero IP loopback, never localhost HTTP', async () => {
   const responseFor = (authorizationUrl) =>
     new AgentAuthHttpClient('https://hub.example.com', async () =>
@@ -408,6 +423,40 @@ test('refresh rotates both tokens once for concurrent callers', async () => {
   assert.equal(refreshCount, 1);
   assert.equal((await store.load()).refresh_token, 'rotated-refresh-secret');
 });
+
+for (const field of ['session', 'client']) {
+  test(`refresh ${field} replacement is a definitive identity failure before saving credentials`, async () => {
+    const store = new MemoryCredentialStore(OLD_CREDENTIALS);
+    let refreshCount = 0;
+    const manager = new AgentSessionManager(store, async (url) => {
+      assert.equal(String(url), 'https://old-hub.example.com/agent-auth/v1/token');
+      refreshCount += 1;
+      return jsonResponse({
+        token_type: 'Bearer', access_token: 'replacement-access-secret',
+        refresh_token: 'replacement-refresh-secret', expires_in: 3600, refresh_expires_in: 86400,
+        session_id: field === 'session' ? 'replacement-session' : OLD_CREDENTIALS.session_id,
+        client_app_id: field === 'client' ? 'replacement-client' : OLD_CREDENTIALS.client_app_id,
+      });
+    });
+    const results = await Promise.allSettled([manager.getAccessToken(true), manager.getAccessToken(true)]);
+    for (const result of results) {
+      assert.equal(result.status, 'rejected');
+      const error = result.reason;
+      assert.equal(error.publicCode, 'agent_binding_changed');
+      assert.equal(error.statusCode, 403);
+      assert.equal(error.retryable, false);
+      assert.equal(error.disposition, 'definitive_rejection');
+      assert.equal(error.feedback.category, 'authorization_unavailable');
+      assert.equal(error.feedback.operation, 'authorize');
+      assert.equal(error.feedback.origin, 'sdk');
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      assert.ok(!JSON.stringify(error).includes('replacement-access-secret'));
+      assert.ok(!JSON.stringify(error).includes('replacement-refresh-secret'));
+    }
+    assert.equal(refreshCount, 1, 'Concurrent waiters share the original refresh and rejection.');
+    assert.deepEqual(await store.load(), OLD_CREDENTIALS);
+  });
+}
 
 test('distinct file-store instances share the cross-process lock and reload after rotation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-refresh-lock-'));

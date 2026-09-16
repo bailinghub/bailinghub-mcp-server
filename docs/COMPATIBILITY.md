@@ -1,3 +1,7 @@
+# Current 0.6.0 pairing
+
+Use Core 0.8.0, SDK 0.6.0 and DSH 0.6.0 for attachments, original receipts and task controls. Existing unenrolled flows retain their earlier protocol minima. Task enrollment persists: older hosts cannot omit task binding. See [upgrade](UPGRADE_v0.6.0.en.md).
+
 # BailingHub Client API Compatibility
 
 This adapter consumes `bailing.client-api.v1`.
@@ -83,3 +87,19 @@ current-user-owned mode-0600 file on Linux and other POSIX platforms. Windows us
 DPAPI-protected files under LocalAppData through the system Windows PowerShell 5.1 runtime. DPAPI
 or PowerShell unavailability fails closed without a plaintext fallback. Client Token mode remains
 compatible on Windows.
+
+## Local task-control candidate
+
+The additive task-control candidate keeps package version `0.5.0`; it is not a statement that the
+published package or a deployed Core supports it. See [the host contract and Chinese scenarios](TASK_CONTROL.md).
+`getTaskControlCapabilities` and `getTask` require original binding checks; managed `startTurn`
+requires both task and read-only receipt support and a matching `task_binding` echo. A valid
+`supported: false` response remains distinct from an unavailable network. Missing old endpoints
+are `TASK_UNSUPPORTED`; malformed task records fail closed. Existing optional, unmanaged turns
+keep their one-POST path. Sticky required Sessions must be enforced by Core even for old clients
+or a missing task association; SDK negotiation cannot replace that enforcement.
+
+No task creation/control tools or admin credentials enter the SDK. Existing invocation IDs,
+resume inputs, receipt schema and original authorization guards are retained. Hosts must validate
+all original same-Hub members, preserve task references in their durable journal, and use GET
+inspection for managed background polling. A different task or connection is not recovery.

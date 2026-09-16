@@ -47,6 +47,160 @@ const METHODS = {
   }, options),
 };
 
+for (const status of [401, 403, 429, 503]) {
+  test(`bound identity HTTP ${status} keeps structured classification on its first failure`, async (t) => {
+    const f = await fixture(t);
+    f.hooks.request = request => {
+      assert.equal(request.path, '/agent-auth/v1/session');
+      return new Response(JSON.stringify({ error: 'synthetic_failure' }), { status });
+    };
+    await assert.rejects(f.transport.status(f.options()), error => {
+      assert.equal(error.statusCode, status === 401 ? 403 : status);
+      assert.equal(error.publicCode, status === 401 ? 'agent_binding_changed'
+        : status === 403 ? 'agent_authorization_unavailable' : 'unknown_failure');
+      assert.equal(error.retryable, status >= 429);
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      return true;
+    });
+    assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), status === 401 ? undefined : f.credentialsA);
+    assert.deepEqual(await f.rawStores.get(f.b.connectionKey).load(), f.credentialsB);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+for (const bound of [false, true]) for (const field of ['session', 'client', 'route']) {
+  test(`${bound ? 'bound' : 'ordinary'} remote ${field} mismatch keeps a definitive identity error without credential replacement`, async (t) => {
+    const f = await fixture(t);
+    f.hooks.request = request => {
+      assert.equal(request.path, '/agent-auth/v1/session');
+      return new Response(JSON.stringify({
+        session_id: field === 'session' ? SESSION_B : SESSION_A,
+        client_app_id: field === 'client' ? 'inventory-app' : f.a.clientAppId,
+        allowed_routes: field === 'route' ? ['inventory'] : [f.a.workspace],
+        device_label: 'synthetic', principal: { id: 'synthetic' }, on_behalf_of: 'synthetic',
+        created_at: '2026-01-01T00:00:00.000Z', expires_at: '2099-01-01T00:00:00.000Z', refresh_expires_at: '2099-02-01T00:00:00.000Z',
+      }), { status: 200 });
+    };
+    await assert.rejects(f.transport.status(bound ? f.options() : { connectionKey: f.a.connectionKey }), error => {
+      assert.equal(error.publicCode, 'agent_binding_changed');
+      assert.equal(error.statusCode, 403);
+      assert.equal(error.retryable, false);
+      assert.equal(error.feedback.category, 'authorization_unavailable');
+      assert.equal(error.feedback.origin, 'sdk');
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      return true;
+    });
+    assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), f.credentialsA);
+    assert.deepEqual(await f.rawStores.get(f.b.connectionKey).load(), f.credentialsB);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+test('a failed bound status response still rechecks a concurrently replaced original identity', async t => {
+  const f = await fixture(t);
+  const replacement = { ...f.credentialsA, session_id: SESSION_B };
+  f.hooks.request = async request => {
+    assert.equal(request.path, '/agent-auth/v1/session');
+    await f.rawStores.get(f.a.connectionKey).save(replacement);
+    return new Response('{}', { status: 503 });
+  };
+  await assert.rejects(f.transport.status(f.options()), error => error.publicCode === 'agent_binding_changed');
+  assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), replacement);
+  assert.equal(f.calls.length, 1);
+});
+
+function refreshResponse(f, field = 'session') {
+  return new Response(JSON.stringify({
+    token_type: 'Bearer', access_token: 'synthetic-replacement-access', refresh_token: 'synthetic-replacement-refresh',
+    expires_in: 3600, refresh_expires_in: 7200,
+    session_id: field === 'session' ? SESSION_B : SESSION_A,
+    client_app_id: field === 'client' ? 'replacement-app' : f.a.clientAppId,
+  }), { status: 200 });
+}
+
+for (const field of ['session', 'client']) for (const operation of Object.keys(METHODS)) {
+  test(`bound ${operation} rejects a refresh ${field} replacement without sending any business request`, async t => {
+    const f = await fixture(t, { expired: true });
+    f.hooks.request = request => {
+      assert.equal(request.path, '/agent-auth/v1/token');
+      return refreshResponse(f, field);
+    };
+    await assert.rejects(METHODS[operation](f.transport, f.options()), error => {
+      assert.equal(error.publicCode, 'agent_binding_changed');
+      assert.equal(error.statusCode, 403);
+      assert.equal(error.retryable, false);
+      assert.equal(error.disposition, 'definitive_rejection');
+      assert.equal(error.feedback.category, 'authorization_unavailable');
+      assert.equal(error.feedback.origin, 'sdk');
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      return true;
+    });
+    assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), f.credentialsA);
+    assert.deepEqual(await f.rawStores.get(f.b.connectionKey).load(), f.credentialsB);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+for (const operation of ['status', 'startTurn', 'invoke', 'resume']) {
+  test(`bound ${operation} cancellation wins over a late mismatched refresh response`, async t => {
+    const f = await fixture(t, { expired: true });
+    const controller = new AbortController();
+    f.hooks.request = request => {
+      assert.equal(request.path, '/agent-auth/v1/token');
+      controller.abort();
+      return refreshResponse(f);
+    };
+    await assert.rejects(METHODS[operation](f.transport, { ...f.options(), signal: controller.signal }), error => {
+      assert.equal(error.publicCode, 'agent_request_cancelled');
+      assert.equal(error.feedback.category, 'cancelled');
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      return true;
+    });
+    assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), f.credentialsA);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+for (const failure of ['mismatch', 'unavailable']) test(`a refresh ${failure} cannot hide or overwrite a concurrently replaced credential slot`, async t => {
+  const f = await fixture(t, { expired: true });
+  const replacement = { ...f.credentialsA, session_id: SESSION_B, access_token: 'synthetic-local-replacement' };
+  f.hooks.request = async request => {
+    assert.equal(request.path, '/agent-auth/v1/token');
+    await f.rawStores.get(f.a.connectionKey).save(replacement);
+    return failure === 'mismatch' ? refreshResponse(f) : new Response('{}', { status: 503 });
+  };
+  await assert.rejects(f.transport.startTurn({ clientConversationId: 'conversation-a',
+    clientTurnId: 'turn-a', userMessageId: 'message-a', userInput: 'Synthetic scope.' }, f.options()),
+  error => error.publicCode === 'agent_binding_changed' && error.feedback.dispatch === 'not_dispatched');
+  assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), replacement);
+  assert.equal(f.calls.length, 1);
+});
+
+for (const failure of ['offline', 429, 503]) {
+  test(`bound refresh ${failure} keeps the original identity and allows an explicit retry`, async t => {
+    const f = await fixture(t, { expired: true });
+    f.hooks.request = request => {
+      assert.equal(request.path, '/agent-auth/v1/token');
+      if (failure === 'offline') throw new TypeError('Synthetic offline failure');
+      return new Response('{}', { status: failure });
+    };
+    await assert.rejects(f.transport.status(f.options()), error => {
+      assert.notEqual(error.publicCode, 'agent_binding_changed');
+      assert.equal(error.retryable, true);
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      return true;
+    });
+    assert.deepEqual(await f.rawStores.get(f.a.connectionKey).load(), f.credentialsA);
+    assert.equal(f.calls.length, 1);
+    f.hooks.request = undefined;
+    const status = await f.transport.status(f.options());
+    assert.equal(status.state, 'authorized');
+    assert.equal(status.sessionId, SESSION_A);
+    assert.deepEqual(f.calls.map(request => request.path),
+      ['/agent-auth/v1/token', '/agent-auth/v1/token', '/agent-auth/v1/session']);
+  });
+}
+
 async function fixture(t, { expired = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'bailinghub-expected-binding-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -281,12 +435,12 @@ test('legacy calls without expectedBinding retain explicit-key selection', async
   assert.ok(f.calls.every((entry) => entry.authorization === `Bearer ${f.credentialsA.access_token}`));
 });
 
-for (const expired of [false, true]) {
-  test(`the final ${expired ? 'refresh' : 'business'} dispatch guard rejects Session replacement during registry IO`, async (t) => {
+for (const expired of [false, true]) for (const operation of ['startTurn', 'invoke', 'resume']) {
+  test(`the final ${operation} ${expired ? 'refresh' : 'business'} dispatch guard rejects Session replacement during registry IO`, async (t) => {
     // Locate the last registry read before the first HTTP using a healthy run,
     // without coupling the test to how many earlier validation reads are needed.
     const baseline = await fixture(t, { expired });
-    await METHODS.startTurn(baseline.transport, baseline.options());
+    await METHODS[operation](baseline.transport, baseline.options());
     const boundary = baseline.calls[0].registryReads;
     assert.equal(baseline.calls[0].path === '/agent-auth/v1/token', expired);
     const f = await fixture(t, { expired });
@@ -297,7 +451,11 @@ for (const expired of [false, true]) {
         await f.rawStores.get(key).save({ ...f.credentialsA, session_id: SESSION_B, access_token: 'synthetic-replacement' });
       }
     };
-    await assert.rejects(METHODS.startTurn(f.transport, f.options()));
+    await assert.rejects(METHODS[operation](f.transport, f.options()), (error) => {
+      assert.equal(error.feedback.dispatch, 'not_dispatched');
+      assert.equal(error.feedback.category, 'authorization_unavailable');
+      return true;
+    });
     assert.equal(replaced, true, 'The asynchronous dispatch boundary was exercised.');
     assert.equal(f.calls.length, 0, 'Neither refresh credentials nor business input may be sent after replacement.');
     assert.equal((await f.rawStores.get(f.a.connectionKey).load()).session_id, SESSION_B);

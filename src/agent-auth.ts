@@ -1,3 +1,4 @@
+import { BailingHubClientError } from './client.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
@@ -228,9 +229,11 @@ async function readJsonWithLimit(response: Response): Promise<unknown> {
   }
 }
 
-class AgentAuthHttpError extends Error {
-  constructor(message: string, readonly statusCode: number) {
-    super(message);
+class AgentAuthHttpError extends BailingHubClientError {
+  constructor(message: string, statusCode: number) {
+    super(message, statusCode, statusCode === 429 || statusCode >= 500,
+      statusCode === 401 || statusCode === 403 ? 'agent_authorization_unavailable' : 'unknown_failure',
+      'definitive_rejection', undefined, { operation: 'authorize', origin: 'core', dispatch: 'not_dispatched' });
     this.name = 'AgentAuthHttpError';
   }
 }
@@ -353,10 +356,12 @@ export class AgentAuthHttpClient {
       return await readJsonWithLimit(response);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('BailingHub Agent Auth request timed out.');
+        throw new BailingHubClientError('BailingHub Agent Auth request timed out.', 408, true, 'agent_request_timeout',
+          'definitive_rejection', undefined, { operation: 'authorize', origin: 'sdk', dispatch: 'not_dispatched' });
       }
       if (error instanceof TypeError) {
-        throw new Error('Could not connect to BailingHub Agent Auth.');
+        throw new BailingHubClientError('Could not connect to BailingHub Agent Auth.', undefined, true, 'agent_transport_unavailable',
+          'definitive_rejection', undefined, { operation: 'authorize', origin: 'sdk', dispatch: 'not_dispatched' });
       }
       throw error;
     } finally {
@@ -658,8 +663,9 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
       } catch (error) {
         if (!isInvalidAgentSessionError(error)) throw error;
         if (!await this.deleteInvalidCredentialsIfCurrent(credentials)) continue;
-        throw new Error(
+        throw new AgentAuthHttpError(
           'The BailingHub Agent Session is invalid or expired. The local login was removed; run login again.',
+          401,
         );
       }
       if (
@@ -667,7 +673,9 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
         session.client_app_id !== credentials.client_app_id ||
         !session.allowed_routes.includes(credentials.route)
       ) {
-        throw new Error('The remote Agent Session does not match the local login.');
+        throw new BailingHubClientError('The remote Agent Session does not match the local login.',
+          403, false, 'agent_binding_changed', 'definitive_rejection', undefined,
+          { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' });
       }
       return session;
     }
@@ -709,7 +717,9 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
       return current;
     }
     if (Date.parse(current.refresh_expires_at) <= this.now()) {
-      throw new Error('The Agent login has expired. Run bailinghub-mcp-server login again.');
+      throw new BailingHubClientError('The Agent login has expired. Run bailinghub-mcp-server login again.',
+        401, false, 'agent_authorization_unavailable', 'definitive_rejection', undefined,
+        { operation: 'authorize', origin: 'sdk', dispatch: 'not_dispatched' });
     }
     const refreshStartedAt = this.now();
     const client = new AgentAuthHttpClient(
@@ -722,15 +732,19 @@ export class AgentSessionManager implements AgentAccessTokenProvider {
     } catch (error) {
       if (!isInvalidAgentSessionError(error)) throw error;
       await this.deleteInvalidCredentials();
-      throw new Error(
+      throw new BailingHubClientError(
         'The BailingHub Agent Session is invalid or expired. The local login was removed; run login again.',
+        401, false, 'agent_authorization_unavailable', 'definitive_rejection', undefined,
+        { operation: 'authorize', origin: 'core', dispatch: 'not_dispatched' },
       );
     }
     if (
       token.clientAppId !== current.client_app_id ||
       token.sessionId !== current.session_id
     ) {
-      throw new Error('BailingHub returned a refresh token for a different Agent Session.');
+      throw new BailingHubClientError('BailingHub returned a refresh token for a different Agent Session.',
+        403, false, 'agent_binding_changed', 'definitive_rejection', undefined,
+        { operation: 'authorize', origin: 'sdk', dispatch: 'not_dispatched' });
     }
     const next: AgentCredentials = {
       ...current,

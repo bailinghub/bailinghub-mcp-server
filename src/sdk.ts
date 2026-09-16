@@ -1,3 +1,11 @@
+import type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
+export type { AgentArtifactInput, AgentArtifactReceipt } from './agent-artifacts.js';
+import { attachAgentFailure, type AgentFailureOperation } from './agent-feedback.js';
+import { agentProtocolSupport, clearAgentProtocolSupport, newAgentProtocolSupport,
+  type AgentProtocolSupport } from './agent-protocol-support.js';
+import { taskBinding, taskConversationInput, taskIdInput,
+  type AgentTaskControlCapabilities, type AgentTaskSnapshot } from './task-control.js';
+export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
 import { createHash } from 'node:crypto';
 import {
   auditEvents, auditId, auditUuid, CONVERSATION_BATCH_BYTES,
@@ -14,6 +22,7 @@ import {
   type AgentTurnContext,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentInvocationReceipt,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
   type SearchAgentCapabilitiesInput,
@@ -45,6 +54,7 @@ export {
   BailingHubAgentClient,
   AGENT_CLIENT_V1_PATHS,
   type AgentCapabilitySearchResult,
+  type AgentCapabilityDiscovery,
   type AgentClientConnection,
   type AgentRunCompletion,
   type AgentRuntimeProfile,
@@ -52,6 +62,8 @@ export {
   type AgentWorkspace,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentInvocationReceipt,
+  type AgentInvocationInspectionCapabilities,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
   type SearchAgentCapabilitiesInput,
@@ -104,6 +116,8 @@ export {
 } from './credential-store.js';
 
 export { BailingHubClientError } from './client.js';
+export type { StartAgentTurnOptions, AgentTaskBinding, AgentTaskControlCapabilities,
+  AgentTaskMember, AgentTaskSnapshot } from './agent-client.js';
 
 const CONNECTION_KEY_PATTERN = /^conn_[a-f0-9]{32}$/;
 const INVOCATION_ID_PATTERN = /^[a-f0-9]{64}$/;
@@ -154,7 +168,8 @@ function callerSignal(value: unknown): AbortSignal | undefined {
 
 function assertRequestActive(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new BailingHubClientError('The Agent request was cancelled before dispatch.',
-    499, false, 'agent_request_cancelled', 'definitive_rejection');
+    499, false, 'agent_request_cancelled', 'definitive_rejection', undefined,
+    { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' });
 }
 
 export type AgentClientHostDependencies = {
@@ -174,6 +189,9 @@ export type AgentClientHostDependencies = {
 };
 
 export type AgentClientHostTransport = {
+  /** Host supplies authorized file bytes, never a model-controlled filesystem path. */
+  uploadArtifact(input: AgentArtifactInput, options: Record<string, unknown>): Promise<AgentArtifactReceipt>;
+  getArtifact(uploadId: string, options: Record<string, unknown>): Promise<AgentArtifactReceipt>;
   connectionsList(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
   connectionsAdd(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   connectionsUse(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -187,6 +205,11 @@ export type AgentClientHostTransport = {
   searchCapabilities(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentCapabilitySearchResult>;
   invoke(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   resume(invocationId: string, input?: unknown, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
+  /** Read the original receipt; requires a frozen original connection and never resumes the operation. */
+  inspectInvocation(invocationId: string, options: Record<string, unknown>): Promise<AgentInvocationReceipt>;
+  /** Read-only host API; requires the original connection and authorization binding. */
+  getTaskControlCapabilities(options?: Record<string, unknown>): Promise<AgentTaskControlCapabilities>;
+  getTask(taskId: string, options: Record<string, unknown>): Promise<AgentTaskSnapshot>;
   completeRun(runId: string, input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentRunCompletion>;
   /** Host-only visible transcript synchronization; never expose this method as a model tool. */
   syncConversationArchive(input: Record<string, unknown>, options: Record<string, unknown>): Promise<ConversationAuditAck>;
@@ -417,6 +440,12 @@ export function createAgentClientTransport(
   // Sidecar metadata never participates in registry identity, alias allocation, or credential IO.
   const subjectDisplayCache = connections.registry.subjectDisplayCache;
   const verifiedSubjectDisplays = new Map<string, { sessionId: string; view: Record<string, unknown> }>();
+  const protocolSupports = new Map<string, { binding: string; support: AgentProtocolSupport }>();
+  function clearProtocolSupport(connectionKey: string) {
+    const existing = protocolSupports.get(connectionKey);
+    if (existing) clearAgentProtocolSupport(existing.support);
+    protocolSupports.delete(connectionKey);
+  }
   function displayBinding(profile: AgentConnectionProfile, sessionId: string): AgentSubjectDisplayBinding {
     return { connectionKey: profile.connectionKey, baseUrl: profile.baseUrl, clientAppId: profile.clientAppId,
       workspace: profile.workspace, sessionId };
@@ -735,9 +764,13 @@ export function createAgentClientTransport(
     if (!CONNECTION_KEY_PATTERN.test(connectionKey)) throw new TypeError('Expected bindings require an exact connection key.');
     const profile = await connections.registry.get(connectionKey);
     assertRequestActive(signal);
-    const bindingError = () => new BailingHubClientError(
-      'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed',
-    );
+    const bindingError = () => {
+      clearProtocolSupport(connectionKey);
+      return new BailingHubClientError(
+        'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed',
+        'definitive_rejection', undefined, { operation: 'scope', origin: 'sdk', dispatch: 'not_dispatched' },
+      );
+    };
     const matches = (value: AgentConnectionProfile | null | undefined) => value &&
       value.baseUrl === expected.hubUrl && value.clientAppId === expected.clientAppId && value.workspace === expected.workspace;
     if (!matches(profile)) throw bindingError();
@@ -769,11 +802,20 @@ export function createAgentClientTransport(
       sessionId: expected.sessionId,
       accessTokenProvider: { getAccessToken: async (forceRefresh) => {
         await assertBinding();
-        const token = await manager.getAccessToken(forceRefresh);
-        await assertBinding();
-        return token;
+        try { return await manager.getAccessToken(forceRefresh); }
+        finally { await assertBinding(); }
       } },
     }, { fetchImpl: checkedFetch, allowInsecureHttp: profile!.allowInsecureHttp, ...(signal ? { signal } : {}) });
+    const binding = JSON.stringify([expected.hubUrl, expected.clientAppId, expected.workspace, expected.sessionId]);
+    if (protocolSupports.get(connectionKey)?.binding !== binding) clearProtocolSupport(connectionKey);
+    let entry = protocolSupports.get(connectionKey);
+    if (!entry) {
+      // Bound memory use; eviction only causes protocol negotiation to happen again.
+      if (protocolSupports.size >= 128) clearProtocolSupport(protocolSupports.keys().next().value!);
+      entry = { binding, support: newAgentProtocolSupport() };
+      protocolSupports.set(connectionKey, entry);
+    }
+    agentProtocolSupport(client, binding, entry.support);
     return { profile: profile!, manager, client, assertBinding };
   }
 
@@ -854,7 +896,17 @@ export function createAgentClientTransport(
     }, { fetchImpl: requestFetch, allowInsecureHttp: profile.allowInsecureHttp, ...(signal ? { signal } : {}) });
   }
 
-  return {
+  const transport: AgentClientHostTransport = {
+    async uploadArtifact(input, options) {
+      if (!options?.connectionKey || !options.expectedBinding || !options.workspace) throw new TypeError('Artifact delivery requires the explicit original connection and expectedBinding.');
+      if (!(input.body instanceof Uint8Array) || !input.body.byteLength || input.body.byteLength > 6291456) throw new TypeError('Image body must be a Uint8Array of at most 6 MiB.');
+      const frozen = { ...input, body: Buffer.from(input.body) };
+      return (await clientFor(options.workspace, options)).uploadArtifact(frozen);
+    },
+    async getArtifact(uploadId, options) {
+      if (!options?.connectionKey || !options.expectedBinding || !options.workspace) throw new TypeError('Artifact recovery requires the explicit original connection and expectedBinding.');
+      return (await clientFor(options.workspace, options)).getArtifact(uploadId);
+    },
     async getSystemInfo(optionsValue) {
       const options = hostRecord(optionsValue, 'system information options');
       const connectionKey = hostText(options.connectionKey, 'connectionKey', 37);
@@ -1161,8 +1213,9 @@ export function createAgentClientTransport(
           throw new TypeError('Expected binding does not match the explicit target.');
         }
         const bound = await boundSession(input.connectionKey, expected, undefined, signal);
-        const session = await bound.manager.getSession();
-        await bound.assertBinding();
+        let session;
+        try { session = await bound.manager.getSession(); }
+        finally { await bound.assertBinding(); }
         if (session.session_id !== expected.sessionId || session.client_app_id !== expected.clientAppId ||
             !session.allowed_routes.includes(expected.workspace)) {
           throw new BailingHubClientError('The original Agent authorization is no longer available.', 403, false, 'agent_binding_changed');
@@ -1288,6 +1341,13 @@ export function createAgentClientTransport(
 
     async startTurn(inputValue, options = {}) {
       const input = hostRecord(inputValue, 'startTurn input');
+      if (['taskBinding', 'task_binding', 'task_id', 'taskId'].some((key) => key in input)) {
+        throw new TypeError('Task bindings must be supplied through trusted host options.');
+      }
+      if (['task_binding', 'task_id', 'taskId'].some((key) => key in options)) {
+        throw new TypeError('Trusted host options require taskBinding.');
+      }
+      const binding = options.taskBinding === undefined ? undefined : taskBinding(options.taskBinding, true);
       const workspace = options.workspace ?? defaultWorkspace;
       if (workspace === undefined) throw new TypeError('workspace is required.');
       const dto: StartAgentTurnInput = {
@@ -1314,7 +1374,15 @@ export function createAgentClientTransport(
         }
         dto.renderers = normalized;
       }
-      return (await clientFor(workspace, options)).startTurn(dto);
+      if (!binding) return (await clientFor(workspace, options)).startTurn(dto);
+      if (!options.connectionKey || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Managed turns require the explicit original connection and expectedBinding.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      if (expected.workspace !== workspace) throw new TypeError('Expected binding does not match the explicit target.');
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try { return await bound.client.startTurn(dto, { taskBinding: binding }); }
+      finally { await bound.assertBinding(); }
     },
 
     async searchCapabilities(inputValue, options = {}) {
@@ -1361,6 +1429,54 @@ export function createAgentClientTransport(
       );
     },
 
+    async inspectInvocation(invocationIdValue, optionsValue) {
+      const options = hostRecord(optionsValue, 'invocation inspection options');
+      if (!options.connectionKey || !options.workspace || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Invocation inspection requires the explicit original connection, workspace, and expectedBinding.');
+      }
+      if (typeof invocationIdValue !== 'string' || !INVOCATION_ID_PATTERN.test(invocationIdValue)) {
+        throw new TypeError('invocationId must be a 64-character lowercase digest.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      const workspace = normalizeAgentRoute(hostText(options.workspace, 'workspace', 64));
+      if (expected.workspace !== workspace) throw new TypeError('Expected binding does not match the explicit target.');
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try {
+        return await bound.client.inspectInvocation(invocationIdValue);
+      } finally {
+        // Reject a Session replacement even when it races the final response or a failed inspection.
+        await bound.assertBinding();
+      }
+    },
+
+    async getTaskControlCapabilities(optionsValue = {}) {
+      const options = hostRecord(optionsValue, 'task capability options');
+      if (!options.connectionKey || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Task capabilities require the explicit original connection and expectedBinding.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      if (options.workspace !== undefined && options.workspace !== expected.workspace) {
+        throw new TypeError('Expected binding does not match the explicit target.');
+      }
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try { return await bound.client.getTaskControlCapabilities(); }
+      finally { await bound.assertBinding(); }
+    },
+
+    async getTask(taskIdValue, optionsValue) {
+      const options = hostRecord(optionsValue, 'task snapshot options');
+      const taskId = taskIdInput(taskIdValue);
+      const conversation = taskConversationInput(options.clientConversationId);
+      if (!options.connectionKey || !options.workspace || !options.expectedBinding || options.connectionName !== undefined) {
+        throw new TypeError('Task snapshots require the explicit original connection, workspace, and expectedBinding.');
+      }
+      const expected = expectedAgentBinding(options.expectedBinding);
+      if (expected.workspace !== options.workspace) throw new TypeError('Expected binding does not match the explicit target.');
+      const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
+      try { return await bound.client.getTask(taskId, { clientConversationId: conversation }); }
+      finally { await bound.assertBinding(); }
+    },
+
     async completeRun(runIdValue, inputValue, options = {}) {
       const workspace = options.workspace ?? defaultWorkspace;
       if (workspace === undefined) throw new TypeError('workspace is required.');
@@ -1390,4 +1506,30 @@ export function createAgentClientTransport(
       return (await clientFor(workspace, options)).completeRun(runIdValue, dto);
     },
   };
+  const operations: Partial<Record<keyof AgentClientHostTransport, AgentFailureOperation>> = {
+    startTurn: 'scope', searchCapabilities: 'search', invoke: 'invoke', resume: 'resume', inspectInvocation: 'inspect',
+    completeRun: 'scope', getSystemInfo: 'scope', status: 'scope', workspaces: 'scope', login: 'authorize',
+    getTaskControlCapabilities: 'scope', getTask: 'scope',
+  };
+  for (const [name, operation] of Object.entries(operations)) {
+    const method = transport[name as keyof AgentClientHostTransport] as (...args: unknown[]) => Promise<unknown>;
+    Object.defineProperty(transport, name, { enumerable: true, configurable: true, writable: true, value: async (...args: unknown[]) => {
+      try { return await method(...args); }
+      catch (error) {
+        const known = error instanceof BailingHubClientError ? error : undefined;
+        const invocationValue = operation === 'resume' || operation === 'inspect' ? args[0]
+          : operation === 'invoke' && args[0] && typeof args[0] === 'object'
+            ? ((args[0] as Record<string, unknown>).invocation_id ?? (args[0] as Record<string, unknown>).invocationId
+              ?? (args[0] as Record<string, unknown>).client_invocation_id) : undefined;
+        const invocationId = known?.invocationId ?? (typeof invocationValue === 'string' && /^[a-f0-9]{64}$/.test(invocationValue)
+          ? invocationValue : undefined);
+        const preflight = known?.publicCode === 'agent_binding_changed' || known?.publicCode === 'agent_request_cancelled'
+          || error instanceof TypeError;
+        throw attachAgentFailure(error, { operation, origin: known?.feedback?.origin ?? 'sdk',
+          dispatch: known?.feedback?.dispatch ?? (preflight || (operation !== 'invoke' && operation !== 'resume') ? 'not_dispatched' : 'unknown'),
+          ...(invocationId ? { invocationId } : {}) });
+      }
+    } });
+  }
+  return transport;
 }

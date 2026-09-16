@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.0 - 2026-09-16
+
+See [scenarios and upgrade](docs/RELEASE_NOTES_v0.6.0.md) · [English](docs/RELEASE_NOTES_v0.6.0.en.md).
+
+- Add task support negotiation, original task reads and trusted host-only taskBinding. Keep complete original identity checks and distinguish task policy errors from uncertain dispatch.
+
+- Classify a token refresh that returns a different Agent Session or Client as an
+  original-identity conflict. Hosts can block the selected group instead of treating
+  the response as a temporary outage. Replacement tokens are never saved or used;
+  transient refresh failures remain retryable with the original identity.
+
+- Preserve structured identity failures when a host checks selected shop and
+  inventory authorizations. Expired Sessions and mismatched remote identities
+  no longer look like temporary network uncertainty. Recheck an original bound
+  identity after failed status requests as well as successful ones; keep credential
+  cleanup, rotation guards and cancellation behavior. No Core API change is needed.
+
+- Add explicit, read-only original-invocation inspection for adapted hosts. A shop
+  listing that is approved but not dispatched can be checked without continuing
+  it. Original result, approval and journal facts remain distinct; `resume` keeps
+  its existing behavior and is never called by inspection.
+- Negotiate support before inspection, require the original explicit binding and
+  distinguish unsupported Core, unavailable transport and a missing original
+  record. See [the receipt contract](docs/INVOCATION_RECEIPTS.md). This receipt method does not add an MCP management tool or change task policy.
+
+- Preserve Core rate-limit scope, original window and retry delay in both Agent SDK invocation paths. Older responses remain compatible; the SDK never automatically resubmits a business write.
+
+- Add host SDK attachment delivery: register approved conversation image bytes with an
+  explicit original target, store PNG/JPEG/WebP files and obtain reusable URLs.
+  Recover the original upload after an uncertain response without creating a new attachment.
+- Clarify capability-search counts and preserve structured discovery/dispatch feedback.
+  Existing valid tools remain callable; an uncertain business write retains its original invocation.
+- See [Local Agent attachment space](docs/GENERATED_ARTIFACTS.md) for campaign,
+  chart and shop examples, integration requirements and separate business-call governance.
+
 ## 0.5.0 - 2026-09-10
 
 See [scenarios and upgrade steps](docs/RELEASE_NOTES_v0.5.0.md) for the shop/inventory example, host responsibilities and the Core 0.7.0 pairing.

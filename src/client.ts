@@ -1,3 +1,5 @@
+import { parseInvocationRateLimit, type InvocationRateLimit } from './invocation-rate-limit.js';
+import { describeAgentFailure, reconciliationFeedback, type AgentFailureContext, type AgentFailureFeedback } from './agent-feedback.js';
 import type { BailingHubMcpConfig } from './config.js';
 import type {
   AgentBailingHubMcpConfig,
@@ -60,9 +62,12 @@ export type AgentToolInvocation = {
   state: AgentToolInvocationState;
   ok: boolean;
   auto_retry_allowed: boolean;
+  retry_after_ms?: number;
+  rate_limit?: InvocationRateLimit;
   text: string;
   business_status?: number;
   approval_id?: number;
+  feedback?: AgentFailureFeedback;
 };
 
 export type InvokeAgentToolInput = {
@@ -122,6 +127,8 @@ export type BailingHubJob = Record<string, unknown> & {
 };
 
 export class BailingHubClientError extends Error {
+  feedback?: AgentFailureFeedback;
+
   constructor(
     message: string,
     public readonly statusCode?: number,
@@ -130,9 +137,11 @@ export class BailingHubClientError extends Error {
     public readonly disposition: BailingHubClientErrorDisposition =
       'definitive_rejection',
     public readonly invocationId?: string,
+    failureContext?: AgentFailureContext,
   ) {
     super(message);
     this.name = 'BailingHubClientError';
+    if (failureContext) this.feedback = describeAgentFailure(this, failureContext);
   }
 }
 
@@ -312,6 +321,9 @@ function normalizeAgentToolInvocation(
     auto_retry_allowed: requiredResponseBoolean(body, 'auto_retry_allowed'),
     text: boundedResponseText(body, 'text', CLIENT_API_LIMITS.toolResultText),
   };
+  const rateLimitFields = parseInvocationRateLimit(body);
+  if (!rateLimitFields) throw new BailingHubClientError('BailingHub returned invalid rate limit feedback.');
+  Object.assign(normalized, rateLimitFields);
   if (body.business_status !== undefined) {
     if (
       !Number.isInteger(body.business_status) ||
@@ -332,6 +344,7 @@ function normalizeAgentToolInvocation(
     }
     normalized.approval_id = Number(body.approval_id);
   }
+  if (normalized.state === 'reconciliation_required') normalized.feedback = reconciliationFeedback(invocationId);
   return normalized;
 }
 

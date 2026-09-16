@@ -1,4 +1,11 @@
+import { parseInvocationRateLimit, type InvocationRateLimit } from './invocation-rate-limit.js';
+import { uploadArtifact, getArtifact, type AgentArtifactInput, type AgentArtifactReceipt } from './agent-artifacts.js';
+import { AGENT_TASK_ERROR_CODES, attachAgentFailure, reconciliationFeedback, type AgentFailureOperation } from './agent-feedback.js';
+export { describeAgentFailure, type AgentFailureFeedback, type AgentFailureContext } from './agent-feedback.js';
 import type { AgentAccessTokenProvider } from './agent-auth.js';
+import { taskBinding, taskCapabilities, taskConversationInput, taskError, taskIdInput, taskSnapshot,
+  type AgentTaskBinding, type AgentTaskControlCapabilities, type AgentTaskSnapshot } from './task-control.js';
+export type { AgentTaskBinding, AgentTaskControlCapabilities, AgentTaskMember, AgentTaskSnapshot } from './task-control.js';
 import {
   AGENT_TOOL_INVOCATION_STATES,
   BailingHubClientError,
@@ -9,6 +16,7 @@ import {
 } from './client.js';
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
+import { agentProtocolSupport, clearAgentProtocolSupport } from './agent-protocol-support.js';
 import { normalizeAgentSystemInfo, type AgentSystemInfo } from './system-info.js';
 export type { AgentSystemInfo } from './system-info.js';
 import {
@@ -42,6 +50,7 @@ const USAGE_KEYS = new Set([
   'cost_usd',
 ]);
 const PUBLIC_AGENT_ERROR_CODES = new Set([
+  ...AGENT_TASK_ERROR_CODES,
   'agent_client_disabled',
   'agent_direct_disabled',
   'agent_runtime_unavailable',
@@ -55,6 +64,7 @@ const PUBLIC_AGENT_ERROR_CODES = new Set([
   'invalid_route',
   'invocation_conflict',
   'invocation_not_found',
+  'invocation_record_invalid',
   'page_context_too_large',
   'route_not_allowed',
   'route_unavailable',
@@ -84,6 +94,11 @@ export const AGENT_CLIENT_V1_PATHS = {
   capabilitySearch: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/capabilities/search`,
   invocations: '/agent-api/v1/tool-invocations',
+  invocationInspectionCapabilities: '/agent-api/v1/tool-invocations/inspection-capabilities',
+  taskControlCapabilities: '/agent-api/v1/task-control/capabilities',
+  task: (taskId: string) => `/agent-api/v1/tasks/${encodeURIComponent(taskId)}`,
+  invocationReceipt: (invocationId: string) =>
+    `/agent-api/v1/tool-invocations/${encodeURIComponent(invocationId)}/receipt`,
   resumeInvocation: (invocationId: string) =>
     `/agent-api/v1/tool-invocations/${encodeURIComponent(invocationId)}/resume`,
   completeRun: (runId: string) =>
@@ -100,6 +115,29 @@ export type AgentClientConnection = {
   workspace: string;
   sessionId: string;
   accessTokenProvider: AgentAccessTokenProvider;
+};
+
+export type AgentInvocationInspectionCapabilities = {
+  schema_version: 'bailing.agent-invocation-inspection-capabilities.v1';
+  receipt_schema: 'bailing.agent-invocation-receipt.v1';
+  read_only: true;
+};
+
+/** An observation of the original operation; never a request to resume or repeat it. */
+export type AgentInvocationReceipt = {
+  schema_version: 'bailing.agent-invocation-receipt.v1';
+  read_only: true;
+  business_operation_performed: false;
+  invocation_id: string;
+  agent_run_id: string;
+  route: string;
+  tool: string;
+  observed_at: string;
+  result: AgentToolInvocation | null;
+  result_source: 'job' | 'journal' | 'none';
+  dispatch_state: 'not_dispatched' | 'attempted' | 'unknown';
+  approval: { status: 'none' | 'pending' | 'approved' | 'denied'; approval_id?: number };
+  journal_state: 'absent' | 'dispatching' | 'response_recorded' | 'completed' | 'uncertain' | 'evidence_degraded' | 'unknown';
 };
 
 export type AgentWorkspace = {
@@ -150,6 +188,9 @@ export type StartAgentTurnInput = {
   renderers?: string[];
 };
 
+/** Trusted host state, deliberately separate from model-visible turn input. */
+export type StartAgentTurnOptions = { taskBinding?: AgentTaskBinding };
+
 export type AgentTurnContext = {
   schema: 'bailing.agent-turn-context.v1';
   run_id: string;
@@ -166,6 +207,8 @@ export type AgentTurnContext = {
     governance: Record<string, unknown>;
   };
   active_tools: AgentToolCatalogEntry[];
+  discovery?: AgentCapabilityDiscovery;
+  task_binding?: AgentTaskBinding;
 };
 
 export type SearchAgentCapabilitiesInput = {
@@ -174,10 +217,26 @@ export type SearchAgentCapabilitiesInput = {
   runId?: string;
 };
 
+export type AgentCapabilityDiscovery = {
+  mode: 'ranked_candidates';
+  scope: 'current_authorization';
+  returned_count: number;
+  authorized_total: number;
+  matched_total: null;
+  matched_total_exact: false;
+  limit: number;
+  truncated: boolean;
+  has_more: boolean;
+  truncation_scope: 'authorized_catalog';
+  pagination: 'unsupported';
+};
+
 export type AgentCapabilitySearchResult = {
   schema: 'bailing.agent-capability-search.v1';
   capability_revision: string;
   tools: AgentToolCatalogEntry[];
+  /** Absent on older Core versions; absence means unknown, never zero. */
+  discovery?: AgentCapabilityDiscovery;
 };
 
 export type InvokeAgentCapabilityInput = {
@@ -210,6 +269,7 @@ type AgentTransportResponse = {
 };
 
 type AgentRequestOptions = {
+  binary?: { body: Buffer; contentType: string; metadata: string };
   expectedStatus?: number;
   ifNoneMatch?: string;
   acceptedUnknownOnFailure?: boolean;
@@ -425,14 +485,37 @@ function normalizeTools(value: unknown, label: string): AgentToolCatalogEntry[] 
   return tools;
 }
 
+function normalizeDiscovery(value: unknown, returnedCount: number): AgentCapabilityDiscovery | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const body = asObject(value, 'capability discovery');
+    const returned = optionalCount(body.returned_count, 'discovery returned_count', MAX_ACTIVE_TOOLS);
+    const authorized = optionalCount(body.authorized_total, 'discovery authorized_total');
+    const limit = optionalCount(body.limit, 'discovery limit', MAX_ACTIVE_TOOLS);
+    if (body.mode !== 'ranked_candidates' || body.scope !== 'current_authorization'
+      || body.matched_total !== null || body.matched_total_exact !== false
+      || body.truncation_scope !== 'authorized_catalog' || body.pagination !== 'unsupported'
+      || typeof body.truncated !== 'boolean' || typeof body.has_more !== 'boolean'
+      || returned !== returnedCount || authorized === undefined || authorized < returnedCount
+      || limit === undefined || limit < 1 || returnedCount > limit
+      || body.truncated !== (authorized > returnedCount) || body.has_more !== body.truncated) return undefined;
+    return { mode: body.mode, scope: body.scope, returned_count: returned, authorized_total: authorized,
+      matched_total: null, matched_total_exact: false, limit, truncated: body.truncated, has_more: body.has_more,
+      truncation_scope: body.truncation_scope, pagination: body.pagination };
+  } catch {
+    // Metadata is additive: preserve valid tools while exposing optional, contradictory statistics as unknown.
+    return undefined;
+  }
+}
+
 function normalizeInvocation(
   value: unknown,
-  expected: { invocationId: string; route: string; tool?: string },
+  expected: { invocationId: string; route: string; tool?: string; operation?: 'invoke' | 'resume' | 'inspect' },
 ): AgentToolInvocation {
   const body = asObject(value, 'tool invocation');
   const schema = responseSchema(body);
   if (schema !== 'bailing.agent-tool-invocation.v1') {
-    throw new BailingHubClientError('BailingHub returned an unsupported Agent invocation.');
+    throw new BailingHubClientError('BailingHub returned an unsupported Agent invocation.', undefined, false, 'agent_schema_unsupported');
   }
   const invocationId = requiredString(body.invocation_id, 'invocation_id', 64);
   const route = requiredString(body.route, 'invocation route', 64);
@@ -462,6 +545,9 @@ function normalizeInvocation(
     auto_retry_allowed: body.auto_retry_allowed,
     text: body.text,
   };
+  const rateLimitFields = parseInvocationRateLimit(body);
+  if (!rateLimitFields) throw new BailingHubClientError('BailingHub returned invalid rate limit feedback.');
+  Object.assign(result, rateLimitFields);
   if (body.business_status !== undefined) {
     if (!Number.isInteger(body.business_status) || Number(body.business_status) < 100 || Number(body.business_status) > 599) {
       throw new BailingHubClientError('BailingHub returned an invalid business_status.');
@@ -474,7 +560,42 @@ function normalizeInvocation(
     }
     result.approval_id = Number(body.approval_id);
   }
+  if (result.state === 'reconciliation_required') result.feedback = reconciliationFeedback(invocationId, expected.operation);
   return result;
+}
+
+function normalizeInvocationReceipt(value: unknown, invocationId: string, route: string): AgentInvocationReceipt {
+  const body = asObject(value, 'invocation receipt');
+  if (body.schema_version !== 'bailing.agent-invocation-receipt.v1') {
+    throw new BailingHubClientError('BailingHub returned an unsupported invocation receipt.', undefined, false, 'agent_schema_unsupported');
+  }
+  const approval = asObject(body.approval, 'receipt approval');
+  if (body.read_only !== true || body.business_operation_performed !== false
+    || body.invocation_id !== invocationId || body.route !== route
+    || typeof body.agent_run_id !== 'string' || !UUID_PATTERN.test(body.agent_run_id)
+    || typeof body.tool !== 'string' || !TOOL_NAME_PATTERN.test(body.tool)
+    || typeof body.observed_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(body.observed_at)
+    || !Number.isFinite(Date.parse(body.observed_at))
+    || !['job', 'journal', 'none'].includes(String(body.result_source))
+    || !['not_dispatched', 'attempted', 'unknown'].includes(String(body.dispatch_state))
+    || !['none', 'pending', 'approved', 'denied'].includes(String(approval.status))
+    || !['absent', 'dispatching', 'response_recorded', 'completed', 'uncertain', 'evidence_degraded', 'unknown'].includes(String(body.journal_state))
+    || (body.result === null) !== (body.result_source === 'none')
+    || (approval.approval_id !== undefined && (!Number.isSafeInteger(approval.approval_id) || Number(approval.approval_id) < 1))
+    || (approval.status === 'none' ? approval.approval_id !== undefined : approval.approval_id === undefined)) {
+    throw new BailingHubClientError('BailingHub returned an invalid invocation receipt.', undefined, false, 'agent_invalid_response');
+  }
+  const result = body.result === null ? null : normalizeInvocation(body.result, { invocationId, route, tool: body.tool, operation: 'inspect' });
+  // Never forward arguments, credentials, arbitrary journal records, or extra response fields.
+  return {
+    schema_version: 'bailing.agent-invocation-receipt.v1', read_only: true, business_operation_performed: false,
+    invocation_id: invocationId, agent_run_id: body.agent_run_id, route, tool: body.tool, observed_at: body.observed_at,
+    result, result_source: body.result_source as AgentInvocationReceipt['result_source'],
+    dispatch_state: body.dispatch_state as AgentInvocationReceipt['dispatch_state'],
+    approval: { status: approval.status as AgentInvocationReceipt['approval']['status'],
+      ...(approval.approval_id !== undefined ? { approval_id: Number(approval.approval_id) } : {}) },
+    journal_state: body.journal_state as AgentInvocationReceipt['journal_state'],
+  };
 }
 
 async function readJsonWithLimit(response: Response): Promise<unknown> {
@@ -517,15 +638,18 @@ function safeHttpError(
   status: number,
   acceptedUnknown: boolean,
   publicCode?: string,
+  operation: AgentFailureOperation = 'scope',
 ): BailingHubClientError {
-  const disposition = publicCode === 'capability_changed'
-    ? 'refresh_required'
-    : publicCode
-      ? 'definitive_rejection'
-      : acceptedUnknown && (status === 408 || status === 425 || status >= 500)
-        ? 'accepted_unknown'
-        : 'definitive_rejection';
-  const message = status === 401
+  const rejectedBeforeDispatch = status === 401 || status === 403 || (publicCode !== undefined &&
+    ['capability_changed', 'tool_not_found', 'invalid_request', 'invalid_route', 'arguments_too_large',
+      'agent_direct_disabled', 'agent_tools_unavailable', 'route_not_allowed', 'audience_not_allowed',
+      'hub_paused', 'route_unavailable', 'run_not_found', ...AGENT_TASK_ERROR_CODES.filter((code) =>
+        code !== 'TASK_UNAVAILABLE' && code !== 'TASK_RECORD_INVALID' && code !== 'TASK_DISPATCH_UNCERTAIN')].includes(publicCode));
+  const disposition = publicCode === 'capability_changed' ? 'refresh_required'
+    : acceptedUnknown && !rejectedBeforeDispatch ? 'accepted_unknown' : 'definitive_rejection';
+  const message = operation === 'inspect' && publicCode === 'invocation_record_invalid'
+    ? 'BailingHub could not validate the original invocation record.'
+    : status === 401
     ? 'BailingHub rejected the Agent Session.'
     : status === 403
       ? 'The Agent Session is not allowed to perform this operation.'
@@ -541,10 +665,36 @@ function safeHttpError(
   return new BailingHubClientError(
     message,
     status,
-    status === 408 || status === 425 || status === 429 || status >= 500,
+    !(operation === 'inspect' && publicCode === 'invocation_record_invalid')
+      && !AGENT_TASK_ERROR_CODES.some((code) => code === publicCode && code !== 'TASK_UNAVAILABLE')
+      && (status === 408 || status === 425 || status === 429 || status >= 500),
     publicCode,
     disposition,
+    undefined,
+    { operation, origin: 'core', dispatch: (publicCode === 'TASK_DISPATCH_UNCERTAIN' || publicCode === 'TASK_UNAVAILABLE')
+      && (operation === 'invoke' || operation === 'resume') ? 'unknown' : rejectedBeforeDispatch ? 'not_dispatched' : 'attempted' },
   );
+}
+
+function requestOperation(path: string): AgentFailureOperation {
+  if (path.endsWith('/capabilities/search')) return 'search';
+  if (path === AGENT_CLIENT_V1_PATHS.invocationInspectionCapabilities
+    || (path.includes('/tool-invocations/') && path.endsWith('/receipt'))) return 'inspect';
+  if (path.includes('/tool-invocations/') && path.endsWith('/resume')) return 'resume';
+  if (path.endsWith('/tool-invocations')) return 'invoke';
+  return 'scope';
+}
+
+function taskReadFailure(error: unknown): unknown {
+  if (!(error instanceof BailingHubClientError) || error.publicCode) return error;
+  if (error.statusCode !== undefined && error.statusCode >= 500) {
+    return new BailingHubClientError('The governed task service is temporarily unavailable.', error.statusCode,
+      true, 'TASK_UNAVAILABLE', 'definitive_rejection', undefined,
+      { operation: 'scope', origin: 'core', dispatch: 'not_dispatched' });
+  }
+  // JSON/response-size failures from the transport are protocol failures, never an empty task.
+  if (error.statusCode === undefined && !error.retryable) return taskError('TASK_RECORD_INVALID');
+  return error;
 }
 
 /** Host-neutral HTTP boundary for Agent Client API v1. */
@@ -572,6 +722,7 @@ export class AgentClientTransport {
     options: AgentRequestOptions = {},
   ): Promise<AgentTransportResponse> {
     const expectedStatus = options.expectedStatus ?? 200;
+    const operation = requestOperation(path);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMilliseconds);
     const signal = this.callerSignal ? AbortSignal.any([controller.signal, this.callerSignal]) : controller.signal;
@@ -579,9 +730,9 @@ export class AgentClientTransport {
     try {
       signal.throwIfAborted();
       const dispatch = () => { dispatched = true; };
-      let response = await this.send(method, path, body, false, signal, options.ifNoneMatch, dispatch);
+      let response = await this.send(method, path, body, false, signal, options.ifNoneMatch, dispatch, options.binary);
       if (response.status === 401) {
-        response = await this.send(method, path, body, true, signal, options.ifNoneMatch, dispatch);
+        response = await this.send(method, path, body, true, signal, options.ifNoneMatch, dispatch, options.binary);
       }
       if (response.status === 304 && options.ifNoneMatch) {
         return { status: 304, ...(response.headers.get('etag') ? { etag: response.headers.get('etag')! } : {}) };
@@ -591,6 +742,7 @@ export class AgentClientTransport {
           response.status,
           options.acceptedUnknownOnFailure === true,
           await publicErrorCode(response, options.publicErrorCodes),
+          operation,
         );
       }
       const value = await readJsonWithLimit(response);
@@ -600,27 +752,25 @@ export class AgentClientTransport {
         ...(response.headers.get('etag') ? { etag: response.headers.get('etag')! } : {}),
       };
     } catch (error) {
-      if (error instanceof BailingHubClientError) throw error;
+      const dispatch = dispatched ? 'attempted' : 'not_dispatched';
+      if (error instanceof BailingHubClientError) {
+        throw attachAgentFailure(error, { operation,
+          origin: error.feedback?.origin ?? 'sdk', dispatch: error.feedback?.dispatch ?? dispatch });
+      }
       if (this.callerSignal?.aborted) {
         throw new BailingHubClientError('The Agent request was cancelled.', 499, false, 'agent_request_cancelled',
-          options.acceptedUnknownOnFailure && dispatched ? 'accepted_unknown' : 'definitive_rejection');
+          options.acceptedUnknownOnFailure && dispatched ? 'accepted_unknown' : 'definitive_rejection', undefined,
+          { operation, origin: 'sdk', dispatch });
       }
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new BailingHubClientError(
-          'BailingHub Agent request timed out.',
-          408,
-          true,
-          undefined,
-          options.acceptedUnknownOnFailure ? 'accepted_unknown' : 'definitive_rejection',
-        );
+        throw new BailingHubClientError('BailingHub Agent request timed out.', 408, true, 'agent_request_timeout',
+          options.acceptedUnknownOnFailure && dispatched ? 'accepted_unknown' : 'definitive_rejection', undefined,
+          { operation, origin: 'sdk', dispatch });
       }
-      throw new BailingHubClientError(
-        'Could not connect to BailingHub Agent services.',
-        undefined,
-        true,
-        undefined,
-        options.acceptedUnknownOnFailure ? 'accepted_unknown' : 'definitive_rejection',
-      );
+      throw new BailingHubClientError('Could not connect to BailingHub Agent services.',
+        undefined, true, 'agent_transport_unavailable',
+        options.acceptedUnknownOnFailure && dispatched ? 'accepted_unknown' : 'definitive_rejection', undefined,
+        { operation, origin: 'sdk', dispatch });
     } finally {
       clearTimeout(timeout);
     }
@@ -634,6 +784,7 @@ export class AgentClientTransport {
     signal: AbortSignal,
     ifNoneMatch?: string,
     dispatch?: () => void,
+    binary?: AgentRequestOptions['binary'],
   ): Promise<Response> {
     let token: string;
     try {
@@ -644,8 +795,9 @@ export class AgentClientTransport {
       if (error instanceof BailingHubClientError) throw error;
       if (signal.aborted) throw error;
       throw new BailingHubClientError(
-        'The BailingHub Agent login could not be refreshed. Run login again.',
-        401,
+        'The BailingHub Agent authorization could not be prepared.',
+        undefined, false, 'unknown_failure', 'definitive_rejection', undefined,
+        { operation: 'authorize', origin: 'sdk', dispatch: 'not_dispatched' },
       );
     }
     const headers: Record<string, string> = {
@@ -654,9 +806,11 @@ export class AgentClientTransport {
       'Content-Type': 'application/json',
       'User-Agent': `bailinghub-agent-client/${PACKAGE_VERSION}`,
     };
+    if (binary) { headers['Content-Type'] = binary.contentType; headers['x-bailing-artifact'] = binary.metadata; }
     if (ifNoneMatch) headers['If-None-Match'] = identifierText(ifNoneMatch, 'ifNoneMatch', 256);
     const init: RequestInit = { method, headers, redirect: 'error', signal };
-    if (body !== undefined) init.body = JSON.stringify(body);
+    if (binary) init.body = new Uint8Array(binary.body).buffer;
+    else if (body !== undefined) init.body = JSON.stringify(body);
     signal.throwIfAborted();
     dispatch?.();
     return await this.fetchImpl(`${this.baseUrl}${path}`, init);
@@ -695,6 +849,115 @@ export class BailingHubAgentClient {
     );
   }
 
+  private async withFailure<T>(operation: AgentFailureOperation, action: () => Promise<T>, invocationValue?: unknown): Promise<T> {
+    try { return await action(); }
+    catch (error) {
+      clearAgentProtocolSupport(this.protocolSupport());
+      const known = error instanceof BailingHubClientError ? error : undefined;
+      const invocationId = known?.invocationId ?? (typeof invocationValue === 'string' && INVOCATION_ID_PATTERN.test(invocationValue)
+        ? invocationValue : undefined);
+      // invokeResult/resumeResult already classify every exception after transport starts.
+      throw attachAgentFailure(error, { operation, origin: known?.feedback?.origin ?? 'sdk',
+        dispatch: known?.feedback?.dispatch ?? 'not_dispatched', ...(invocationId ? { invocationId } : {}) });
+    }
+  }
+
+  private protocolSupport() {
+    const { baseUrl, clientAppId, workspace, sessionId } = this.connection;
+    return agentProtocolSupport(this, JSON.stringify([baseUrl, clientAppId, workspace, sessionId]));
+  }
+
+  private async requireTaskProtocol(): Promise<void> {
+    if (this.protocolSupport().task) return;
+    if (!(await this.getTaskControlCapabilities()).supported) throw taskError('TASK_UNSUPPORTED');
+  }
+
+  private async requireInspectionProtocol(): Promise<void> {
+    if (!this.protocolSupport().inspection) await this.getInvocationInspectionCapabilities();
+  }
+
+  async uploadArtifact(input: AgentArtifactInput): Promise<AgentArtifactReceipt> { return uploadArtifact(this.transport, this.connection, input); }
+  async getArtifact(uploadId: string): Promise<AgentArtifactReceipt> { return getArtifact(this.transport, this.connection, uploadId); }
+
+  /** Read protocol support with the original Agent bearer. No task or run is created. */
+  async getTaskControlCapabilities(): Promise<AgentTaskControlCapabilities> {
+    return this.withFailure('scope', async () => {
+      const support = this.protocolSupport();
+      const generation = support.generation;
+      let value: unknown;
+      try {
+        value = (await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.taskControlCapabilities)).body;
+      } catch (error) {
+        if (error instanceof BailingHubClientError && [404, 405, 501].includes(error.statusCode ?? 0)
+          && (!error.publicCode || error.publicCode === 'TASK_UNSUPPORTED')) throw taskError('TASK_UNSUPPORTED');
+        throw taskReadFailure(error);
+      }
+      const capabilities = taskCapabilities(value);
+      if (!capabilities.supported) clearAgentProtocolSupport(support);
+      else if (support.generation === generation) support.task = true;
+      return capabilities;
+    });
+  }
+
+  /** Observe one original task member. The host must also verify every other selected member. */
+  async getTask(taskIdValue: string, options: { clientConversationId: string }): Promise<AgentTaskSnapshot> {
+    return this.withFailure('scope', async () => {
+      const taskId = taskIdInput(taskIdValue);
+      const clientConversationId = taskConversationInput(options?.clientConversationId);
+      await this.requireTaskProtocol();
+      const query = new URLSearchParams({ workspace: this.connection.workspace, client_conversation_id: clientConversationId });
+      let response: AgentTransportResponse;
+      try { response = await this.transport.request('GET', `${AGENT_CLIENT_V1_PATHS.task(taskId)}?${query}`); }
+      catch (error) { throw taskReadFailure(error); }
+      return taskSnapshot(response.body, { ...this.connection, taskId, clientConversationId });
+    });
+  }
+
+  async getInvocationInspectionCapabilities(): Promise<AgentInvocationInspectionCapabilities> {
+    return this.withFailure('inspect', async () => {
+      const support = this.protocolSupport();
+      const generation = support.generation;
+      let value: unknown;
+      try {
+        value = (await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.invocationInspectionCapabilities)).body;
+      } catch (error) {
+        if (error instanceof BailingHubClientError && error.statusCode === 404) {
+          throw new BailingHubClientError('This BailingHub version does not support read-only invocation inspection.',
+            404, false, 'agent_schema_unsupported');
+        }
+        throw error;
+      }
+      const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+      if (body.schema_version !== 'bailing.agent-invocation-inspection-capabilities.v1'
+        || body.receipt_schema !== 'bailing.agent-invocation-receipt.v1' || body.read_only !== true) {
+        throw new BailingHubClientError('This BailingHub version does not support the invocation receipt contract.',
+          undefined, false, 'agent_schema_unsupported');
+      }
+      if (support.generation === generation) support.inspection = true;
+      return { schema_version: 'bailing.agent-invocation-inspection-capabilities.v1',
+        receipt_schema: 'bailing.agent-invocation-receipt.v1', read_only: true };
+    });
+  }
+
+  /** Read the original receipt using GET only; this never invokes or resumes a business operation. */
+  async inspectInvocation(invocationIdValue: string): Promise<AgentInvocationReceipt> {
+    return this.withFailure('inspect', async () => {
+      if (typeof invocationIdValue !== 'string' || !INVOCATION_ID_PATTERN.test(invocationIdValue)) {
+        throw new TypeError('invocationId must be a 64-character lowercase digest.');
+      }
+      const workspace = this.connection.workspace;
+      await this.requireInspectionProtocol();
+      const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.invocationReceipt(invocationIdValue));
+      try {
+        return normalizeInvocationReceipt(response.body, invocationIdValue, workspace);
+      } catch (error) {
+        if (error instanceof BailingHubClientError && error.publicCode) throw error;
+        throw new BailingHubClientError('BailingHub returned an invalid invocation receipt.',
+          undefined, false, 'agent_invalid_response');
+      }
+    }, invocationIdValue);
+  }
+
   async listWorkspaces(options: { ifNoneMatch?: string } = {}): Promise<AgentWorkspaceList> {
     const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.workspaces, undefined, {
       ...(options.ifNoneMatch ? { ifNoneMatch: options.ifNoneMatch } : {}),
@@ -709,7 +972,7 @@ export class BailingHubAgentClient {
     }
     const body = asObject(response.body, 'workspace list');
     if (responseSchema(body) !== 'bailing.agent-workspaces.v1' || !Array.isArray(body.workspaces) || body.workspaces.length > MAX_WORKSPACES) {
-      throw new BailingHubClientError('BailingHub returned an unsupported Agent workspace list.');
+      throw new BailingHubClientError('BailingHub returned an unsupported Agent workspace list.', undefined, false, 'agent_schema_unsupported');
     }
     const workspaces = body.workspaces.map((item) => normalizeWorkspace(item));
     if (new Set(workspaces.map((item) => item.route)).size !== workspaces.length) {
@@ -740,6 +1003,10 @@ export class BailingHubAgentClient {
   }
 
   async bootstrapWorkspace(options: { ifNoneMatch?: string } = {}): Promise<AgentRuntimeProfile> {
+    return this.withFailure('scope', () => this.bootstrapWorkspaceResult(options));
+  }
+
+  private async bootstrapWorkspaceResult(options: { ifNoneMatch?: string } = {}): Promise<AgentRuntimeProfile> {
     const route = this.connection.workspace;
     const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.bootstrap(route), undefined, {
       ...(options.ifNoneMatch ? { ifNoneMatch: options.ifNoneMatch } : {}),
@@ -756,7 +1023,7 @@ export class BailingHubAgentClient {
     }
     const body = asObject(response.body, 'runtime profile');
     if (responseSchema(body) !== 'bailing.agent-runtime-profile.v1') {
-      throw new BailingHubClientError('BailingHub returned an unsupported Agent runtime profile.');
+      throw new BailingHubClientError('BailingHub returned an unsupported Agent runtime profile.', undefined, false, 'agent_schema_unsupported');
     }
     const workspaceBody = body.workspace ?? { route: body.route ?? body.route_key, name: body.name, description: body.description };
     const workspace = normalizeWorkspace(workspaceBody, route);
@@ -830,7 +1097,18 @@ export class BailingHubAgentClient {
     };
   }
 
-  async startTurn(input: StartAgentTurnInput): Promise<AgentTurnContext> {
+  async startTurn(input: StartAgentTurnInput, options: StartAgentTurnOptions = {}): Promise<AgentTurnContext> {
+    return this.withFailure('scope', () => this.startTurnResult(input, options));
+  }
+
+  private async startTurnResult(input: StartAgentTurnInput, options: StartAgentTurnOptions): Promise<AgentTurnContext> {
+    if ('taskBinding' in input || 'task_binding' in input || 'task_id' in input || 'taskId' in input) {
+      throw new TypeError('Task bindings must be supplied through trusted host options.');
+    }
+    if (['task_binding', 'task_id', 'taskId'].some((key) => key in options)) {
+      throw new TypeError('Trusted host options require taskBinding.');
+    }
+    const binding = options.taskBinding === undefined ? undefined : taskBinding(options.taskBinding, true);
     const body: Record<string, unknown> = {
       client_conversation_id: identifierText(input.clientConversationId, 'clientConversationId', 128),
       client_turn_id: identifierText(input.clientTurnId, 'clientTurnId', 128),
@@ -841,10 +1119,20 @@ export class BailingHubAgentClient {
     const requestRenderers = normalizedRenderers(input.renderers);
     if (requestPageContext) body.page_context = requestPageContext;
     if (requestRenderers) body.renderers = requestRenderers;
+    if (binding) {
+      taskConversationInput(body.client_conversation_id);
+      await this.requireTaskProtocol();
+      await this.requireInspectionProtocol();
+      body.task_binding = binding;
+    }
     const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.turns(this.connection.workspace), body);
     const value = asObject(response.body, 'turn context');
     if (responseSchema(value) !== 'bailing.agent-turn-context.v1') {
-      throw new BailingHubClientError('BailingHub returned an unsupported Agent turn context.');
+      throw new BailingHubClientError('BailingHub returned an unsupported Agent turn context.', undefined, false, 'agent_schema_unsupported');
+    }
+    const echo = value.task_binding === undefined ? undefined : taskBinding(value.task_binding);
+    if (binding ? !echo || echo.task_id !== binding.task_id || echo.scope_hash !== binding.scope_hash : echo !== undefined) {
+      throw taskError('TASK_BINDING_CONFLICT');
     }
     const runId = requiredString(value.run_id, 'run_id', 36);
     if (!UUID_PATTERN.test(runId)) throw new BailingHubClientError('BailingHub returned an invalid run_id.');
@@ -866,6 +1154,8 @@ export class BailingHubAgentClient {
     const memoryRefs = context.memory_refs ?? [];
     if (!Array.isArray(memoryRefs)) throw new BailingHubClientError('BailingHub returned invalid turn memory_refs.');
     assertJsonBounded({ memory: context.memory ?? null, memory_refs: memoryRefs, knowledge, knowledge_refs: knowledgeRefs, governance }, 'turn context', MAX_CONTEXT_BYTES);
+    const activeTools = normalizeTools(value.active_tools, 'turn active_tools');
+    const discovery = normalizeDiscovery(value.discovery, activeTools.length);
     return {
       schema: 'bailing.agent-turn-context.v1',
       run_id: runId,
@@ -881,11 +1171,17 @@ export class BailingHubAgentClient {
         knowledge_refs: knowledgeRefs,
         governance,
       },
-      active_tools: normalizeTools(value.active_tools, 'turn active_tools'),
+      active_tools: activeTools,
+      ...(discovery ? { discovery } : {}),
+      ...(echo ? { task_binding: echo } : {}),
     };
   }
 
   async searchCapabilities(input: SearchAgentCapabilitiesInput): Promise<AgentCapabilitySearchResult> {
+    return this.withFailure('search', () => this.searchCapabilitiesResult(input));
+  }
+
+  private async searchCapabilitiesResult(input: SearchAgentCapabilitiesInput): Promise<AgentCapabilitySearchResult> {
     const limit = input.limit ?? MAX_ACTIVE_TOOLS;
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_ACTIVE_TOOLS) {
       throw new Error(`limit must be an integer from 1 to ${MAX_ACTIVE_TOOLS}.`);
@@ -907,16 +1203,25 @@ export class BailingHubAgentClient {
     const value = asObject(response.body, 'capability search');
     const schema = responseSchema(value);
     if (schema !== 'bailing.agent-capability-search.v1') {
-      throw new BailingHubClientError('BailingHub returned an unsupported capability search response.');
+      throw new BailingHubClientError('BailingHub returned an unsupported capability search response.',
+        undefined, false, schema ? 'agent_schema_unsupported' : 'agent_invalid_response', 'definitive_rejection', undefined,
+        { operation: 'search', origin: 'sdk', dispatch: 'not_dispatched' });
     }
+    const tools = normalizeTools(value.tools, 'capability search tools');
+    const discovery = normalizeDiscovery(value.discovery, tools.length);
     return {
       schema: 'bailing.agent-capability-search.v1',
       capability_revision: revision(value.capability_revision, 'capability_revision'),
-      tools: normalizeTools(value.tools, 'capability search tools'),
+      tools,
+      ...(discovery ? { discovery } : {}),
     };
   }
 
   async invoke(input: InvokeAgentCapabilityInput): Promise<AgentToolInvocation> {
+    return this.withFailure('invoke', () => this.invokeResult(input), input.invocationId);
+  }
+
+  private async invokeResult(input: InvokeAgentCapabilityInput): Promise<AgentToolInvocation> {
     const invocationId = identifierText(input.invocationId, 'invocationId', 64);
     const capabilityRevision = identifierText(input.capabilityRevision, 'capabilityRevision', 128);
     const agentRunId = identifierText(input.agentRunId, 'agentRunId', 36);
@@ -944,9 +1249,12 @@ export class BailingHubAgentClient {
           error.retryable,
           error.publicCode,
           error.disposition === 'definitive_rejection' && error.statusCode === undefined
+            && error.feedback?.dispatch !== 'not_dispatched'
             ? 'accepted_unknown'
             : error.disposition,
           invocationId,
+          { operation: 'invoke', origin: error.feedback?.origin ?? 'sdk',
+            dispatch: error.feedback?.dispatch ?? 'unknown', invocationId },
         );
       }
       throw new BailingHubClientError(
@@ -956,16 +1264,21 @@ export class BailingHubAgentClient {
         undefined,
         'accepted_unknown',
         invocationId,
+        { operation: 'invoke', origin: 'sdk', dispatch: 'unknown', invocationId },
       );
     }
   }
 
   async resume(invocationIdValue: unknown): Promise<AgentToolInvocation> {
+    return this.withFailure('resume', () => this.resumeResult(invocationIdValue), invocationIdValue);
+  }
+
+  private async resumeResult(invocationIdValue: unknown): Promise<AgentToolInvocation> {
     const invocationId = identifierText(invocationIdValue, 'invocationId', 64);
     if (!INVOCATION_ID_PATTERN.test(invocationId)) throw new Error('invocationId must be a 64-character lowercase digest.');
     try {
       const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.resumeInvocation(invocationId), undefined, { acceptedUnknownOnFailure: true });
-      return normalizeInvocation(response.body, { invocationId, route: this.connection.workspace });
+      return normalizeInvocation(response.body, { invocationId, route: this.connection.workspace, operation: 'resume' });
     } catch (error) {
       if (error instanceof BailingHubClientError) {
         throw new BailingHubClientError(
@@ -974,9 +1287,12 @@ export class BailingHubAgentClient {
           error.retryable,
           error.publicCode,
           error.disposition === 'definitive_rejection' && error.statusCode === undefined
+            && error.feedback?.dispatch !== 'not_dispatched'
             ? 'accepted_unknown'
             : error.disposition,
           invocationId,
+          { operation: 'resume', origin: error.feedback?.origin ?? 'sdk',
+            dispatch: error.feedback?.dispatch ?? 'unknown', invocationId },
         );
       }
       throw new BailingHubClientError(
@@ -986,6 +1302,7 @@ export class BailingHubAgentClient {
         undefined,
         'accepted_unknown',
         invocationId,
+        { operation: 'resume', origin: 'sdk', dispatch: 'unknown', invocationId },
       );
     }
   }

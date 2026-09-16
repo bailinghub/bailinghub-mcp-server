@@ -43,6 +43,22 @@ function connection(accessTokenProvider = { getAccessToken: async () => 'access-
   };
 }
 
+test('Agent Client preserves structured shared rate limits and never resubmits a write automatically', async () => {
+  const calls = [];
+  const client = new BailingHubAgentClient(connection(), { fetchImpl: async (url) => {
+    calls.push(String(url));
+    return jsonResponse({ schema_version: 'bailing.agent-tool-invocation.v1', invocation_id: INVOCATION_ID,
+      route: 'orders', tool: 'employee_search', state: 'rejected_before_dispatch', ok: false, auto_retry_allowed: true,
+      text: 'Wait and resume the original invocation.', retry_after_ms: 3600000,
+      rate_limit: { level: 'tool', count: 120, window_sec: 3600, scope: 'tool_provider_shared', source: 'declaration', private: 'discard' } });
+  } });
+  const result = await client.resume(INVOCATION_ID);
+  assert.equal(result.retry_after_ms, 3600000);
+  assert.deepEqual(result.rate_limit, { level: 'tool', count: 120, window_sec: 3600, scope: 'tool_provider_shared', source: 'declaration' });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /resume/);
+});
+
 test('Agent Client v1 maps the frozen Core paths and DTOs without hidden reasoning', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {

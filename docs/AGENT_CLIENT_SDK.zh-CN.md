@@ -6,7 +6,7 @@
 并上架，每一步使用对应系统的原授权与审批规则。受控系统说明和业务主体名称帮助宿主在搜索工具前
 说明操作目标；0.4.0 引入的对话归档继续把可见消息关联到各项原始业务动作。
 
-使用这批新能力时，安装下方精确 SDK 版本，并配合 BailingHub Core 0.7.0。客户端负责显式选择范围、
+当前完整版本配套 SDK 0.6.0 与 BailingHub Core 0.8.0，新增附件、只读回执与任务控制见[升级指南](UPGRADE_v0.6.0.md)。客户端负责显式选择范围、
 保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
 原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
 
@@ -22,10 +22,10 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.5.0
+npm install --save-exact bailinghub-mcp-server@0.6.0
 ```
 
-公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.5.0` 后发布。
+公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.6.0` 后发布。
 不要在公开 manifest 中改用本机路径。
 
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
@@ -293,8 +293,36 @@ const found = await transport.searchCapabilities({
 });
 ```
 
-宿主应替换上一组动态业务工具，不能把 schema 永久累加到上下文。检索范围始终限制在当前
-run/session/workspace 的授权交集内。
+独立 MCP 适配器替换上一组动态业务工具。商城与库存等多目标宿主根据明确选中的授权重算共享工具集，
+不能把 schema 永久累加到上下文。已经加载、仍有效且目标明确的工具可直接调用，无需逐次搜索。
+检索范围始终限制在当前 run/session/workspace 的授权交集内。
+
+### 发现数量与工具集状态（0.6.0）
+
+搜索与轮次响应新增可选 `discovery` 对象。旧 Core 缺字段时，SDK 保持缺失，MCP 面向模型返回
+`discovery: null` 表示未知；矛盾或无效的可选统计也降级为未知，保留有效工具。不能用 0 或本次 `tools.length` 补成总数。
+
+| 字段 | 含义 |
+| --- | --- |
+| `mode: 'ranked_candidates'` | 有上限的相关性候选，不是完整匹配集合 |
+| `scope: 'current_authorization'` | 只统计本次选定目标的当前授权范围 |
+| `returned_count` | 本次响应实际返回的能力定义数 |
+| `authorized_total` | 此授权可用目录数量，不是本次查询匹配数 |
+| `matched_total: null`、`matched_total_exact: false` | 精确匹配总数未知 |
+| `limit` | 本次返回上限，最多 12 |
+| `truncated`、`has_more` | 授权目录还有未返回项，不承诺存在下一页 |
+| `truncation_scope: 'authorized_catalog'` | 截断相对于已授权目录计算 |
+| `pagination: 'unsupported'` | 不支持按页或游标遍历完整目录 |
+
+MCP 还返回 `target.workspace`、当前 `active_tools` 和
+`toolset: { update: 'replace', scope: 'mcp_session', active_count, limit: 12, generation,
+omitted_tool_count: 0, conflicting_tool_count: 0 }`。`active_count` 是此 MCP 服务当前实际注册的业务工具数，
+不含元工具；`generation` 随本地集合应用递增，不等于 Core 的 capability revision。
+这些不是其他宿主整个会话的统计；DSH 等宿主负责自己的共享加载上限、未加载数量和目标归属。
+
+适配器仅记录本 MCP 会话实际注册后卸载的业务工具名。再次调用这类旧名称，在进入 SDK 业务调用前
+返回 `tool_not_loaded`。从未注册的名字继续由原 MCP 分发器处理。若客户端宿主在发送 MCP 前就拒绝名称，
+必须在宿主自己的分发接缝分类，SDK 业务回调无法截获更早的拒绝。
 
 ## 受治理调用与恢复
 
@@ -311,13 +339,43 @@ const result = await transport.invoke({
 SDK 把调用发给 BailingHub，不直连业务接口。Core 每次重新校验 Agent Session、route、工具、ACC
 声明、审批状态、限额和业务身份。不能让模型提供 Hub 地址、凭据、审批结论、行动主体或任意 route。
 
-调用等待审批、仍在执行、派发前可重试或结果未知时，保留原 `invocation_id` 并恢复：
+调用等待审批、仍在执行或结果未知时，保留原 `invocation_id`，并沿用原连接和原授权恢复：
 
 ```js
 const resumed = await transport.resume(result.invocation_id);
 ```
 
-不能因为轮询超时就创建一笔替代写调用。
+不能因为轮询超时就创建一笔替代写调用。明确派发前的 `capability_changed` 拒绝应重新发现能力，
+不能把它当成已经派发的业务操作恢复。HTTP 成功但业务状态为 `reconciliation_required` 时，保留原状态和
+`auto_retry_allowed: false`，新增反馈要求核对原调用。
+
+### 结构化失败反馈（0.6.0）
+
+相关 SDK 异常带 `error.feedback`；两个 SDK 入口均导出 `describeAgentFailure(error, context)`，
+供掌握真实执行上下文的适配器使用。MCP 的 JSON 文本和 `structuredContent` 同时保留相同脱敏 `feedback`。
+结构为 `bailing.agent-feedback.v1`，包括 `category`、公开白名单 `code`、`origin`、`operation`、`dispatch`、
+`retryable`、`next_action`、受控 `message`，以及可选原 `invocation_id` 和既有 `disposition`。
+不复制上游错误正文或任意异常原文。
+
+| 分类或情况 | 下一步 |
+| --- | --- |
+| `tool_not_loaded`、有派发前证据的 `capability_changed` | `rediscover`，重新发现原目标能力 |
+| SDK 实际观察到的发现请求网络失败或超时 | `retry_discovery` |
+| 授权或范围复核时的实际网络失败或超时 | `restore_scope`，重新验证原范围和原身份 |
+| 原绑定变化或授权被拒绝 | `restore_scope` / `reauthorize`，不自动换授权 |
+| 明确不兼容的响应 schema | `check_compatibility` |
+| 业务调用已尝试发送或结果不确定 | 原 ID 的 `resume_original` |
+| `reconciliation_required`、原调用冲突、原恢复被阻断 | `inspect_original` |
+| 未分类失败，包括原因不明的 404/503、路由或依赖不可用 | `none`，不推断能力不存在、版本不支持或暂时断网 |
+
+`rediscover/retry_discovery/restore_scope/resume_original` 的 `retryable` 为 true，仅表示可再次执行相应复核或恢复动作。
+`retryable` 仅针对 `next_action`，不授权再次 `invoke`；旧传输异常自身的 `retryable` 即使为 true，
+也不能转成新业务写操作。缺少 schema 是无效响应，普通 404 不是版本不支持的证据。
+刷新凭据时的实际断网与授权失效分别分类；鉴权服务原因不明的 503 不会变成 401。
+
+只有掌握未派发事实的层才能报告 `dispatch: 'not_dispatched'`。未知调用异常保留 `unknown/attempted`
+和原 ID。重新发现能力与业务恢复严格分开；恢复沿用固定 connectionKey、workspace、expectedBinding、
+run 和原调用关联。原授权不可用时，不能回退到默认连接、缩小选择范围或创建替代业务操作。
 
 ## 回传最终可见结果
 
@@ -507,3 +565,12 @@ if (typeof transport.getSystemInfo === 'function') {
 
 完整 Core/业务/宿主接入见
 [BailingHub Agent Client v1 接入指南](https://github.com/bailinghub/bailinghub/blob/main/docs/AGENT_CLIENT_QUICKSTART.md)。
+
+## 原任务控制（0.6.0）
+
+新增宿主只读方法 `getTaskControlCapabilities({ connectionKey, expectedBinding })` 与
+`getTask(taskId, { connectionKey, workspace, clientConversationId, expectedBinding })`。
+受管 `startTurn` 通过宿主 options 的 `taskBinding: { schema_version, task_id, scope_hash }`
+传入原关联并校验回显；模型 turn input 不能选择任务。SDK 不提供任务创建、暂停、继续或取消的
+管理方法，不携带管理员凭据。使用 SDK 0.6.0 和 Core 0.8.0。
+完整成员校验、计量含义、旧 Core 行为和商城/库存场景见[任务控制接缝](TASK_CONTROL.md)。
