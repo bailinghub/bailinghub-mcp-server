@@ -1,6 +1,6 @@
 {
   "name": "bailinghub-mcp-server",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": false,
   "description": "Let MCP-compatible agents query and operate permitted business systems through BailingHub.",
   "license": "MIT",
@@ -16,6 +16,10 @@
     "./agent-client": {
       "types": "./dist/agent-client.d.ts",
       "import": "./dist/agent-client.js"
+    },
+    "./usage": {
+      "types": "./dist/usage.d.ts",
+      "import": "./dist/usage.js"
     }
   },
   "bin": {
@@ -68,7 +72,12 @@
     "docs/RELEASE_NOTES_v0.6.0.md",
     "docs/UPGRADE_v0.6.0.md",
     "docs/RELEASE_NOTES_v0.6.0.en.md",
-    "docs/UPGRADE_v0.6.0.en.md"
+    "docs/UPGRADE_v0.6.0.en.md",
+    "docs/USAGE_SERVICE.md",
+    "docs/RELEASE_NOTES_v0.7.0.md",
+    "docs/RELEASE_NOTES_v0.7.0.en.md",
+    "docs/UPGRADE_v0.7.0.md",
+    "docs/UPGRADE_v0.7.0.en.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/ensure-bin-executable.mjs",
