@@ -1533,3 +1533,5 @@ export function createAgentClientTransport(
   }
   return transport;
 }
+
+export * from './usage.js';

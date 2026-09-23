@@ -1,6 +1,6 @@
-# Current 0.6.0 pairing
+# Current 0.7.0 pairing
 
-Use Core 0.8.0, SDK 0.6.0 and DSH 0.6.0 for attachments, original receipts and task controls. Existing unenrolled flows retain their earlier protocol minima. Task enrollment persists: older hosts cannot omit task binding. See [upgrade](UPGRADE_v0.6.0.en.md).
+Use Core 0.9.0, SDK 0.7.0 and DSH 0.7.0 for optional model plans and image tools. Existing business-governance APIs retain their documented minima. Host orchestration, scope, approval and audit rules remain in effect. See [upgrade](UPGRADE_v0.7.0.en.md).
 
 # BailingHub Client API Compatibility
 
@@ -25,12 +25,13 @@ current BailingHub contract and rejects:
 MCP protocol versions, this npm package version, BailingHub application versions, and Client
 API versions are deliberately independent.
 
-Version 0.5.0 retains Agent Auth v1, Agent Client Runtime v1 and the existing Client Token flow.
+Version 0.7.0 retains Agent Auth v1, Agent Client Runtime v1 and the existing Client Token flow.
 The Client API contract and payload semantics remain unchanged; the consumer declaration records
 the adapter's new version.
 
 | Feature | Server requirement |
 | --- | --- |
+| Optional model gateway and plan summaries | Core 0.9.0 with migrations 063/064; discover `model_gateway` support before use |
 | Standalone MCP Client Token jobs | Existing `bailing.client-api.v1` contract |
 | Browser authorization, Agent turns, governed calls and completion | Existing Agent Auth v1 and Agent Client Runtime v1, including Core 0.5.1 |
 | Host SDK visible conversation archive | Conversation audit v1 in same-binding mode: Core 0.6.0 API minimum; Core 0.7.0 for the complete 0.5.0 feature set |
@@ -40,7 +41,7 @@ the adapter's new version.
 
 The archive is an additive host SDK API. Core releases below 0.6.0 do not implement it; hosts must
 report unsupported archival while preserving the established business flow. Upgrade Core before
-enabling archiving; use Core 0.7.0 for new installations and upgrades. This SDK does not add a
+enabling archiving; use Core 0.9.0 for the current complete release pairing. This SDK does not add a
 multi-account selector or transcript capture to the standalone MCP tools; native host adapters
 own that interface and durable outbox.
 
@@ -50,7 +51,7 @@ that descriptor; they import `bailinghub-mcp-server/sdk` and use browser-authori
 credentials. These are two installation surfaces of one package, not one shared configuration
 form.
 
-The host-neutral `bailinghub-mcp-server/sdk` export remains part of the 0.5 package surface. Host
+The host-neutral `bailinghub-mcp-server/sdk` export remains part of the public package surface. Host
 adapters must use an exact compatible normal dependency for reproducible installation. A host
 adapter must not depend on an optional peer, a local `file:` path, or copied SDK sources.
 
@@ -88,10 +89,10 @@ DPAPI-protected files under LocalAppData through the system Windows PowerShell 5
 or PowerShell unavailability fails closed without a plaintext fallback. Client Token mode remains
 compatible on Windows.
 
-## Local task-control candidate
+## Local task control
 
-The additive task-control candidate keeps package version `0.5.0`; it is not a statement that the
-published package or a deployed Core supports it. See [the host contract and Chinese scenarios](TASK_CONTROL.md).
+Task control was introduced in Core 0.8.0 / SDK 0.6.0 and remains available in the current
+Core 0.9.0 / SDK 0.7.0 pairing. See [the host contract and Chinese scenarios](TASK_CONTROL.md).
 `getTaskControlCapabilities` and `getTask` require original binding checks; managed `startTurn`
 requires both task and read-only receipt support and a matching `task_binding` echo. A valid
 `supported: false` response remains distinct from an unavailable network. Missing old endpoints
