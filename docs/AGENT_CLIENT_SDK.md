@@ -1,5 +1,9 @@
 # BailingHub Agent Client SDK
 
+For separately negotiated, bounded reference-knowledge search/read and legacy
+inline fallback, see [AGENT_KNOWLEDGE.md](AGENT_KNOWLEDGE.md). Core native chat/embed
+knowledge assembly remains independent.
+
 [简体中文](AGENT_CLIENT_SDK.zh-CN.md) | English
 
 Version 0.5.0 lets a compatible host use explicitly selected authorizations from different systems

@@ -38,6 +38,9 @@ const METHODS = {
     userMessageId: 'message-a', userInput: 'Only the selected synthetic store.',
   }, options),
   searchCapabilities: (transport, options) => transport.searchCapabilities({ query: 'record', runId: RUN, limit: 1 }, options),
+  getKnowledgeCapabilities: (transport, options) => transport.getKnowledgeCapabilities(options),
+  searchKnowledge: (transport, options) => transport.searchKnowledge({ query: 'policy', runId: RUN }, options),
+  readKnowledge: (transport, options) => transport.readKnowledge({ ref: 'synthetic-ref', runId: RUN }, options),
   invoke: (transport, options) => transport.invoke({
     run_id: RUN, client_invocation_id: INVOCATION, tool: 'record_update',
     capability_revision: REVISION, arguments: { record_id: 'synthetic-record-a' },
@@ -284,6 +287,13 @@ async function fixture(t, { expired = false } = {}) {
         system: { name: 'Order Operations', summary: 'Manage online orders.', domains: ['Orders'], boundaries: ['No payroll'] },
         tool_status: 'not_loaded', availability: 'unknown',
       });
+      if (path.endsWith('/knowledge/capabilities')) return json({ schema_version: 'bailing.agent-knowledge-capabilities.v1',
+        protocol: 'bailing.agent-knowledge.v1', supported: true, route: a.workspace, enabled: true, knowledge_scope_revision: REVISION,
+        delivery_modes: ['inline', 'on_demand'], limits: { search_max_results: 3, search_max_bytes: 4096, read_default_bytes: 16384, read_max_bytes: 32768, reference_ttl_seconds: 300, read_chain_max_bytes: 131072 } });
+      if (path.endsWith('/knowledge/search')) return json({ schema_version: 'bailing.agent-knowledge-search.v1', route: a.workspace,
+        run_id: RUN, knowledge_scope_revision: REVISION, status: 'ok', trust: 'reference_only', hints: [], truncated: false });
+      if (path.endsWith('/knowledge/read')) return json({ schema_version: 'bailing.agent-knowledge-read.v1', route: a.workspace,
+        run_id: RUN, knowledge_scope_revision: REVISION, ref: 'synthetic-ref', revision: REVISION, title: 'Policy', content: 'Synthetic policy.', trust: 'reference_only', next_cursor: null, truncated: false });
       if (path.endsWith('/turns')) return json({
         schema_version: 'bailing.agent-turn-context.v1', run_id: RUN,
         profile_revision: REVISION, capability_revision: REVISION,

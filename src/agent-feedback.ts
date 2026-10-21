@@ -2,12 +2,12 @@
 export type AgentFailureCategory =
   | 'tool_not_loaded' | 'capability_changed' | 'transport_unavailable'
   | 'authorization_unavailable' | 'unsupported' | 'invocation_outcome_unknown'
-  | 'unknown_failure' | 'cancelled' | 'invalid_request' | 'task_control';
+  | 'unknown_failure' | 'cancelled' | 'invalid_request' | 'task_control' | 'knowledge_reference_unavailable';
 export type AgentFailureOperation = 'search' | 'invoke' | 'resume' | 'inspect' | 'authorize' | 'scope' | 'tool_dispatch';
 export type AgentFailureOrigin = 'core' | 'sdk' | 'mcp' | 'dsh' | 'host';
 export type AgentFailureDispatch = 'not_dispatched' | 'attempted' | 'unknown';
 export type AgentFailureNextAction = 'rediscover' | 'retry_discovery' | 'restore_scope' | 'reauthorize'
-  | 'check_compatibility' | 'resume_original' | 'inspect_original' | 'none';
+  | 'check_compatibility' | 'resume_original' | 'inspect_original' | 'search_knowledge' | 'none';
 export type AgentFailureFeedback = {
   schema: 'bailing.agent-feedback.v1';
   category: AgentFailureCategory;
@@ -49,6 +49,7 @@ const CODES = new Set([
   'agent_request_cancelled', 'agent_transport_unavailable', 'agent_request_timeout',
   'agent_authorization_unavailable', 'agent_schema_unsupported', 'agent_invalid_response',
   'tool_not_loaded', 'reconciliation_required', 'unknown_failure',
+  'knowledge_unavailable', 'knowledge_reference_invalid', 'knowledge_reference_expired', 'knowledge_changed', 'knowledge_scope_changed',
 ]);
 const AUTH_CODES = new Set(['agent_binding_changed', 'agent_authorization_unavailable', 'audience_not_allowed',
   'route_not_allowed', 'conversation_audit_authorization_invalid']);
@@ -65,6 +66,7 @@ const MESSAGES: Record<AgentFailureCategory, string> = {
   cancelled: 'The request was cancelled. Cancellation does not undo a dispatched business operation.',
   invalid_request: 'The request could not be accepted. Review the current tool and its arguments.',
   task_control: 'The original governed task does not permit this operation. Preserve its binding and inspect its current state; do not create a replacement task or invocation.',
+  knowledge_reference_unavailable: 'The original knowledge reference is invalid, expired or changed. Search knowledge again under the same authorization. Do not replay a business operation.',
 };
 
 /** Classify only stable codes, typed status, and dispatch facts supplied by the producing layer. */
@@ -79,6 +81,8 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
   const dispatch = context.dispatch ?? 'unknown';
   let category: AgentFailureCategory = 'unknown_failure';
   if (code === 'tool_not_loaded') category = 'tool_not_loaded';
+  else if (['knowledge_reference_invalid', 'knowledge_reference_expired', 'knowledge_changed', 'knowledge_scope_changed'].includes(code)) category = 'knowledge_reference_unavailable';
+  else if (code === 'knowledge_unavailable') category = 'transport_unavailable';
   else if (code === 'capability_changed') category = 'capability_changed';
   else if (code === 'agent_request_cancelled') category = 'cancelled';
   else if (code === 'TASK_UNSUPPORTED') category = 'unsupported';
@@ -110,6 +114,7 @@ export function describeAgentFailure(error: unknown, context: AgentFailureContex
     nextAction = 'inspect_original';
   } else if (category === 'invocation_outcome_unknown') nextAction = invocationId ? 'resume_original' : 'inspect_original';
   else if (category === 'task_control') nextAction = 'none';
+  else if (category === 'knowledge_reference_unavailable') nextAction = 'search_knowledge';
   else if (context.operation === 'resume') {
     nextAction = category === 'transport_unavailable' && invocationId ? 'resume_original' : 'inspect_original';
   } else if (category === 'tool_not_loaded' || category === 'capability_changed') {

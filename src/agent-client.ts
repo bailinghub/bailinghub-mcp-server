@@ -20,6 +20,11 @@ import {
 import { normalizeAgentRoute, normalizeBaseUrl, normalizeClientAppId } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
 import { agentProtocolSupport, clearAgentProtocolSupport } from './agent-protocol-support.js';
+import { AGENT_KNOWLEDGE_PROTOCOL, normalizeKnowledgeCapabilities, normalizeKnowledgeDelivery, normalizeKnowledgeSearch, normalizeKnowledgeRead,
+  type AgentKnowledgeCapabilities, type AgentKnowledgeDelivery, type AgentKnowledgeSearch, type AgentKnowledgeRead,
+  type SearchAgentKnowledgeInput, type ReadAgentKnowledgeInput } from './agent-knowledge.js';
+export type { AgentKnowledgeCapabilities, AgentKnowledgeDelivery, AgentKnowledgeSearch, AgentKnowledgeRead,
+  SearchAgentKnowledgeInput, ReadAgentKnowledgeInput } from './agent-knowledge.js';
 import { normalizeAgentSystemInfo, type AgentSystemInfo } from './system-info.js';
 export type { AgentSystemInfo } from './system-info.js';
 import {
@@ -84,6 +89,7 @@ const PUBLIC_AGENT_ERROR_CODES = new Set([
   'conversation_audit_internal_error',
   'conversation_audit_cross_binding_unavailable',
   'system_info_unsupported',
+  'knowledge_unavailable', 'knowledge_reference_invalid', 'knowledge_reference_expired', 'knowledge_changed', 'knowledge_scope_changed',
 ]);
 
 export const AGENT_CLIENT_V1_PATHS = {
@@ -96,6 +102,9 @@ export const AGENT_CLIENT_V1_PATHS = {
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/turns`,
   capabilitySearch: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/capabilities/search`,
+  knowledgeCapabilities: (route: string) => `/agent-api/v1/workspaces/${encodeURIComponent(route)}/knowledge/capabilities`,
+  knowledgeSearch: (route: string) => `/agent-api/v1/workspaces/${encodeURIComponent(route)}/knowledge/search`,
+  knowledgeRead: (route: string) => `/agent-api/v1/workspaces/${encodeURIComponent(route)}/knowledge/read`,
   toolDetail: (name: string) => `/agent-api/v1/tools/${encodeURIComponent(name)}`,
   invocations: '/agent-api/v1/tool-invocations',
   invocationInspectionCapabilities: '/agent-api/v1/tool-invocations/inspection-capabilities',
@@ -211,7 +220,7 @@ export type StartAgentTurnInput = {
 };
 
 /** Trusted host state, deliberately separate from model-visible turn input. */
-export type StartAgentTurnOptions = { taskBinding?: AgentTaskBinding };
+export type StartAgentTurnOptions = { taskBinding?: AgentTaskBinding; knowledgeDelivery?: 'on_demand' };
 
 export type AgentTurnContext = {
   schema: 'bailing.agent-turn-context.v1';
@@ -227,6 +236,7 @@ export type AgentTurnContext = {
     knowledge: unknown[];
     knowledge_refs: unknown[];
     governance: Record<string, unknown>;
+    knowledge_delivery?: AgentKnowledgeDelivery;
   };
   active_tools: AgentToolCatalogEntry[];
   discovery?: AgentCapabilityDiscovery;
@@ -705,7 +715,7 @@ function safeHttpError(
 }
 
 function requestOperation(path: string): AgentFailureOperation {
-  if (path.endsWith('/capabilities/search') || path.startsWith('/agent-api/v1/tools/')) return 'search';
+  if (path.endsWith('/capabilities/search') || path.includes('/knowledge/') || path.startsWith('/agent-api/v1/tools/')) return 'search';
   if (path === AGENT_CLIENT_V1_PATHS.invocationInspectionCapabilities
     || (path.includes('/tool-invocations/') && path.endsWith('/receipt'))) return 'inspect';
   if (path.includes('/tool-invocations/') && path.endsWith('/resume')) return 'resume';
@@ -1132,13 +1142,14 @@ export class BailingHubAgentClient {
   }
 
   private async startTurnResult(input: StartAgentTurnInput, options: StartAgentTurnOptions): Promise<AgentTurnContext> {
-    if ('taskBinding' in input || 'task_binding' in input || 'task_id' in input || 'taskId' in input) {
+    if ('knowledgeDelivery' in input || 'knowledge_delivery' in input || 'taskBinding' in input || 'task_binding' in input || 'task_id' in input || 'taskId' in input) {
       throw new TypeError('Task bindings must be supplied through trusted host options.');
     }
     if (['task_binding', 'task_id', 'taskId'].some((key) => key in options)) {
       throw new TypeError('Trusted host options require taskBinding.');
     }
     const binding = options.taskBinding === undefined ? undefined : taskBinding(options.taskBinding, true);
+    if (options.knowledgeDelivery !== undefined && options.knowledgeDelivery !== 'on_demand') throw new TypeError('Unsupported knowledgeDelivery.');
     const body: Record<string, unknown> = {
       client_conversation_id: identifierText(input.clientConversationId, 'clientConversationId', 128),
       client_turn_id: identifierText(input.clientTurnId, 'clientTurnId', 128),
@@ -1149,6 +1160,7 @@ export class BailingHubAgentClient {
     const requestRenderers = normalizedRenderers(input.renderers);
     if (requestPageContext) body.page_context = requestPageContext;
     if (requestRenderers) body.renderers = requestRenderers;
+    if (options.knowledgeDelivery) body.knowledge_delivery = options.knowledgeDelivery;
     if (binding) {
       taskConversationInput(body.client_conversation_id);
       await this.requireTaskProtocol();
@@ -1175,6 +1187,8 @@ export class BailingHubAgentClient {
     if (!Array.isArray(knowledgeRefs)) throw new BailingHubClientError('BailingHub returned invalid turn knowledge_refs.');
     const knowledge = context.knowledge ?? [];
     if (!Array.isArray(knowledge)) throw new BailingHubClientError('BailingHub returned invalid turn knowledge.');
+    const knowledgeDelivery = context.knowledge_delivery === undefined ? undefined : normalizeKnowledgeDelivery(context.knowledge_delivery);
+    if (knowledgeDelivery && (!options.knowledgeDelivery || knowledge.length || knowledgeRefs.length)) throw new BailingHubClientError('BailingHub returned an unrequested or inconsistent knowledge delivery mode.', undefined, false, 'agent_invalid_response');
     const governance = context.governance === undefined ? {} : asObject(context.governance, 'turn governance');
     const pageContext = context.page_context === undefined
       ? {}
@@ -1199,6 +1213,7 @@ export class BailingHubAgentClient {
         memory_refs: memoryRefs,
         knowledge,
         knowledge_refs: knowledgeRefs,
+        ...(knowledgeDelivery ? { knowledge_delivery: knowledgeDelivery } : {}),
         governance,
       },
       active_tools: activeTools,
@@ -1209,6 +1224,46 @@ export class BailingHubAgentClient {
 
   async searchCapabilities(input: SearchAgentCapabilitiesInput): Promise<AgentCapabilitySearchResult> {
     return this.withFailure('search', () => this.searchCapabilitiesResult(input));
+  }
+
+  /** Read-only protocol negotiation. Unsupported old endpoints retain inline context delivery. */
+  async getKnowledgeCapabilities(): Promise<AgentKnowledgeCapabilities> {
+    return this.withFailure('search', async () => {
+      try {
+        const response = await this.transport.request('GET', AGENT_CLIENT_V1_PATHS.knowledgeCapabilities(this.connection.workspace));
+        return normalizeKnowledgeCapabilities(response.body, this.connection.workspace);
+      } catch (error) {
+        if (error instanceof BailingHubClientError && [404, 405, 501].includes(error.statusCode ?? 0)) return {
+          schema_version: 'bailing.agent-knowledge-capabilities.v1', protocol: AGENT_KNOWLEDGE_PROTOCOL,
+          supported: false, route: this.connection.workspace,
+        };
+        throw error;
+      }
+    });
+  }
+
+  async searchKnowledge(input: SearchAgentKnowledgeInput): Promise<AgentKnowledgeSearch> {
+    return this.withFailure('search', async () => {
+      const query = contentText(input?.query, 'query', 500).trim();
+      const limit = input.limit ?? 3;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 3) throw new TypeError('Knowledge limit must be 1 to 3.');
+      if (input.runId !== undefined && !UUID_PATTERN.test(input.runId)) throw new TypeError('Knowledge runId must be a UUID.');
+      const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.knowledgeSearch(this.connection.workspace),
+        { query, limit, ...(input.runId ? { run_id: input.runId } : {}) });
+      return normalizeKnowledgeSearch(response.body, this.connection.workspace, input.runId);
+    });
+  }
+
+  async readKnowledge(input: ReadAgentKnowledgeInput): Promise<AgentKnowledgeRead> {
+    return this.withFailure('search', async () => {
+      const ref = identifierText(input?.ref, 'ref', 4096);
+      if (Buffer.byteLength(ref, 'utf8') > 4096 || (input.cursor !== undefined && (typeof input.cursor !== 'string' || !input.cursor || Buffer.byteLength(input.cursor, 'utf8') > 4096 || /[\u0000-\u001f\u007f]/.test(input.cursor)))) throw new TypeError('Invalid knowledge reference or cursor.');
+      if (input.runId !== undefined && !UUID_PATTERN.test(input.runId)) throw new TypeError('Knowledge runId must be a UUID.');
+      if (input.maxBytes !== undefined && (!Number.isInteger(input.maxBytes) || input.maxBytes < 4096 || input.maxBytes > 32768)) throw new TypeError('Knowledge maxBytes must be 4096 to 32768.');
+      const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.knowledgeRead(this.connection.workspace),
+        { ref, ...(input.runId ? { run_id: input.runId } : {}), ...(input.cursor ? { cursor: input.cursor } : {}), ...(input.maxBytes ? { max_bytes: input.maxBytes } : {}) });
+      return normalizeKnowledgeRead(response.body, this.connection.workspace, { ...input, ref });
+    });
   }
 
   /** Fetch only the selected tool's guidance. This never prepares, invokes or resumes a write. */

@@ -28,8 +28,10 @@ const INVOCATION_ID = 'b'.repeat(64);
 const META_TOOLS = [
   'complete_business_run',
   'invoke_business_capability',
+  'read_business_knowledge',
   'resume_governed_tool_invocation',
   'search_business_capabilities',
+  'search_business_knowledge',
   'start_business_turn',
 ];
 

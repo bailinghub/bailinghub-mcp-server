@@ -1,5 +1,8 @@
 # BailingHub Agent Client SDK
 
+智能体客户端独立协商的知识按需搜索、分页读取及旧版完整正文回退，见
+[AGENT_KNOWLEDGE.md](AGENT_KNOWLEDGE.md)。中枢自带聊天嵌入的知识装配保持独立。
+
 [English](AGENT_CLIENT_SDK.md) | 简体中文
 
 0.5.0 让配套宿主使用同一中枢下不同系统的明确选定授权。例如，先查库存，再修改商城对应商品的价格
