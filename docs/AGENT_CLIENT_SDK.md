@@ -401,6 +401,19 @@ The SDK sends the call to BailingHub, not directly to the business endpoint. Cor
 session, route, tool, ACC declaration, approval state, limits, and business authority. Do not let
 the model supply a Hub URL, credential, approval decision, acting subject, or arbitrary route.
 
+Invocation `arguments` must be a JSON object. The SDK, typed and generic MCP tools, and the
+legacy Agent client accept at most **1 MiB (1,048,576 bytes)** of its `JSON.stringify(arguments)`
+UTF-8 representation, including JSON keys and escaping. Nested `source` values stay objects;
+do not stringify HTML/CSS objects to bypass validation. The full Core HTTP envelope has a
+separate 2 MiB limit, and each business capability retains its own field and storage limits.
+Local overflow raises `BailingHubToolArgumentsError` (`arguments_too_large`, HTTP-equivalent
+413, `dispatch=not_dispatched`) with `actualBytes` and `maxBytes`, without returning arguments.
+This local rejection made no Hub request and must not be resumed. Older Core deployments may
+still reject smaller payloads until the matching Core update is installed.
+MCP retains its `bailing.agent-feedback.v1` envelope in both JSON text and `structuredContent`;
+overflow adds only `limits.limit_scope`, `actual_bytes`, `max_bytes`, or `observed_bytes` scalars.
+Local overflow uses the existing `sdk` feedback origin; a Core rejection keeps `core`.
+
 If the result is awaiting approval, in progress, or accepted with an unknown outcome, preserve
 the original `invocation_id` and resume using its original connection and authorization:
 

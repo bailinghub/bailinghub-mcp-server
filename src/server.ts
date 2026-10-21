@@ -10,6 +10,7 @@ import { z } from 'zod';
 import {
   BailingHubClient,
   BailingHubClientError,
+  normalizeAgentToolArguments,
   type AgentToolCatalogEntry,
 } from './client.js';
 import {
@@ -134,7 +135,13 @@ function agentFailure(error: unknown, context: AgentFailureContext, extra: Recor
   const feedback = describeAgentFailure(error, { ...context,
     origin: existing?.origin ?? context.origin ?? 'sdk',
     dispatch: existing?.dispatch ?? context.dispatch ?? 'unknown' });
-  const value = { feedback, ...extra };
+  const limits = error instanceof BailingHubClientError && error.publicCode === 'arguments_too_large'
+    ? Object.fromEntries([
+        ['limit_scope', error.limitScope], ['actual_bytes', error.actualBytes],
+        ['max_bytes', error.maxBytes], ['observed_bytes', error.observedBytes],
+      ].filter(([, value]) => value !== undefined))
+    : undefined;
+  const value = { feedback, ...extra, ...(limits && Object.keys(limits).length ? { limits } : {}) };
   return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(value) }], structuredContent: value };
 }
 
@@ -393,7 +400,7 @@ async function invokeActiveTool(
         capabilityRevision: state.revision,
         agentRunId: state.runId,
         tool: tool.name,
-        arguments: argumentsValue,
+        arguments: normalizeAgentToolArguments(argumentsValue, invocationId),
       }),
     );
   } catch (error) {

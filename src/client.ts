@@ -21,6 +21,7 @@ export const CLIENT_API_LIMITS = {
   toolResultText: 8_192,
   toolCatalogEntries: 512,
   responseBytes: 1024 * 1024,
+  toolArgumentsBytes: 1024 * 1024,
 } as const;
 
 export const AGENT_TOOL_INVOCATION_STATES = [
@@ -113,6 +114,15 @@ export type BailingHubClientErrorDisposition =
   | 'definitive_rejection'
   | 'refresh_required';
 
+export type BailingHubClientErrorDetails = {
+  origin?: 'core' | 'client';
+  dispatch?: 'not_dispatched';
+  limitScope?: 'arguments' | 'request_body';
+  actualBytes?: number;
+  maxBytes?: number;
+  observedBytes?: number;
+};
+
 function isAgentConfig(
   config: BailingHubRuntimeConfig,
 ): config is AgentBailingHubMcpConfig {
@@ -138,11 +148,91 @@ export class BailingHubClientError extends Error {
       'definitive_rejection',
     public readonly invocationId?: string,
     failureContext?: AgentFailureContext,
+    public readonly details: BailingHubClientErrorDetails = {},
   ) {
     super(message);
     this.name = 'BailingHubClientError';
     if (failureContext) this.feedback = describeAgentFailure(this, failureContext);
   }
+
+  get origin() { return this.details.origin; }
+  get dispatch() { return this.details.dispatch; }
+  get limitScope() { return this.details.limitScope; }
+  get actualBytes() { return this.details.actualBytes; }
+  get maxBytes() { return this.details.maxBytes; }
+  get observedBytes() { return this.details.observedBytes; }
+}
+
+export class BailingHubToolArgumentsError extends BailingHubClientError {
+  constructor(
+    actualBytes: number,
+    maxBytes: number,
+    invocationId?: string,
+  ) {
+    super(
+      `Agent tool arguments exceed the safety limit: actual_bytes=${actualBytes}, ` +
+        `max_bytes=${maxBytes}, dispatch=not_dispatched.`,
+      413,
+      false,
+      'arguments_too_large',
+      'definitive_rejection',
+      invocationId,
+      { operation: 'invoke', origin: 'sdk', dispatch: 'not_dispatched', ...(invocationId ? { invocationId } : {}) },
+      { origin: 'client', dispatch: 'not_dispatched', limitScope: 'arguments', actualBytes, maxBytes },
+    );
+    this.name = 'BailingHubToolArgumentsError';
+  }
+}
+
+/** Only documented scalar overflow evidence may cross the public error boundary. */
+export function publicToolArgumentsErrorDetails(
+  body: Record<string, unknown>,
+  code?: string,
+): BailingHubClientErrorDetails {
+  if (code !== 'arguments_too_large') return {};
+  const details: BailingHubClientErrorDetails = {};
+  if (body.origin === 'core') details.origin = 'core';
+  if (body.dispatch === 'not_dispatched') details.dispatch = 'not_dispatched';
+  if (body.limit_scope === 'arguments' || body.limit_scope === 'request_body') {
+    details.limitScope = body.limit_scope;
+  }
+  for (const [wire, field] of [
+    ['actual_bytes', 'actualBytes'], ['max_bytes', 'maxBytes'], ['observed_bytes', 'observedBytes'],
+  ] as const) {
+    const value = body[wire];
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) details[field] = value;
+  }
+  return details;
+}
+
+/** Snapshot the exact JSON object that will be sent, including UTF-8 and JSON escaping. */
+export function normalizeAgentToolArguments(
+  value: unknown,
+  invocationId?: string,
+): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Agent tool arguments must be an object.');
+  }
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error('Agent tool arguments must be JSON serializable.');
+  }
+  if (serialized === undefined) {
+    throw new Error('Agent tool arguments must serialize to an object.');
+  }
+  const actualBytes = Buffer.byteLength(serialized, 'utf8');
+  if (actualBytes > CLIENT_API_LIMITS.toolArgumentsBytes) {
+    throw new BailingHubToolArgumentsError(
+      actualBytes, CLIENT_API_LIMITS.toolArgumentsBytes, invocationId,
+    );
+  }
+  const normalized: unknown = JSON.parse(serialized);
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
+    throw new Error('Agent tool arguments must serialize to an object.');
+  }
+  return normalized as Record<string, unknown>;
 }
 
 function requiredText(value: unknown, name: string, maximumLength: number): string {
@@ -441,6 +531,7 @@ function publicHttpError(
   mode: 'client' | 'agent',
   publicCode?: string,
   acceptedUnknownOnFailure = false,
+  details: BailingHubClientErrorDetails = {},
 ): BailingHubClientError {
   let message = `BailingHub rejected the request (HTTP ${statusCode}).`;
   if (statusCode === 400) message = 'BailingHub rejected the request as invalid.';
@@ -477,16 +568,21 @@ function publicHttpError(
           (statusCode === 408 || statusCode === 425 || statusCode >= 500)
         ? 'accepted_unknown'
         : 'definitive_rejection',
+    undefined,
+    undefined,
+    details,
   );
 }
 
-async function publicErrorCode(response: Response): Promise<string | undefined> {
+async function publicError(response: Response): Promise<{ code?: string; details: BailingHubClientErrorDetails }> {
   try {
     const body = asObject(await readJsonWithLimit(response));
     const code = typeof body.error === 'string' ? body.error.trim() : '';
-    return PUBLIC_AGENT_ERROR_CODES.has(code) ? code : undefined;
+    return PUBLIC_AGENT_ERROR_CODES.has(code)
+      ? { code, details: publicToolArgumentsErrorDetails(body, code) }
+      : { details: {} };
   } catch {
-    return undefined;
+    return { details: {} };
   }
 }
 
@@ -498,6 +594,9 @@ function acceptedUnknownResponse(error: unknown): BailingHubClientError {
       error.retryable,
       error.publicCode,
       'accepted_unknown',
+      error.invocationId,
+      undefined,
+      error.details,
     );
   }
   return new BailingHubClientError(
@@ -572,13 +671,7 @@ export class BailingHubClient {
     ) {
       throw new Error('The Agent tool invocation identifiers are invalid.');
     }
-    if (
-      typeof input.arguments !== 'object' ||
-      input.arguments === null ||
-      Array.isArray(input.arguments)
-    ) {
-      throw new Error('Agent tool arguments must be an object.');
-    }
+    const argumentsValue = normalizeAgentToolArguments(input.arguments, invocationId);
     const response = await this.request(
       'POST',
       '/agent-api/v1/tool-invocations',
@@ -589,7 +682,7 @@ export class BailingHubClient {
         capability_revision: capabilityRevision,
         agent_run_id: agentRunId,
         tool,
-        arguments: input.arguments,
+        arguments: argumentsValue,
       },
       { acceptedUnknownOnFailure: true },
     );
@@ -713,12 +806,13 @@ export class BailingHubClient {
         response = await this.send(method, path, body, true, controller.signal);
       }
       if (response.status !== expectedStatus) {
-        const code = await publicErrorCode(response);
+        const error = await publicError(response);
         throw publicHttpError(
           response.status,
           mode,
-          code,
+          error.code,
           options.acceptedUnknownOnFailure === true,
+          error.details,
         );
       }
       try {

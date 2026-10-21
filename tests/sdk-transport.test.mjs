@@ -1043,6 +1043,33 @@ test('factory preserves stable 64-hex invocation identity and maps only visible 
   assert.equal(JSON.stringify(calls).includes('private chain'), false);
 });
 
+test('host factory keeps full HTML/CSS objects and bounds the serialized UTF-8 request before connection work', async (t) => {
+  const { calls, transport } = await setup(t);
+  const limit = 1_048_576;
+  const value = { source: { html: '中文😀"\\'.repeat(60_000), css: '' } };
+  const padding = limit - Buffer.byteLength(JSON.stringify(value), 'utf8');
+  value.source.html += 'x'.repeat(padding);
+  assert.equal(Buffer.byteLength(JSON.stringify(value), 'utf8'), limit);
+  const invokeInput = {
+    invocationId: INVOCATION_ID, capabilityRevision: CAPABILITY_REVISION,
+    agentRunId: RUN_ID, tool: 'shop_ai_decoration_validate', arguments: value,
+  };
+  // The overflow evidence is available even before login; no profile/credential request is needed.
+  await assert.rejects(transport.invoke({
+    ...invokeInput, arguments: { source: { ...value.source, html: value.source.html + 'x' } },
+  }), (error) => error.publicCode === 'arguments_too_large' &&
+    error.actualBytes === limit + 1 && error.maxBytes === limit &&
+    error.dispatch === 'not_dispatched' && error.origin === 'client');
+  assert.equal(calls.length, 0);
+  await transport.login();
+  await transport.invoke(invokeInput);
+  const sent = calls.find((entry) => entry.path === '/agent-api/v1/tool-invocations');
+  assert.deepEqual(sent.body.arguments, value);
+  assert.equal(typeof sent.body.arguments.source, 'object');
+  assert.equal(sent.body.invocation_id, INVOCATION_ID);
+  assert.equal(Buffer.byteLength(JSON.stringify(sent.body.arguments), 'utf8'), limit);
+});
+
 test('factory use moves the alias to an authorized workspace and keeps credentials isolated', async (t) => {
   const { connectionStore, registry, transport } = await setup(t);
   await transport.login();

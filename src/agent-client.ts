@@ -10,6 +10,9 @@ import {
   AGENT_TOOL_INVOCATION_STATES,
   BailingHubClientError,
   CLIENT_API_LIMITS,
+  normalizeAgentToolArguments,
+  publicToolArgumentsErrorDetails,
+  type BailingHubClientErrorDetails,
   type AgentToolCatalogEntry,
   type AgentToolInvocation,
   type AgentToolInvocationState,
@@ -624,13 +627,15 @@ async function readJsonWithLimit(response: Response): Promise<unknown> {
   }
 }
 
-async function publicErrorCode(response: Response, additionalCodes: readonly string[] = []): Promise<string | undefined> {
+async function publicError(response: Response, additionalCodes: readonly string[] = []): Promise<{ code?: string; details: BailingHubClientErrorDetails }> {
   try {
     const body = asObject(await readJsonWithLimit(response), 'error response');
     const code = typeof body.error === 'string' ? body.error.trim() : '';
-    return PUBLIC_AGENT_ERROR_CODES.has(code) || additionalCodes.includes(code) ? code : undefined;
+    return PUBLIC_AGENT_ERROR_CODES.has(code) || additionalCodes.includes(code)
+      ? { code, details: publicToolArgumentsErrorDetails(body, code) }
+      : { details: {} };
   } catch {
-    return undefined;
+    return { details: {} };
   }
 }
 
@@ -639,6 +644,7 @@ function safeHttpError(
   acceptedUnknown: boolean,
   publicCode?: string,
   operation: AgentFailureOperation = 'scope',
+  details: BailingHubClientErrorDetails = {},
 ): BailingHubClientError {
   const rejectedBeforeDispatch = status === 401 || status === 403 || (publicCode !== undefined &&
     ['capability_changed', 'tool_not_found', 'invalid_request', 'invalid_route', 'arguments_too_large',
@@ -673,6 +679,7 @@ function safeHttpError(
     undefined,
     { operation, origin: 'core', dispatch: (publicCode === 'TASK_DISPATCH_UNCERTAIN' || publicCode === 'TASK_UNAVAILABLE')
       && (operation === 'invoke' || operation === 'resume') ? 'unknown' : rejectedBeforeDispatch ? 'not_dispatched' : 'attempted' },
+    details,
   );
 }
 
@@ -738,11 +745,13 @@ export class AgentClientTransport {
         return { status: 304, ...(response.headers.get('etag') ? { etag: response.headers.get('etag')! } : {}) };
       }
       if (response.status !== expectedStatus) {
+        const error = await publicError(response, options.publicErrorCodes);
         throw safeHttpError(
           response.status,
           options.acceptedUnknownOnFailure === true,
-          await publicErrorCode(response, options.publicErrorCodes),
+          error.code,
           operation,
+          error.details,
         );
       }
       const value = await readJsonWithLimit(response);
@@ -1229,8 +1238,7 @@ export class BailingHubAgentClient {
     if (!INVOCATION_ID_PATTERN.test(invocationId) || !REVISION_PATTERN.test(capabilityRevision) || !UUID_PATTERN.test(agentRunId) || !TOOL_NAME_PATTERN.test(tool)) {
       throw new Error('The Agent capability invocation identifiers are invalid.');
     }
-    const argumentsValue = optionalRecord(input.arguments, 'arguments', 16 * 1024);
-    if (!argumentsValue) throw new Error('arguments must be an object.');
+    const argumentsValue = normalizeAgentToolArguments(input.arguments, invocationId);
     try {
       const response = await this.transport.request('POST', AGENT_CLIENT_V1_PATHS.invocations, {
         invocation_id: invocationId,
@@ -1255,6 +1263,7 @@ export class BailingHubAgentClient {
           invocationId,
           { operation: 'invoke', origin: error.feedback?.origin ?? 'sdk',
             dispatch: error.feedback?.dispatch ?? 'unknown', invocationId },
+          error.details,
         );
       }
       throw new BailingHubClientError(
@@ -1293,6 +1302,7 @@ export class BailingHubAgentClient {
           invocationId,
           { operation: 'resume', origin: error.feedback?.origin ?? 'sdk',
             dispatch: error.feedback?.dispatch ?? 'unknown', invocationId },
+          error.details,
         );
       }
       throw new BailingHubClientError(

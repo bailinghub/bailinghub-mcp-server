@@ -28,7 +28,7 @@ import {
   type SearchAgentCapabilitiesInput,
   type StartAgentTurnInput,
 } from './agent-client.js';
-import { BailingHubClientError, type AgentToolInvocation } from './client.js';
+import { BailingHubClientError, normalizeAgentToolArguments, type AgentToolInvocation } from './client.js';
 import {
   AgentSessionManager,
   performAgentLogin,
@@ -115,7 +115,7 @@ export {
   type CredentialStore,
 } from './credential-store.js';
 
-export { BailingHubClientError } from './client.js';
+export { BailingHubClientError, BailingHubToolArgumentsError, type BailingHubClientErrorDetails } from './client.js';
 export type { StartAgentTurnOptions, AgentTaskBinding, AgentTaskControlCapabilities,
   AgentTaskMember, AgentTaskSnapshot } from './agent-client.js';
 
@@ -1408,15 +1408,16 @@ export function createAgentClientTransport(
         'client_invocation_id',
         512,
       );
+      const argumentsValue = normalizeAgentToolArguments(input.arguments);
       const invocationId = suppliedInvocation && INVOCATION_ID_PATTERN.test(suppliedInvocation)
         ? suppliedInvocation
-        : stableDigest(String(workspace), runId, tool, suppliedInvocation ?? JSON.stringify(input.arguments ?? {}));
+        : stableDigest(String(workspace), runId, tool, suppliedInvocation ?? JSON.stringify(argumentsValue));
       const dto: InvokeAgentCapabilityInput = {
         invocationId,
         capabilityRevision: hostText(input.capability_revision ?? input.capabilityRevision, 'capability_revision', 128),
         agentRunId: runId,
         tool,
-        arguments: hostRecord(input.arguments, 'arguments'),
+        arguments: argumentsValue,
       };
       return (await clientFor(workspace, options)).invoke(dto);
     },

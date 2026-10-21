@@ -339,6 +339,17 @@ const result = await transport.invoke({
 SDK 把调用发给 BailingHub，不直连业务接口。Core 每次重新校验 Agent Session、route、工具、ACC
 声明、审批状态、限额和业务身份。不能让模型提供 Hub 地址、凭据、审批结论、行动主体或任意 route。
 
+调用的 `arguments` 必须保持 JSON 对象。SDK、MCP 动态工具和通用工具、旧 Agent 客户端统一允许
+`JSON.stringify(arguments)` 后 UTF-8 表示最多 **1 MiB（1,048,576 字节）**，包含键名及 JSON
+转义的开销。嵌套的 `source` 仍是对象，不要改成 JSON 字符串绕过校验。Core 的完整 HTTP 信封
+另有 2 MiB 上限，业务能力自己的字段和存储上限继续独立生效。本地超限抛出
+`BailingHubToolArgumentsError`（`arguments_too_large`、等价 HTTP 413、
+`dispatch=not_dispatched`），提供 `actualBytes` 和 `maxBytes`，不返回完整参数。本地拒绝尚未
+向中枢发送请求，不应调用 resume。旧 Core 在安装配套修复前，仍可能拒绝较小的请求。
+MCP 的 JSON 文本和 `structuredContent` 继续使用 `bailing.agent-feedback.v1` 反馈信封，超限时
+仅增加 `limits.limit_scope`、`actual_bytes`、`max_bytes` 或 `observed_bytes` 标量。
+本地超限沿用 `sdk` 来源，Core 拒绝保留 `core` 来源。
+
 调用等待审批、仍在执行或结果未知时，保留原 `invocation_id`，并沿用原连接和原授权恢复：
 
 ```js
