@@ -37,7 +37,7 @@ function hints(value: unknown): AgentKnowledgeHint[] {
   if (!Array.isArray(value) || value.length > 3) fail();
   return (value as unknown[]).map(raw => { const item = object(raw);
     if (typeof item.score !== 'number' || !Number.isFinite(item.score) || item.score < 0 || item.score > 1 || typeof item.expires_at !== 'string' || !Number.isFinite(Date.parse(item.expires_at))) fail();
-    return { ref: text(item.ref, 4096), title: text(item.title, 1024), summary: text(item.summary, 3072, true), revision: rev(item.revision), score: item.score as number, expires_at: item.expires_at as string };
+    return { ref: text(item.ref, 4096), title: text(item.title, 2048), summary: text(item.summary, 3072, true), revision: rev(item.revision), score: item.score as number, expires_at: item.expires_at as string };
   });
 }
 export function normalizeKnowledgeCapabilities(value: unknown, route: string): AgentKnowledgeCapabilities {
@@ -66,8 +66,10 @@ export function normalizeKnowledgeRead(value: unknown, route: string, input: Rea
   const body = bounded(value, input.maxBytes ?? 16384); boundRun(body, route, input.runId);
   if (body.schema_version !== 'bailing.agent-knowledge-read.v1' || body.trust !== 'reference_only' || body.ref !== input.ref || typeof body.truncated !== 'boolean' || !(body.next_cursor === null || typeof body.next_cursor === 'string') || (!body.truncated && body.next_cursor !== null) || (body.truncated && body.next_cursor === null && body.budget_exhausted !== true)) fail();
   if (body.budget_exhausted !== undefined && typeof body.budget_exhausted !== 'boolean') fail();
-  for (const key of ['total_content_bytes', 'read_chain_max_bytes']) if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || Number(body[key]) < 0 || Number(body[key]) > 131072)) fail();
-  return { schema_version: 'bailing.agent-knowledge-read.v1', route, ...(input.runId ? { run_id: input.runId } : {}), knowledge_scope_revision: rev(body.knowledge_scope_revision), ref: input.ref, revision: rev(body.revision), title: text(body.title, 1024), content: text(body.content, 32768, true), trust: 'reference_only', next_cursor: body.next_cursor === null ? null : text(body.next_cursor, 4096), truncated: body.truncated as boolean,
+  if (body.read_chain_max_bytes !== undefined && body.read_chain_max_bytes !== 131072) fail();
+  if (body.total_content_bytes !== undefined && (!Number.isSafeInteger(body.total_content_bytes) || Number(body.total_content_bytes) < 0)) fail();
+  if (body.budget_exhausted === true && (body.truncated !== true || body.next_cursor !== null || (body.total_content_bytes !== undefined && Number(body.total_content_bytes) <= 131072))) fail();
+  return { schema_version: 'bailing.agent-knowledge-read.v1', route, ...(input.runId ? { run_id: input.runId } : {}), knowledge_scope_revision: rev(body.knowledge_scope_revision), ref: input.ref, revision: rev(body.revision), title: text(body.title, 2048), content: text(body.content, 32768, true), trust: 'reference_only', next_cursor: body.next_cursor === null ? null : text(body.next_cursor, 4096), truncated: body.truncated as boolean,
     ...(body.budget_exhausted === undefined ? {} : { budget_exhausted: body.budget_exhausted as boolean }),
     ...(body.total_content_bytes === undefined ? {} : { total_content_bytes: body.total_content_bytes as number }),
     ...(body.read_chain_max_bytes === undefined ? {} : { read_chain_max_bytes: body.read_chain_max_bytes as number }) };

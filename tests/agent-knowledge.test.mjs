@@ -45,9 +45,14 @@ test('search/read count UTF-8 serialized JSON bytes and bound references, querie
 test('read pagination and budget exhaustion remain explicitly incomplete and stale refs advise knowledge search only', async () => {
   const page = { ...read(), truncated: true, next_cursor: 'next-page' };
   assert.deepEqual(await api(async () => json(page)).readKnowledge({ ref: 'opaque-ref', runId: RUN }), page);
-  const exhausted = { ...read(), truncated: true, budget_exhausted: true, total_content_bytes: 131072, read_chain_max_bytes: 131072 };
+  const exhausted = { ...read(), truncated: true, budget_exhausted: true, total_content_bytes: 262144, read_chain_max_bytes: 131072 };
   assert.deepEqual(await api(async () => json(exhausted)).readKnowledge({ ref: 'opaque-ref', runId: RUN }), exhausted);
   await assert.rejects(api(async () => json({ ...read(), truncated: true })).readKnowledge({ ref: 'opaque-ref', runId: RUN }));
+  for (const patch of [{ truncated: false }, { next_cursor: 'next-page' }, { read_chain_max_bytes: 131073 }, { total_content_bytes: -1 }, { total_content_bytes: 131072 }, { total_content_bytes: Number.MAX_SAFE_INTEGER + 1 }]) {
+    await assert.rejects(api(async () => json({ ...exhausted, ...patch })).readKnowledge({ ref: 'opaque-ref', runId: RUN }));
+  }
+  const unicodeTitle = { ...read(), title: '😀'.repeat(300) };
+  assert.deepEqual(await api(async () => json(unicodeTitle)).readKnowledge({ ref: 'opaque-ref', runId: RUN }), unicodeTitle);
   for (const code of ['knowledge_reference_invalid', 'knowledge_reference_expired', 'knowledge_changed', 'knowledge_scope_changed']) await assert.rejects(api(async () => json({ error: code }, 409)).readKnowledge({ ref: 'opaque-ref', runId: RUN }), error => {
     assert.equal(error.publicCode, code); assert.equal(describeAgentFailure(error, { operation: 'search', dispatch: 'not_dispatched' }).next_action, 'search_knowledge'); return true;
   });
