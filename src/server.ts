@@ -19,6 +19,7 @@ import {
   type AgentRunCompletion,
   type AgentRuntimeProfile,
   type AgentTurnContext,
+  type AgentToolDetail,
   type CompleteAgentRunInput,
   type StartAgentTurnInput,
 } from './agent-client.js';
@@ -57,7 +58,7 @@ type AgentClientContract = Pick<
   | 'invoke'
   | 'resume'
   | 'completeRun'
->;
+> & Partial<Pick<BailingHubAgentClient, 'getToolDetail'>>;
 
 type PreparedAgentTool = {
   tool: AgentToolCatalogEntry;
@@ -268,7 +269,36 @@ export function createAgentTurnMessageIds(
 function dynamicToolDescription(tool: AgentToolCatalogEntry): string {
   // Shared governance and recovery rules live once in server instructions. Repeating them on
   // every active tool made large catalogs dominate the model context.
-  return `${tool.description}\nUse this tool directly while it is currently listed; after replacement, rediscover capabilities.`;
+  return `${tool.description}\nUse this tool directly while it is currently listed; after replacement, rediscover capabilities.${tool.usage_guidance_available || tool.description_truncated
+    ? ` Additional bounded usage guidance is available: call search_business_capabilities with tool_name=${tool.name} and include_usage_guidance=true before relying on omitted text.` : ''}`;
+}
+
+function toolSummary(tool: AgentToolCatalogEntry) {
+  return { name: tool.name, scope: tool.scope, risk: tool.risk, approval_required: tool.approval_required,
+    ...(typeof tool.description_truncated === 'boolean' ? { description_truncated: tool.description_truncated } : {}),
+    ...(typeof tool.usage_guidance_available === 'boolean' ? { usage_guidance_available: tool.usage_guidance_available } : {}) };
+}
+
+/** Custom clients must obey the same reference bounds and declaration binding as the SDK. */
+function normalizeProjectedGuidance(value: AgentToolDetail, state: AgentToolProjectionState, prepared: PreparedAgentTool, revision: string) {
+  try {
+    if (!value || value.schema_version !== 'bailing.agent-tool-detail.v1' || value.route !== state.config.route
+      || value.capability_revision !== revision || value.tool?.name !== prepared.tool.name
+      || prepareAgentCatalog(revision, [value.tool]).tools.get(prepared.tool.name)?.signature !== prepared.signature) throw new Error('binding');
+    const guidance = value.usage_guidance;
+    if (!guidance || typeof guidance.text !== 'string' || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(guidance.text)
+      || typeof guidance.truncated !== 'boolean' || guidance.max_chars !== 32768 || guidance.max_bytes !== 65536
+      || !Number.isSafeInteger(guidance.source_chars) || !Number.isSafeInteger(guidance.source_bytes)) throw new Error('guidance');
+    const chars = [...guidance.text].length;
+    const bytes = Buffer.byteLength(guidance.text, 'utf8');
+    if (chars > guidance.max_chars || bytes > guidance.max_bytes || guidance.source_chars < chars || guidance.source_bytes < bytes
+      || guidance.truncated !== (guidance.source_chars > chars || guidance.source_bytes > bytes)) throw new Error('sizes');
+    return { original_name: prepared.tool.name, route: value.route, capability_revision: revision,
+      text: guidance.text, truncated: guidance.truncated, source_chars: guidance.source_chars,
+      max_chars: guidance.max_chars, source_bytes: guidance.source_bytes, max_bytes: guidance.max_bytes };
+  } catch {
+    throw new BailingHubClientError('BailingHub returned invalid or mismatched tool guidance.', undefined, false, 'agent_invalid_response');
+  }
 }
 
 export function createAgentToolInvocationId(
@@ -772,12 +802,7 @@ export async function initializeBailingHubMcpServer(
           discovery: turn.discovery ?? null,
           target: { workspace: state.config.route },
           toolset: toolsetState(state),
-          active_tools: turn.active_tools.map((tool) => ({
-            name: tool.name,
-            scope: tool.scope,
-            risk: tool.risk,
-            approval_required: tool.approval_required,
-          })),
+          active_tools: turn.active_tools.map(toolSummary),
         });
       } catch (error) {
         return agentFailure(error, { operation: 'scope' });
@@ -792,10 +817,14 @@ export async function initializeBailingHubMcpServer(
       description:
         'Search this authorized target for up to 12 ranked capabilities and replace its current MCP ' +
         'business-tool set. Use already loaded, valid tools directly. This is not a complete listing ' +
-        'or paginated search; missing discovery metadata means counts are unknown. This grants no new authority.',
+        'or paginated search; missing discovery metadata means counts are unknown. With tool_name, inspect one ' +
+        'currently loaded tool without another discovery; include_usage_guidance=true explicitly reads its bounded ' +
+        'reference guidance under the active run and catalog revision. This never invokes a business operation or grants new authority.',
       inputSchema: {
         query: z.string().max(2_000).optional(),
         limit: z.number().int().min(1).max(12).default(12),
+        tool_name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/).optional(),
+        include_usage_guidance: z.boolean().default(false),
       },
       annotations: {
         readOnlyHint: true,
@@ -804,8 +833,35 @@ export async function initializeBailingHubMcpServer(
         openWorldHint: true,
       },
     },
-    async ({ query, limit }) => {
+    async ({ query, limit, tool_name, include_usage_guidance }) => {
       const hasQuery = typeof query === 'string' && Boolean(query.trim());
+      if (include_usage_guidance && !tool_name) return localAgentFailure('invalid_request', 'search');
+      if (tool_name) {
+        if (!state.runId || state.closed) return localAgentFailure('invalid_request', 'search');
+        const prepared = state.tools.get(tool_name);
+        if (!prepared) return localAgentFailure('tool_not_loaded', 'search');
+        const runId = state.runId;
+        const revision = state.revision;
+        try {
+          let usageGuidance;
+          if (include_usage_guidance) {
+            if (typeof state.client.getToolDetail !== 'function') throw new BailingHubClientError(
+              'The installed Agent client does not support tool guidance.', undefined, false, 'agent_schema_unsupported');
+            const detail = await state.client.getToolDetail({ name: tool_name, capabilityRevision: revision });
+            if (state.closed || state.runId !== runId || state.revision !== revision || state.tools.get(tool_name)?.signature !== prepared.signature) {
+              throw new BailingHubClientError('The current capability binding changed while reading guidance.', 409, false, 'capability_changed', 'refresh_required');
+            }
+            usageGuidance = normalizeProjectedGuidance(detail, state, prepared, revision);
+          }
+          return success({ schema: 'bailing.agent-capability-search.v1', result_type: 'capability_preparation',
+            dispatch: 'not_dispatched', business_operation_performed: false, reason: 'exact_tool_reference',
+            next_action: usageGuidance ? 'review_guidance_then_call' : 'review_schema_then_call', capability_revision: revision, discovery: null,
+            target: { workspace: state.config.route }, toolset: toolsetState(state), active_tools: [toolSummary(prepared.tool)],
+            ...(usageGuidance ? { usage_guidance: usageGuidance } : {}) });
+        } catch (error) {
+          return agentFailure(error, { operation: 'search', origin: 'mcp', dispatch: 'not_dispatched' });
+        }
+      }
       if (!hasQuery && !state.runId) {
         return localAgentFailure('invalid_request', 'search');
       }
@@ -826,12 +882,7 @@ export async function initializeBailingHubMcpServer(
           discovery: result.discovery ?? null,
           target: { workspace: state.config.route },
           toolset: toolsetState(state),
-          active_tools: result.tools.map((tool) => ({
-            name: tool.name,
-            scope: tool.scope,
-            risk: tool.risk,
-            approval_required: tool.approval_required,
-          })),
+          active_tools: result.tools.map(toolSummary),
         });
       } catch (error) {
         return agentFailure(error, { operation: 'search' });

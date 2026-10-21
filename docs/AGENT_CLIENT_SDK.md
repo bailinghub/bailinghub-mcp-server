@@ -686,3 +686,24 @@ Managed turns accept `taskBinding: { schema_version, task_id, scope_hash }` only
 host options, negotiate both task and receipt support, and require an identical response echo.
 There are no SDK task creation or administration methods. See [task control](TASK_CONTROL.md) for
 full-member checks, compatibility, metering and Chinese business scenarios. Use SDK 0.6.0 with Core 0.8.0.
+
+## On-demand tool usage guidance
+
+Discovery keeps short descriptions. Optional `usage_guidance_available` and
+`description_truncated` flags indicate additional authored guidance and a shortened
+description respectively; old Core responses can omit both flags.
+`client.getToolDetail({ name, capabilityRevision })` reads the selected tool using
+`GET /agent-api/v1/tools/:name?route=...&capability_revision=...`. The host factory
+exposes the same method, with the original connection and workspace in trusted
+options. Model input cannot select a connection. The factory checks the original
+binding before the request and after either a success or failure response.
+
+The response includes the existing tool governance/schema projection and a separate
+`usage_guidance` object: `text`, `truncated`, `source_chars`, `max_chars`,
+`source_bytes`, and `max_bytes`. Guidance is bounded to 32,768 Unicode code points
+and 65,536 UTF-8 bytes; callers must respect `truncated` and must not assume omitted
+details are absent. A changed catalog requires rediscovery; an older Core without
+this optional route reports unsupported. This read never creates, invokes, resumes
+or automatically retries a business operation. Provider guidance cannot override
+authorization, approval or other machine-enforced controls. This source change
+alone does not imply that a matching Core/SDK package has been published or installed.

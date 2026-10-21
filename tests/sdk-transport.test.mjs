@@ -1006,6 +1006,62 @@ test('factory uses startTurn(input, options) and searchCapabilities(input, optio
   assert.deepEqual(searchCall.body, { query: 'employee', limit: 8, run_id: RUN_ID });
 });
 
+test('factory maps optional tool guidance reads to the host-selected authorization, ignoring model target fields', async (t) => {
+  const text = 'Bind the saved page before it can become the homepage.';
+  const { calls, transport } = await setup(t, { runtimeResponse: ({ path }) => {
+    assert.equal(path, '/agent-api/v1/tools/employee_search');
+    return new Response(JSON.stringify({ schema_version: 'bailing.agent-tool-detail.v1', route: 'orders',
+      capability_revision: CAPABILITY_REVISION, tool: tool(), usage_guidance: { text, truncated: false,
+        source_chars: text.length, source_bytes: Buffer.byteLength(text), max_chars: 32768, max_bytes: 65536 } }), { status: 200 });
+  } });
+  await transport.login();
+  const result = await transport.getToolDetail({ name: 'employee_search', capabilityRevision: CAPABILITY_REVISION,
+    workspace: 'staff', route: 'staff', connectionName: 'another' }, { workspace: 'orders', connectionName: 'development' });
+  assert.equal(result.route, 'orders');
+  const reads = calls.filter(call => call.path.startsWith('/agent-api/v1/'));
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].method, 'GET');
+  assert.equal(new URL(reads[0].url).searchParams.get('route'), 'orders');
+});
+
+test('factory discards late tool guidance after the original credential binding is replaced, including failed responses', async (t) => {
+  for (const responseStatus of [200, 503]) {
+    let signalStarted;
+    let release;
+    const started = new Promise(resolve => { signalStarted = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    const text = 'Use the original authorized page.';
+    const { registry, connectionStore, transport } = await setup(t, {
+      loginSessions: [{ sessionId: '11111111-1111-4111-8111-111111111111' }],
+      runtimeResponse: async ({ path }) => {
+      assert.equal(path, '/agent-api/v1/tools/employee_search');
+      signalStarted();
+      await held;
+      return new Response(JSON.stringify(responseStatus === 200
+        ? { schema_version: 'bailing.agent-tool-detail.v1', route: 'orders', capability_revision: CAPABILITY_REVISION,
+          tool: tool(), usage_guidance: { text, truncated: false, source_chars: text.length,
+            source_bytes: Buffer.byteLength(text), max_chars: 32768, max_bytes: 65536 } }
+        : { error: 'service_unavailable' }), { status: responseStatus });
+    } });
+    await transport.login();
+    const profile = await registry.getByAlias('development');
+    const store = connectionStore.credentialStore(profile.connectionKey);
+    const original = { ...await store.load(), session_id: '11111111-1111-4111-8111-111111111111' };
+    await store.save(original);
+    const pending = transport.getToolDetail({ name: 'employee_search', capabilityRevision: CAPABILITY_REVISION },
+      { connectionKey: profile.connectionKey, workspace: 'orders', expectedBinding: {
+        hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders', sessionId: original.session_id,
+      } });
+    const captured = pending.then(() => null, error => error);
+    await Promise.race([started, captured.then(error => { throw error ?? new Error('Read resolved before the held response.'); })]);
+    await store.save({ ...original, session_id: '22222222-2222-4222-8222-222222222222' });
+    release();
+    const error = await captured;
+    assert.equal(error?.publicCode, 'agent_binding_changed');
+    assert.equal(error?.feedback.dispatch, 'not_dispatched');
+  }
+});
+
 test('factory preserves stable 64-hex invocation identity and maps only visible completion fields', async (t) => {
   const { calls, transport } = await setup(t);
   await transport.login();

@@ -76,6 +76,15 @@ capability search, governed invocation/recovery, and visible run completion. Bai
 returns at most 12 active business tools for the current turn; each replacement removes the
 previous active set instead of growing the model context indefinitely.
 
+Short tool descriptions can include `description_truncated` and
+`usage_guidance_available` flags in start/search results. To read only one loaded
+tool's bounded guidance, call `search_business_capabilities` with
+`{"tool_name":"the_exact_loaded_name","include_usage_guidance":true}` after
+starting the turn. This is a read-only reference bound to the current run,
+authorization and catalog revision; it does not invoke the business tool. Preserve
+the returned truncation and size metadata. Older clients without detail support
+return a compatibility error; ordinary search remains compatible.
+
 Host implementers should use the [host-neutral Agent Client SDK guide](docs/AGENT_CLIENT_SDK.md).
 
 The route, BailingHub URL, and credential are local process configuration, never model-supplied

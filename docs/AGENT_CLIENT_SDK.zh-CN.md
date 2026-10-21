@@ -585,3 +585,19 @@ if (typeof transport.getSystemInfo === 'function') {
 传入原关联并校验回显；模型 turn input 不能选择任务。SDK 不提供任务创建、暂停、继续或取消的
 管理方法，不携带管理员凭据。使用 SDK 0.6.0 和 Core 0.8.0。
 完整成员校验、计量含义、旧 Core 行为和商城/库存场景见[任务控制接缝](TASK_CONTROL.md)。
+
+## 按需读取工具使用指导
+
+发现结果继续保留短说明。可选 `usage_guidance_available` 表示另有完整指导，
+`description_truncated` 表示短说明被截取；旧 Core 可以不返回这两个字段。
+`client.getToolDetail({ name, capabilityRevision })` 以只读 GET 获取指定工具，
+携带当前 route 和 capability revision。宿主工厂提供同名方法，原连接、工作区和
+`expectedBinding` 由可信 options 传入，模型参数不能选择其他授权；请求前和成功、失败
+返回后均复核原绑定，拒绝授权替换后的迟到结果。
+
+结果保留工具原有治理与参数字段，另返回 `usage_guidance`：`text`、`truncated`、
+`source_chars`、`max_chars`、`source_bytes`、`max_bytes`。指导同时限制32768个
+Unicode字符和65536个UTF-8字节；有省略时明确标记，不能把未显示细节当作不存在。
+目录修订变化须重新发现；旧 Core 没有该可选端点时明确不支持。读取不会创建业务调用、
+派发、恢复或自动重试写操作，提供方文字不能覆盖权限、审批及其他机器校验。
+源码已具备该方法不等于对应 Core/SDK 已正式发行或被宿主安装。

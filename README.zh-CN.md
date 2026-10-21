@@ -69,6 +69,12 @@ Agent Session MCP 路径初始只暴露 5 个小型元工具，用于启动本�
 受治理调用/恢复以及同步可见结果。BailingHub 每轮最多返回 12 个 active tools，
 新集合会替换旧集合，不会在上下文中无限累加。
 
+启动和搜索结果会透出 `description_truncated`、`usage_guidance_available`，提示短描述
+是否省略了内容、是否有补充指导。开始本轮后，可向 `search_business_capabilities` 显式传入
+`{"tool_name":"已载入的原始工具名","include_usage_guidance":true}`，只读取该工具的有界详情。
+详情绑定当前运行、授权和能力修订，只是参考资料，不会调用业务工具；应保留返回的截断和大小信息。
+旧客户端不支持详情时明确返回兼容性错误，普通搜索维持原有行为。
+
 宿主开发者应使用[宿主无关的 Agent Client SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)。
 
 BailingHub 地址、凭据和 route 都是本地进程配置，不能由模型作为 MCP 工具参数提供。

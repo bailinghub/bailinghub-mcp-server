@@ -96,6 +96,7 @@ export const AGENT_CLIENT_V1_PATHS = {
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/turns`,
   capabilitySearch: (route: string) =>
     `/agent-api/v1/workspaces/${encodeURIComponent(route)}/capabilities/search`,
+  toolDetail: (name: string) => `/agent-api/v1/tools/${encodeURIComponent(name)}`,
   invocations: '/agent-api/v1/tool-invocations',
   invocationInspectionCapabilities: '/agent-api/v1/tool-invocations/inspection-capabilities',
   taskControlCapabilities: '/agent-api/v1/task-control/capabilities',
@@ -148,6 +149,24 @@ export type AgentWorkspace = {
   name: string;
   description?: string;
 };
+
+/** Authorized, revision-bound reference guidance; never a dispatch permission. */
+export type AgentToolDetail = {
+  schema_version: 'bailing.agent-tool-detail.v1';
+  route: string;
+  capability_revision: string;
+  tool: AgentToolCatalogEntry;
+  usage_guidance: {
+    text: string;
+    truncated: boolean;
+    source_chars: number;
+    max_chars: number;
+    source_bytes: number;
+    max_bytes: number;
+  };
+};
+
+export type GetAgentToolDetailInput = { name: string; capabilityRevision: string };
 
 export type AgentWorkspaceList = {
   schema: 'bailing.agent-workspaces.v1';
@@ -472,6 +491,8 @@ function normalizeTool(value: unknown): AgentToolCatalogEntry {
     approval_required: body.approval_required as boolean,
     readonly: body.readonly as boolean,
     idempotent: body.idempotent as boolean,
+    ...(typeof body.description_truncated === 'boolean' ? { description_truncated: body.description_truncated } : {}),
+    ...(typeof body.usage_guidance_available === 'boolean' ? { usage_guidance_available: body.usage_guidance_available } : {}),
   };
 }
 
@@ -684,7 +705,7 @@ function safeHttpError(
 }
 
 function requestOperation(path: string): AgentFailureOperation {
-  if (path.endsWith('/capabilities/search')) return 'search';
+  if (path.endsWith('/capabilities/search') || path.startsWith('/agent-api/v1/tools/')) return 'search';
   if (path === AGENT_CLIENT_V1_PATHS.invocationInspectionCapabilities
     || (path.includes('/tool-invocations/') && path.endsWith('/receipt'))) return 'inspect';
   if (path.includes('/tool-invocations/') && path.endsWith('/resume')) return 'resume';
@@ -1188,6 +1209,51 @@ export class BailingHubAgentClient {
 
   async searchCapabilities(input: SearchAgentCapabilitiesInput): Promise<AgentCapabilitySearchResult> {
     return this.withFailure('search', () => this.searchCapabilitiesResult(input));
+  }
+
+  /** Fetch only the selected tool's guidance. This never prepares, invokes or resumes a write. */
+  async getToolDetail(input: GetAgentToolDetailInput): Promise<AgentToolDetail> {
+    return this.withFailure('search', async () => {
+      if (typeof input?.name !== 'string' || !TOOL_NAME_PATTERN.test(input.name)
+        || typeof input?.capabilityRevision !== 'string' || !REVISION_PATTERN.test(input.capabilityRevision)) {
+        throw new TypeError('Tool name and current capabilityRevision are required.');
+      }
+      const query = new URLSearchParams({ route: this.connection.workspace, capability_revision: input.capabilityRevision });
+      let response: AgentTransportResponse;
+      try {
+        response = await this.transport.request('GET', `${AGENT_CLIENT_V1_PATHS.toolDetail(input.name)}?${query}`);
+      } catch (error) {
+        if (error instanceof BailingHubClientError && [404, 405, 501].includes(error.statusCode ?? 0) && !error.publicCode) {
+          throw new BailingHubClientError('This BailingHub version does not support tool guidance details.',
+            error.statusCode, false, 'agent_schema_unsupported');
+        }
+        throw error;
+      }
+      try {
+        const body = asObject(response.body, 'tool detail');
+        if (responseSchema(body) !== 'bailing.agent-tool-detail.v1' || body.route !== this.connection.workspace
+          || body.capability_revision !== input.capabilityRevision) throw new Error('binding');
+        const tool = normalizeTool(body.tool);
+        if (tool.name !== input.name) throw new Error('tool');
+        const value = asObject(body.usage_guidance, 'tool guidance');
+        if (typeof value.text !== 'string' || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.text)
+          || typeof value.truncated !== 'boolean' || value.max_chars !== 32768 || value.max_bytes !== 65536
+          || !Number.isSafeInteger(value.source_chars) || Number(value.source_chars) < 0
+          || !Number.isSafeInteger(value.source_bytes) || Number(value.source_bytes) < 0) throw new Error('guidance');
+        const chars = [...value.text].length;
+        const bytes = Buffer.byteLength(value.text, 'utf8');
+        if (chars > 32768 || bytes > 65536 || Number(value.source_chars) < chars || Number(value.source_bytes) < bytes
+          || value.truncated !== (Number(value.source_chars) > chars || Number(value.source_bytes) > bytes)) throw new Error('sizes');
+        return { schema_version: 'bailing.agent-tool-detail.v1', route: this.connection.workspace,
+          capability_revision: input.capabilityRevision, tool,
+          usage_guidance: { text: value.text, truncated: value.truncated,
+            source_chars: Number(value.source_chars), max_chars: 32768,
+            source_bytes: Number(value.source_bytes), max_bytes: 65536 } };
+      } catch {
+        throw new BailingHubClientError('BailingHub returned an invalid or mismatched tool detail.',
+          undefined, false, 'agent_invalid_response');
+      }
+    });
   }
 
   private async searchCapabilitiesResult(input: SearchAgentCapabilitiesInput): Promise<AgentCapabilitySearchResult> {

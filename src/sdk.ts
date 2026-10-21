@@ -22,6 +22,8 @@ import {
   type AgentTurnContext,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentToolDetail,
+  type GetAgentToolDetailInput,
   type AgentInvocationReceipt,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
@@ -62,6 +64,8 @@ export {
   type AgentWorkspace,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentToolDetail,
+  type GetAgentToolDetailInput,
   type AgentInvocationReceipt,
   type AgentInvocationInspectionCapabilities,
   type CompleteAgentRunInput,
@@ -203,6 +207,7 @@ export type AgentClientHostTransport = {
   use(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
   startTurn(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentTurnContext>;
   searchCapabilities(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentCapabilitySearchResult>;
+  getToolDetail(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentToolDetail>;
   invoke(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   resume(invocationId: string, input?: unknown, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   /** Read the original receipt; requires a frozen original connection and never resumes the operation. */
@@ -1397,6 +1402,37 @@ export function createAgentClientTransport(
       return (await clientFor(workspace, options)).searchCapabilities(dto);
     },
 
+    async getToolDetail(inputValue, options = {}) {
+      const input = hostRecord(inputValue, 'getToolDetail input');
+      const workspaceValue = options.workspace ?? defaultWorkspace;
+      if (workspaceValue === undefined) throw new TypeError('workspace is required.');
+      const workspace = normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
+      const dto: GetAgentToolDetailInput = {
+        name: hostText(input.name ?? input.tool_name, 'name', 64),
+        capabilityRevision: hostText(input.capabilityRevision ?? input.capability_revision, 'capability_revision', 64),
+      };
+      // The model cannot redirect this read to a different authorization or route.
+      const signal = callerSignal(options.signal);
+      let expected = options.expectedBinding === undefined ? undefined : expectedAgentBinding(options.expectedBinding);
+      let connectionKey: string;
+      if (expected) {
+        if (typeof options.connectionKey !== 'string' || options.connectionName !== undefined
+          || expected.workspace !== workspace) throw new TypeError('Tool guidance requires the exact original connection and expectedBinding.');
+        connectionKey = options.connectionKey;
+      } else {
+        const profile = await resolveProfile(options.connectionKey ?? options.connectionName);
+        const credentials = await connections.credentialStore(profile.connectionKey).load();
+        assertRequestActive(signal);
+        if (!credentials || profile.workspace !== workspace) throw new BailingHubClientError(
+          'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed');
+        connectionKey = profile.connectionKey;
+        expected = { hubUrl: profile.baseUrl, clientAppId: profile.clientAppId, workspace, sessionId: credentials.session_id };
+      }
+      const bound = await boundSession(connectionKey, expected, undefined, signal);
+      try { return await bound.client.getToolDetail(dto); }
+      finally { await bound.assertBinding(); }
+    },
+
     async invoke(inputValue, options = {}) {
       const input = hostRecord(inputValue, 'invoke input');
       const workspace = options.workspace ?? input.workspace ?? input.route ?? defaultWorkspace;
@@ -1508,7 +1544,7 @@ export function createAgentClientTransport(
     },
   };
   const operations: Partial<Record<keyof AgentClientHostTransport, AgentFailureOperation>> = {
-    startTurn: 'scope', searchCapabilities: 'search', invoke: 'invoke', resume: 'resume', inspectInvocation: 'inspect',
+    startTurn: 'scope', searchCapabilities: 'search', getToolDetail: 'search', invoke: 'invoke', resume: 'resume', inspectInvocation: 'inspect',
     completeRun: 'scope', getSystemInfo: 'scope', status: 'scope', workspaces: 'scope', login: 'authorize',
     getTaskControlCapabilities: 'scope', getTask: 'scope',
   };

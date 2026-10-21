@@ -40,6 +40,8 @@ export type AgentToolInvocationState =
 export type AgentToolCatalogEntry = {
   name: string;
   description: string;
+  description_truncated?: boolean;
+  usage_guidance_available?: boolean;
   input_schema: Record<string, unknown>;
   scope: string;
   risk: 'low' | 'medium' | 'high';
@@ -363,6 +365,8 @@ function normalizeAgentToolCatalog(value: unknown, expectedRoute: string): Agent
       approval_required: requiredResponseBoolean(tool, 'approval_required'),
       readonly: requiredResponseBoolean(tool, 'readonly'),
       idempotent: requiredResponseBoolean(tool, 'idempotent'),
+      ...(typeof tool.description_truncated === 'boolean' ? { description_truncated: tool.description_truncated } : {}),
+      ...(typeof tool.usage_guidance_available === 'boolean' ? { usage_guidance_available: tool.usage_guidance_available } : {}),
     };
   });
 
