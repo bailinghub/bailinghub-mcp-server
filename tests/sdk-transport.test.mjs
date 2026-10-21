@@ -7,9 +7,11 @@ import test from 'node:test';
 import {
   AgentConnectionRegistry,
   AgentConnectionStore,
+  agentConnectionKey,
   createAgentClientTransport,
 } from '../dist/sdk.js';
 import { LocalAgentOperationLockTimeoutError } from '../dist/credential-store.js';
+import { createLockFixtureDirectory } from './lock-fixture-directory.mjs';
 
 const RUN_ID = '22222222-2222-4222-8222-222222222222';
 const CAPABILITY_REVISION = 'a'.repeat(64);
@@ -900,7 +902,11 @@ test('factory binding lock preserves concurrent authorizations for different tru
 });
 
 test('factory keeps a connection and credentials when remote revoke fails during removal', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-remove-failure-'));
+  const descriptor = { baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders' };
+  const directory = await createLockFixtureDirectory(join(tmpdir(), 'bailinghub-sdk-remove-failure-'), candidate => [
+    `registry:${join(candidate, 'registry.json')}`,
+    `file:${join(candidate, `${agentConnectionKey(descriptor)}.json`)}`,
+  ]);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
   const connectionStore = new AgentConnectionStore({

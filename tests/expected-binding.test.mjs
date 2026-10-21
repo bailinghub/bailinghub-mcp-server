@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { AgentConnectionRegistry, AgentConnectionStore, createAgentClientTransport } from '../dist/sdk.js';
+import { AgentConnectionRegistry, AgentConnectionStore, agentConnectionKey, createAgentClientTransport } from '../dist/sdk.js';
+import { createLockFixtureDirectory } from './lock-fixture-directory.mjs';
 
 const HUB = 'https://hub.example.com';
 const SESSION_A = '11111111-1111-4111-8111-111111111111';
@@ -202,7 +203,13 @@ for (const failure of ['offline', 429, 503]) {
 }
 
 async function fixture(t, { expired = false } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-expected-binding-'));
+  const descriptorA = { baseUrl: HUB, clientAppId: 'commerce-agent', workspace: 'orders' };
+  const descriptorB = { baseUrl: HUB, clientAppId: 'crm-agent', workspace: 'contacts' };
+  const directory = await createLockFixtureDirectory(join(tmpdir(), 'bailinghub-expected-binding-'), candidate => [
+    `registry:${join(candidate, 'registry.json')}`,
+    ...[descriptorA, descriptorB].map(descriptor =>
+      `file:${join(candidate, 'credentials', `${agentConnectionKey(descriptor)}.json`)}`),
+  ]);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
   const store = new AgentConnectionStore({
@@ -210,8 +217,8 @@ async function fixture(t, { expired = false } = {}) {
     environment: { BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE: 'true' },
     credentialPathFor: (key) => join(directory, 'credentials', `${key}.json`),
   });
-  const a = await store.register({ baseUrl: HUB, clientAppId: 'commerce-agent', workspace: 'orders' }, { alias: 'store-a' });
-  const b = await store.register({ baseUrl: HUB, clientAppId: 'crm-agent', workspace: 'contacts' }, { alias: 'crm-b', makeCurrent: true });
+  const a = await store.register(descriptorA, { alias: 'store-a' });
+  const b = await store.register(descriptorB, { alias: 'crm-b', makeCurrent: true });
   const credentialsA = credential(a, SESSION_A, expired);
   const credentialsB = credential(b, SESSION_B);
   const rawStores = new Map([a, b].map((profile) => [profile.connectionKey, store.credentialStore(profile.connectionKey)]));
