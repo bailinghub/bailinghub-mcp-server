@@ -69,6 +69,18 @@ The host must build the option at its existing preparation boundary, using the s
 
 `USAGE_OUTPUT_PARAMETER_MISMATCH` exposes safe `feedback.output_budget:{expected_parameter,scope}`. `USAGE_OUTPUT_LIMIT` can expose `feedback.output_limit:{actual,allowed,parameter,scope?}`. The SDK retains only validated scalar fields, not messages, credentials or provider bodies. These pre-dispatch rejections do not authorize an automatic retry or a model switch.
 
+## Long tasks and output truncation
+
+The host owns the Agent loop. The Hub and SDK do not turn a provider length termination into another POST, a model switch, or a replay of business tools. `result_state:complete` means the provider exchange is durably available; it does not say the answer or Agent task is complete. A usable response with `billing_state:pending` remains valid and does not require waiting for settlement before the next authorized step.
+
+Interpret the original `bailing.provider-response.v1` JSON/SSE through the host's existing provider adapter. Only a positively recognized output-limit termination plus a final original operation receipt can lead to a new continuation step. Persist the partial answer, original model and tool receipts, and remaining task checkpoint first. The host then prepares a fresh request with a new operation ID; it must not change a saved intent or reuse its ID with a different body. Unknown finish reasons, token counts equal to a budget, or a short visible answer do not by themselves authorize continuation.
+
+If the final operation frame is missing, the model POST acknowledgement is lost, or dispatch is unknown, inspect the original ID through `inspectModelRequest()` instead. A partial provider stream that contains `length` still needs the final durable receipt before a continuation decision. Never issue a replacement model POST to escape uncertain state. Do not replay already completed tools: model-operation idempotency does not deduplicate a new tool invocation that represents the same business action.
+
+The host should decide continuation before its final turn-stop/close fence, preserve one real user task, impose bounded automatic continuation and no-progress/task budgets, and honor cancellation, approval and authorization changes. Do not fabricate human continuation messages or silently reopen a closed turn. Truncated tool calls remain non-executable even if a fragment happens to parse as JSON; use the native adapter's complete tool-call semantics and existing governance before any business dispatch.
+
+The separate AgentClient `inspectInvocation()` is a read-only receipt query; `resume()` can perform the first business dispatch of an approved invocation and must not be used for polling. Business action checkpoints and original invocation IDs are host responsibilities, not a global tool-name/argument deduplication feature.
+
 ## Shared allowance and display
 
 `modelSummary()` returns `bailing.billing-summary.v1`, with USD fields `availableUsd`, `consumedUsd`, `currentPeriodConsumedUsd`, `overageUsd`, the original grant and current plan. The plan supplies `serviceIds` and one `multiplier`; per-model input/output multipliers and Token balances no longer exist.
