@@ -122,4 +122,5 @@ test('MCP Registry publication follows the bounded npm identity readback gate', 
   const registry = workflow.indexOf('run: ./mcp-publisher publish');
   assert.ok(publish >= 0 && wait > publish && registry > wait);
   assert.match(workflow, /GITHUB_SHA: \$\{\{ github\.sha \}\}/);
+  assert.match(workflow, /name: Wait for exact npm publication and verify source identity\s+if: steps\.npm-version\.outputs\.published != 'true'/);
 });

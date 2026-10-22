@@ -39,6 +39,7 @@ jobs:
         run: npm publish --access public
 
       - name: Wait for exact npm publication and verify source identity
+        if: steps.npm-version.outputs.published != 'true'
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: node scripts/wait-npm-publication.mjs
