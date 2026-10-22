@@ -1,5 +1,9 @@
 # BailingHub Agent Client SDK
 
+For separately negotiated, bounded reference-knowledge search/read and legacy
+inline fallback, see [AGENT_KNOWLEDGE.md](AGENT_KNOWLEDGE.md). Core native chat/embed
+knowledge assembly remains independent.
+
 [简体中文](AGENT_CLIENT_SDK.zh-CN.md) | English
 
 Version 0.5.0 lets a compatible host use explicitly selected authorizations from different systems
@@ -8,7 +12,7 @@ using each system's original authorization and approval rules. Controlled system
 business-supplied subject names help the host explain the targets before searching for tools.
 The conversation archive introduced in 0.4.0 continues to link visible messages to original actions.
 
-For the complete current release, install SDK 0.6.0 with Core 0.8.0. See the [upgrade guide](UPGRADE_v0.6.0.en.md) for attachments, original receipts and task controls.
+For the complete current release, use SDK 0.8.0 with Core 0.10.0. See the [upgrade guide](UPGRADE_v0.8.0.en.md) for tool input bounds, on-demand knowledge and explicit model output budgets. Existing attachments, original receipts and task controls remain compatible.
 Implement explicit scope selection, local visible-history capture and retry in the host.
 The SDK does not create an account-selection UI or automatically collect conversations.
 Existing Client Token, browser authorization, business invocation and recovery APIs stay compatible.
@@ -27,18 +31,21 @@ resolves the one authorization entry registered for `clientAppId`.
 Install the SDK package version that matches the Agent Client release line:
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.6.0
+npm install --save-exact bailinghub-mcp-server@0.8.0
 ```
 
-Use an exact ordinary dependency for a published host adapter. Publish it only after `0.6.0`
+Use an exact ordinary dependency for a published host adapter. Publish it only after `0.8.0`
 resolves from the public npm registry; never substitute a local path in a public manifest.
 
 Required server surfaces:
 
 - BailingHub Agent Auth v1;
 - BailingHub Agent Client Runtime v1;
-- route `tools.agent_direct` and `agent_client` configuration;
-- a registered public Client App ID and business authorization page.
+- route `agent_client` configuration and the original Agent Session/route authorization;
+- route `tools.agent_direct` only when direct business-tool execution is required;
+- a registered public Client App ID and authorization page.
+
+Knowledge-only capabilities/search/read do not require enabling direct business tools.
 
 Same-binding archives retain a Core 0.6.0 API minimum. Use Core 0.7.0 for cross-system archives,
 controlled system descriptions and authorization subject names, and negotiate server support.
@@ -401,6 +408,19 @@ The SDK sends the call to BailingHub, not directly to the business endpoint. Cor
 session, route, tool, ACC declaration, approval state, limits, and business authority. Do not let
 the model supply a Hub URL, credential, approval decision, acting subject, or arbitrary route.
 
+Invocation `arguments` must be a JSON object. The SDK, typed and generic MCP tools, and the
+legacy Agent client accept at most **1 MiB (1,048,576 bytes)** of its `JSON.stringify(arguments)`
+UTF-8 representation, including JSON keys and escaping. Nested `source` values stay objects;
+do not stringify HTML/CSS objects to bypass validation. The full Core HTTP envelope has a
+separate 2 MiB limit, and each business capability retains its own field and storage limits.
+Local overflow raises `BailingHubToolArgumentsError` (`arguments_too_large`, HTTP-equivalent
+413, `dispatch=not_dispatched`) with `actualBytes` and `maxBytes`, without returning arguments.
+This local rejection made no Hub request and must not be resumed. Older Core deployments may
+still reject smaller payloads until the matching Core update is installed.
+MCP retains its `bailing.agent-feedback.v1` envelope in both JSON text and `structuredContent`;
+overflow adds only `limits.limit_scope`, `actual_bytes`, `max_bytes`, or `observed_bytes` scalars.
+Local overflow uses the existing `sdk` feedback origin; a Core rejection keeps `core`.
+
 If the result is awaiting approval, in progress, or accepted with an unknown outcome, preserve
 the original `invocation_id` and resume using its original connection and authorization:
 
@@ -673,3 +693,24 @@ Managed turns accept `taskBinding: { schema_version, task_id, scope_hash }` only
 host options, negotiate both task and receipt support, and require an identical response echo.
 There are no SDK task creation or administration methods. See [task control](TASK_CONTROL.md) for
 full-member checks, compatibility, metering and Chinese business scenarios. Use SDK 0.6.0 with Core 0.8.0.
+
+## On-demand tool usage guidance
+
+Discovery keeps short descriptions. Optional `usage_guidance_available` and
+`description_truncated` flags indicate additional authored guidance and a shortened
+description respectively; old Core responses can omit both flags.
+`client.getToolDetail({ name, capabilityRevision })` reads the selected tool using
+`GET /agent-api/v1/tools/:name?route=...&capability_revision=...`. The host factory
+exposes the same method, with the original connection and workspace in trusted
+options. Model input cannot select a connection. The factory checks the original
+binding before the request and after either a success or failure response.
+
+The response includes the existing tool governance/schema projection and a separate
+`usage_guidance` object: `text`, `truncated`, `source_chars`, `max_chars`,
+`source_bytes`, and `max_bytes`. Guidance is bounded to 32,768 Unicode code points
+and 65,536 UTF-8 bytes; callers must respect `truncated` and must not assume omitted
+details are absent. A changed catalog requires rediscovery; an older Core without
+this optional route reports unsupported. This read never creates, invokes, resumes
+or automatically retries a business operation. Provider guidance cannot override
+authorization, approval or other machine-enforced controls. This source change
+alone does not imply that a matching Core/SDK package has been published or installed.

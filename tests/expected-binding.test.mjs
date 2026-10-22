@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { AgentConnectionRegistry, AgentConnectionStore, createAgentClientTransport } from '../dist/sdk.js';
+import { AgentConnectionRegistry, AgentConnectionStore, agentConnectionKey, createAgentClientTransport } from '../dist/sdk.js';
+import { createLockFixtureDirectory } from './lock-fixture-directory.mjs';
 
 const HUB = 'https://hub.example.com';
 const SESSION_A = '11111111-1111-4111-8111-111111111111';
@@ -37,6 +38,9 @@ const METHODS = {
     userMessageId: 'message-a', userInput: 'Only the selected synthetic store.',
   }, options),
   searchCapabilities: (transport, options) => transport.searchCapabilities({ query: 'record', runId: RUN, limit: 1 }, options),
+  getKnowledgeCapabilities: (transport, options) => transport.getKnowledgeCapabilities(options),
+  searchKnowledge: (transport, options) => transport.searchKnowledge({ query: 'policy', runId: RUN }, options),
+  readKnowledge: (transport, options) => transport.readKnowledge({ ref: 'synthetic-ref', runId: RUN }, options),
   invoke: (transport, options) => transport.invoke({
     run_id: RUN, client_invocation_id: INVOCATION, tool: 'record_update',
     capability_revision: REVISION, arguments: { record_id: 'synthetic-record-a' },
@@ -202,7 +206,13 @@ for (const failure of ['offline', 429, 503]) {
 }
 
 async function fixture(t, { expired = false } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-expected-binding-'));
+  const descriptorA = { baseUrl: HUB, clientAppId: 'commerce-agent', workspace: 'orders' };
+  const descriptorB = { baseUrl: HUB, clientAppId: 'crm-agent', workspace: 'contacts' };
+  const directory = await createLockFixtureDirectory(join(tmpdir(), 'bailinghub-expected-binding-'), candidate => [
+    `registry:${join(candidate, 'registry.json')}`,
+    ...[descriptorA, descriptorB].map(descriptor =>
+      `file:${join(candidate, 'credentials', `${agentConnectionKey(descriptor)}.json`)}`),
+  ]);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
   const store = new AgentConnectionStore({
@@ -210,8 +220,8 @@ async function fixture(t, { expired = false } = {}) {
     environment: { BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE: 'true' },
     credentialPathFor: (key) => join(directory, 'credentials', `${key}.json`),
   });
-  const a = await store.register({ baseUrl: HUB, clientAppId: 'commerce-agent', workspace: 'orders' }, { alias: 'store-a' });
-  const b = await store.register({ baseUrl: HUB, clientAppId: 'crm-agent', workspace: 'contacts' }, { alias: 'crm-b', makeCurrent: true });
+  const a = await store.register(descriptorA, { alias: 'store-a' });
+  const b = await store.register(descriptorB, { alias: 'crm-b', makeCurrent: true });
   const credentialsA = credential(a, SESSION_A, expired);
   const credentialsB = credential(b, SESSION_B);
   const rawStores = new Map([a, b].map((profile) => [profile.connectionKey, store.credentialStore(profile.connectionKey)]));
@@ -277,6 +287,13 @@ async function fixture(t, { expired = false } = {}) {
         system: { name: 'Order Operations', summary: 'Manage online orders.', domains: ['Orders'], boundaries: ['No payroll'] },
         tool_status: 'not_loaded', availability: 'unknown',
       });
+      if (path.endsWith('/knowledge/capabilities')) return json({ schema_version: 'bailing.agent-knowledge-capabilities.v1',
+        protocol: 'bailing.agent-knowledge.v1', supported: true, route: a.workspace, enabled: true, knowledge_scope_revision: REVISION,
+        delivery_modes: ['inline', 'on_demand'], limits: { search_max_results: 3, search_max_bytes: 4096, read_default_bytes: 16384, read_max_bytes: 32768, reference_ttl_seconds: 300, read_chain_max_bytes: 131072 } });
+      if (path.endsWith('/knowledge/search')) return json({ schema_version: 'bailing.agent-knowledge-search.v1', route: a.workspace,
+        run_id: RUN, knowledge_scope_revision: REVISION, status: 'ok', trust: 'reference_only', hints: [], truncated: false });
+      if (path.endsWith('/knowledge/read')) return json({ schema_version: 'bailing.agent-knowledge-read.v1', route: a.workspace,
+        run_id: RUN, knowledge_scope_revision: REVISION, ref: 'synthetic-ref', revision: REVISION, title: 'Policy', content: 'Synthetic policy.', trust: 'reference_only', next_cursor: null, truncated: false });
       if (path.endsWith('/turns')) return json({
         schema_version: 'bailing.agent-turn-context.v1', run_id: RUN,
         profile_revision: REVISION, capability_revision: REVISION,

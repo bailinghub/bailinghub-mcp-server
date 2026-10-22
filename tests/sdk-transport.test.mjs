@@ -7,9 +7,11 @@ import test from 'node:test';
 import {
   AgentConnectionRegistry,
   AgentConnectionStore,
+  agentConnectionKey,
   createAgentClientTransport,
 } from '../dist/sdk.js';
 import { LocalAgentOperationLockTimeoutError } from '../dist/credential-store.js';
+import { createLockFixtureDirectory } from './lock-fixture-directory.mjs';
 
 const RUN_ID = '22222222-2222-4222-8222-222222222222';
 const CAPABILITY_REVISION = 'a'.repeat(64);
@@ -39,7 +41,9 @@ function tool() {
 }
 
 async function setup(t, options = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-host-'));
+  const directory = await createLockFixtureDirectory(join(tmpdir(), 'bailinghub-sdk-host-'), candidate => [
+    `registry:${join(candidate, 'registry.json')}`,
+  ]);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
   const connectionStore = new AgentConnectionStore({
@@ -900,7 +904,11 @@ test('factory binding lock preserves concurrent authorizations for different tru
 });
 
 test('factory keeps a connection and credentials when remote revoke fails during removal', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-remove-failure-'));
+  const descriptor = { baseUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders' };
+  const directory = await createLockFixtureDirectory(join(tmpdir(), 'bailinghub-sdk-remove-failure-'), candidate => [
+    `registry:${join(candidate, 'registry.json')}`,
+    `file:${join(candidate, `${agentConnectionKey(descriptor)}.json`)}`,
+  ]);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
   const connectionStore = new AgentConnectionStore({
@@ -1006,6 +1014,62 @@ test('factory uses startTurn(input, options) and searchCapabilities(input, optio
   assert.deepEqual(searchCall.body, { query: 'employee', limit: 8, run_id: RUN_ID });
 });
 
+test('factory maps optional tool guidance reads to the host-selected authorization, ignoring model target fields', async (t) => {
+  const text = 'Bind the saved page before it can become the homepage.';
+  const { calls, transport } = await setup(t, { runtimeResponse: ({ path }) => {
+    assert.equal(path, '/agent-api/v1/tools/employee_search');
+    return new Response(JSON.stringify({ schema_version: 'bailing.agent-tool-detail.v1', route: 'orders',
+      capability_revision: CAPABILITY_REVISION, tool: tool(), usage_guidance: { text, truncated: false,
+        source_chars: text.length, source_bytes: Buffer.byteLength(text), max_chars: 32768, max_bytes: 65536 } }), { status: 200 });
+  } });
+  await transport.login();
+  const result = await transport.getToolDetail({ name: 'employee_search', capabilityRevision: CAPABILITY_REVISION,
+    workspace: 'staff', route: 'staff', connectionName: 'another' }, { workspace: 'orders', connectionName: 'development' });
+  assert.equal(result.route, 'orders');
+  const reads = calls.filter(call => call.path.startsWith('/agent-api/v1/'));
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].method, 'GET');
+  assert.equal(new URL(reads[0].url).searchParams.get('route'), 'orders');
+});
+
+test('factory discards late tool guidance after the original credential binding is replaced, including failed responses', async (t) => {
+  for (const responseStatus of [200, 503]) {
+    let signalStarted;
+    let release;
+    const started = new Promise(resolve => { signalStarted = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    const text = 'Use the original authorized page.';
+    const { registry, connectionStore, transport } = await setup(t, {
+      loginSessions: [{ sessionId: '11111111-1111-4111-8111-111111111111' }],
+      runtimeResponse: async ({ path }) => {
+      assert.equal(path, '/agent-api/v1/tools/employee_search');
+      signalStarted();
+      await held;
+      return new Response(JSON.stringify(responseStatus === 200
+        ? { schema_version: 'bailing.agent-tool-detail.v1', route: 'orders', capability_revision: CAPABILITY_REVISION,
+          tool: tool(), usage_guidance: { text, truncated: false, source_chars: text.length,
+            source_bytes: Buffer.byteLength(text), max_chars: 32768, max_bytes: 65536 } }
+        : { error: 'service_unavailable' }), { status: responseStatus });
+    } });
+    await transport.login();
+    const profile = await registry.getByAlias('development');
+    const store = connectionStore.credentialStore(profile.connectionKey);
+    const original = { ...await store.load(), session_id: '11111111-1111-4111-8111-111111111111' };
+    await store.save(original);
+    const pending = transport.getToolDetail({ name: 'employee_search', capabilityRevision: CAPABILITY_REVISION },
+      { connectionKey: profile.connectionKey, workspace: 'orders', expectedBinding: {
+        hubUrl: 'https://hub.example.com', clientAppId: 'example-agent-client', workspace: 'orders', sessionId: original.session_id,
+      } });
+    const captured = pending.then(() => null, error => error);
+    await Promise.race([started, captured.then(error => { throw error ?? new Error('Read resolved before the held response.'); })]);
+    await store.save({ ...original, session_id: '22222222-2222-4222-8222-222222222222' });
+    release();
+    const error = await captured;
+    assert.equal(error?.publicCode, 'agent_binding_changed');
+    assert.equal(error?.feedback.dispatch, 'not_dispatched');
+  }
+});
+
 test('factory preserves stable 64-hex invocation identity and maps only visible completion fields', async (t) => {
   const { calls, transport } = await setup(t);
   await transport.login();
@@ -1041,6 +1105,33 @@ test('factory preserves stable 64-hex invocation identity and maps only visible 
     usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 },
   });
   assert.equal(JSON.stringify(calls).includes('private chain'), false);
+});
+
+test('host factory keeps full HTML/CSS objects and bounds the serialized UTF-8 request before connection work', async (t) => {
+  const { calls, transport } = await setup(t);
+  const limit = 1_048_576;
+  const value = { source: { html: '中文😀"\\'.repeat(60_000), css: '' } };
+  const padding = limit - Buffer.byteLength(JSON.stringify(value), 'utf8');
+  value.source.html += 'x'.repeat(padding);
+  assert.equal(Buffer.byteLength(JSON.stringify(value), 'utf8'), limit);
+  const invokeInput = {
+    invocationId: INVOCATION_ID, capabilityRevision: CAPABILITY_REVISION,
+    agentRunId: RUN_ID, tool: 'shop_ai_decoration_validate', arguments: value,
+  };
+  // The overflow evidence is available even before login; no profile/credential request is needed.
+  await assert.rejects(transport.invoke({
+    ...invokeInput, arguments: { source: { ...value.source, html: value.source.html + 'x' } },
+  }), (error) => error.publicCode === 'arguments_too_large' &&
+    error.actualBytes === limit + 1 && error.maxBytes === limit &&
+    error.dispatch === 'not_dispatched' && error.origin === 'client');
+  assert.equal(calls.length, 0);
+  await transport.login();
+  await transport.invoke(invokeInput);
+  const sent = calls.find((entry) => entry.path === '/agent-api/v1/tool-invocations');
+  assert.deepEqual(sent.body.arguments, value);
+  assert.equal(typeof sent.body.arguments.source, 'object');
+  assert.equal(sent.body.invocation_id, INVOCATION_ID);
+  assert.equal(Buffer.byteLength(JSON.stringify(sent.body.arguments), 'utf8'), limit);
 });
 
 test('factory use moves the alias to an authorized workspace and keeps credentials isolated', async (t) => {

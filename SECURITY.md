@@ -31,12 +31,20 @@ must never contain credentials, private response bodies, or task payloads.
 
 ## Dependency Advisory Scope
 
-The official MCP TypeScript SDK `1.29.0` currently depends on
-`@hono/node-server` `1.x`, which is covered by `GHSA-frvp-7c67-39w9`. The advisory concerns
-Windows path traversal in Hono's static-file serving helper.
+The official MCP TypeScript SDK is pinned to `1.32.1`. The lockfile also records fixes for
+`fast-uri`, `hono`, `ip-address`, and `proxy-addr`. The existing tested
+`@hono/node-server` `2.0.12` override remains in place. Dependency changes must pass the
+project tests and the production audit gate; normal packaging runs the same checks through
+`prepack`. There is no advisory exemption or audit-gate bypass for release packaging.
 
-This package exposes stdio only. It does not start Hono, serve files, or expose an HTTP
-transport, so the vulnerable code path is not reachable through this adapter. CI still blocks
-high and critical production dependency advisories. This exception must be removed when the
-official SDK adopts a compatible fixed dependency; the project must not force an unverified
-cross-major override merely to suppress the audit report.
+This package exposes stdio only. The Agent Client SDK uses its own HTTP and authorization
+clients with redirects disabled; it does not use the upstream MCP HTTP transports or OAuth
+client. No Hono static-file server, MCP HTTP bearer middleware, or experimental MCP
+`taskStore` is enabled.
+
+Adding an HTTP transport requires a separate security review. Upgrading the upstream SDK
+alone does not enable its optional `maxToolInputElements` budget or bearer
+`expectedResource` check. Such an integration must bound request parsing and tool input,
+and its token verifier must validate the intended resource and return it as
+`AuthInfo.resource`. These are not substitutes for BailingHub's own authorization,
+approval, or invocation-size checks.

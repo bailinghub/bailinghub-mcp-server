@@ -12,9 +12,10 @@ optional peer or local path.
 
 1. Publish through the tag-triggered CI workflow from a fresh ordinary Git clone of the
    immutable release commit. Do not publish from a linked Git worktree.
-2. Confirm the matching BailingHub Core 0.7.0 release exists before publishing SDK 0.5.0.
-   Existing same-binding archives retain the Core 0.6.0 API minimum; the new cross-system,
-   system-description and authorization-name features require Core 0.7.0 support. Existing Agent Auth v1,
+2. Confirm the matching BailingHub Core 0.10.0 release exists before publishing SDK 0.8.0.
+   Existing same-binding archives retain the Core 0.6.0 API minimum; cross-system,
+   system-description and authorization-name features retain their Core 0.7.0 minima. The new
+   knowledge and explicit output-budget contracts require negotiated support from the current pairing. Existing Agent Auth v1,
    Agent Client Runtime v1 and Client API flows stay compatible.
 3. Set one stable version in `package.json`, `package-lock.json`, `src/version.ts`, `server.json`,
    `compatibility/client-api.json`, changelog, Git tag, and release notes; remove private-candidate
@@ -46,6 +47,16 @@ optional peer or local path.
     `bailinghub-mcp-server/sdk`; no repository path or build tree may be visible.
 15. Publish the npm package with provenance through CI. Verify the exact npm version, sha512
     integrity and `gitHead` matching the immutable Tag commit; missing source identity fails the gate.
+    npm can accept a publication before its exact public metadata is readable. The Publish workflow
+    waits at most ten minutes using read-only official registry GETs and checks name, version and
+    `gitHead` before MCP Registry publication. A timeout stops the job; do not republish the accepted
+    version. Inspect the original npm version status, wait for public readback, then resume only the
+    necessary workflow steps. An identity mismatch requires investigation rather than another publish.
+    The preflight also fails closed on locked, rate-limited or unavailable reads. Only the first
+    workflow attempt can publish after an exact-version 404. A rerun must first observe matching
+    public metadata and skips npm publication; if it remains unreadable, it stops conservatively,
+    including when an earlier attempt failed before publishing. Investigate that state rather than
+    adding an override or treating a failed read as permission to republish.
 16. Validate `mcpName` against `server.json`, publish metadata with the official
     `mcp-publisher`, and verify it through the Registry API.
 17. Only after this package is publicly resolvable may a host adapter publish with an exact normal

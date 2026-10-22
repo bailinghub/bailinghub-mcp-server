@@ -29,18 +29,20 @@ jobs:
       - name: Check whether this npm version already exists
         id: npm-version
         shell: bash
-        run: |
-          package_name="$(node --print "require('./package.json').name")"
-          package_version="$(node --print "require('./package.json').version")"
-          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-          fi
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: node scripts/wait-npm-publication.mjs --before-publish >> "$GITHUB_OUTPUT"
 
       - name: Publish npm package with trusted publishing
         if: steps.npm-version.outputs.published != 'true'
         run: npm publish --access public
+
+      - name: Wait for exact npm publication and verify source identity
+        if: steps.npm-version.outputs.published != 'true'
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: node scripts/wait-npm-publication.mjs
 
       - name: Install MCP Registry publisher
         shell: bash

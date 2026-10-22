@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { BailingHubAgentClient, AGENT_CLIENT_V1_PATHS } from '../dist/agent-client.js';
-import { AgentConnectionRegistry, AgentConnectionStore, createAgentClientTransport } from '../dist/sdk.js';
+import { AgentConnectionRegistry, AgentConnectionStore, agentConnectionKey, createAgentClientTransport } from '../dist/sdk.js';
+import { createLockFixtureDirectory } from './lock-fixture-directory.mjs';
 
 const HUB = 'https://hub.example.com';
 const SESSION = '11111111-1111-4111-8111-111111111111';
@@ -187,13 +188,20 @@ function credentials(profile, sessionId) {
     access_expires_at: '2099-01-01T00:00:00.000Z', refresh_expires_at: '2099-02-01T00:00:00.000Z' };
 }
 async function hostFixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'bailing-receipt-binding-'));
+  const descriptors = [
+    { baseUrl: HUB, clientAppId: 'commerce-agent', workspace: 'inventory' },
+    { baseUrl: HUB, clientAppId: 'other-agent', workspace: 'other' },
+  ];
+  const directory = await createLockFixtureDirectory(join(tmpdir(), 'bailing-receipt-binding-'), candidate => [
+    `registry:${join(candidate, 'registry.json')}`,
+    ...descriptors.map(descriptor => `file:${join(candidate, `${agentConnectionKey(descriptor)}.json`)}`),
+  ]);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
   const store = new AgentConnectionStore({ platform: 'linux', registry,
     environment: { BAILINGHUB_ALLOW_FILE_CREDENTIAL_STORE: 'true' }, credentialPathFor: (key) => join(directory, `${key}.json`) });
-  const a = await store.register({ baseUrl: HUB, clientAppId: 'commerce-agent', workspace: 'inventory' }, { alias: 'a' });
-  const b = await store.register({ baseUrl: HUB, clientAppId: 'other-agent', workspace: 'other' }, { alias: 'b', makeCurrent: true });
+  const a = await store.register(descriptors[0], { alias: 'a' });
+  const b = await store.register(descriptors[1], { alias: 'b', makeCurrent: true });
   await store.credentialStore(a.connectionKey).save(credentials(a, SESSION));
   await store.credentialStore(b.connectionKey).save(credentials(b, OTHER_SESSION));
   const calls = []; const hooks = {};

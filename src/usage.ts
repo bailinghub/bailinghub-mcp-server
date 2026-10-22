@@ -8,7 +8,7 @@ export type UsageBinding = { hubUrl: string; userId: string; accountId: string; 
 export type UsageCapabilities = {
   schema: 'bailing.usage.v1'; supported: true; modes: ('credits' | 'periodic')[];
   streaming: true; orchestration: 'host';
-  model_gateway: { schema: 'bailing.model-gateway.v1'; supported: true; orchestration: 'host'; streaming: true; requests_path: string; models_path: string; summary_path: string; billing_unit: 'USD'; turn_required: false; provider_response: 'bailing.provider-response.v1'; settlement: 'asynchronous'; model_tools?: { schema: 'bailing.model-tools.v1'; directory: boolean; execution: boolean; tools_path: string; requests_path?: string } };
+  model_gateway: { schema: 'bailing.model-gateway.v1'; supported: true; orchestration: 'host'; streaming: true; requests_path: string; models_path: string; summary_path: string; billing_unit: 'USD'; turn_required: false; provider_response: 'bailing.provider-response.v1'; settlement: 'asynchronous'; model_tools?: { schema: 'bailing.model-tools.v1'; directory: boolean; execution: boolean; tools_path: string; requests_path?: string }; output_budget?: { schema: 'bailing.model-output-budget.v1'; separate_default: true; explicit_parameter: true; explicit_scope: true } };
 };
 export type UsageModelDescriptor = {
   schema: 'bailing.usage-model.v1'; service_id: string; service_revision: number; label: string; model: string;
@@ -16,9 +16,29 @@ export type UsageModelDescriptor = {
   state: string; orchestration: 'host'; streaming: true; input_formats: string[];
   model_modalities: ('text' | 'image')[] | null; context_window_tokens: number | null; max_input_bytes: number;
   input_limit_scope: 'serialized_provider_request'; max_messages: number; max_tools: number;
+  /** Operator's service ceiling, not the supplier's model capability. */
   max_output_tokens: number; timeout_ms: number; provider_options: string[];
+  /** Present together only when the service has an explicit output-budget policy. */
+  default_output_tokens?: number;
+  output_token_parameter?: UsageOutputTokenParameter;
+  output_budget_scope?: UsageOutputBudgetScope;
+  /** Verified supplier limit for this policy's parameter and scope; unknown stays absent. */
+  model_max_output_tokens?: number;
 };
+export type UsageOutputTokenParameter = 'max_tokens' | 'max_completion_tokens';
+export type UsageOutputBudgetScope = 'completion_total' | 'final_answer';
+export type UsageModelOutputBudget = {
+  mode: 'legacy'; defaultTokens: number; maxTokens: number;
+  parameter: null; scope: null; modelMaxTokens: null;
+} | {
+  mode: 'explicit'; defaultTokens: number; maxTokens: number;
+  parameter: UsageOutputTokenParameter; scope: UsageOutputBudgetScope; modelMaxTokens: number | null;
+};
+export type UsageOutputBudgetDescriptor = Pick<UsageModelDescriptor, 'max_output_tokens' | 'provider_options'
+  | 'default_output_tokens' | 'output_token_parameter' | 'output_budget_scope' | 'model_max_output_tokens'>;
 export type UsageInputLimit = { kind: 'serialized_provider_bytes'; actual: number; allowed: number; message_count: number; tool_count: number };
+export type UsageOutputLimit = { actual: number; allowed: number; parameter: UsageOutputTokenParameter; scope?: UsageOutputBudgetScope };
+export type UsageOutputBudgetFeedback = { expected_parameter: UsageOutputTokenParameter; scope: UsageOutputBudgetScope };
 export type UsageRequestOptions = { signal?: AbortSignal };
 export type UsageClientOptions = {
   hubUrl: string; userId: string; accountId: string; serviceId: string;
@@ -31,6 +51,8 @@ export type UsageFeedback = {
   next_action: 'wait_for_capacity' | 'upgrade_required' | 'reauthenticate' | 'authenticate' | 'contact_operator' | 'wait_for_reset' | 'retry_original' | 'inspect_original' | 'upgrade' | 'resolve_error' | 'select_model';
   retryable: boolean;
   input_limit?: UsageInputLimit;
+  output_limit?: UsageOutputLimit;
+  output_budget?: UsageOutputBudgetFeedback;
 };
 const LOCAL_NEXT_ACTIONS: Record<string, UsageFeedback['next_action']> = {
   USAGE_UNSUPPORTED: 'upgrade_required',
@@ -68,8 +90,80 @@ export class BailingHubUsageError extends Error {
     const limit = serverFeedback?.input_limit;
     if (limit?.kind === 'serialized_provider_bytes' && ['actual', 'allowed', 'message_count', 'tool_count'].every(k =>
       Number.isSafeInteger(limit[k as keyof UsageInputLimit]) && Number(limit[k as keyof UsageInputLimit]) >= 0)) this.feedback.input_limit = { kind: limit.kind, actual: limit.actual, allowed: limit.allowed, message_count: limit.message_count, tool_count: limit.tool_count };
-
+    const outputLimit = serverFeedback?.output_limit;
+    if (outputLimit && Number.isSafeInteger(outputLimit.actual) && outputLimit.actual > 0
+      && Number.isSafeInteger(outputLimit.allowed) && outputLimit.allowed > 0
+      && isOutputTokenParameter(outputLimit.parameter)
+      && (outputLimit.scope === undefined || isOutputBudgetScope(outputLimit.scope)
+        && (outputLimit.parameter !== 'max_completion_tokens' || outputLimit.scope === 'completion_total'))) {
+      this.feedback.output_limit = { actual: outputLimit.actual, allowed: outputLimit.allowed, parameter: outputLimit.parameter,
+        ...(outputLimit.scope === undefined ? {} : { scope: outputLimit.scope }) };
+    }
+    const outputBudget = serverFeedback?.output_budget;
+    if (outputBudget && isOutputTokenParameter(outputBudget.expected_parameter) && isOutputBudgetScope(outputBudget.scope)
+      && (outputBudget.expected_parameter !== 'max_completion_tokens' || outputBudget.scope === 'completion_total')) {
+      this.feedback.output_budget = { expected_parameter: outputBudget.expected_parameter, scope: outputBudget.scope };
+    }
   }
+}
+function isOutputTokenParameter(value: unknown): value is UsageOutputTokenParameter {
+  return value === 'max_tokens' || value === 'max_completion_tokens';
+}
+function isOutputBudgetScope(value: unknown): value is UsageOutputBudgetScope {
+  return value === 'completion_total' || value === 'final_answer';
+}
+
+/**
+ * Resolve a validated service policy without inferring a supplier limit or reasoning scope.
+ * Legacy defaultTokens is the old ceiling-as-default fallback, not a separate configured default.
+ */
+export function resolveModelOutputBudget(descriptor: UsageOutputBudgetDescriptor): UsageModelOutputBudget {
+  const value = object(descriptor);
+  assert(Number.isSafeInteger(value.max_output_tokens) && Number(value.max_output_tokens) > 0);
+  assert(Array.isArray(value.provider_options) && value.provider_options.every(key => typeof key === 'string'));
+  const fields = ['default_output_tokens', 'output_token_parameter', 'output_budget_scope'];
+  const present = fields.filter(key => value[key] !== undefined).length;
+  const maxTokens = Number(value.max_output_tokens);
+  if (present === 0) {
+    assert(value.model_max_output_tokens === undefined);
+    return { mode: 'legacy', defaultTokens: maxTokens, maxTokens, parameter: null, scope: null, modelMaxTokens: null };
+  }
+  assert(present === fields.length);
+  assert(Number.isSafeInteger(value.default_output_tokens) && Number(value.default_output_tokens) > 0
+    && Number(value.default_output_tokens) <= maxTokens);
+  assert(isOutputTokenParameter(value.output_token_parameter));
+  assert(isOutputBudgetScope(value.output_budget_scope));
+  assert(value.output_token_parameter !== 'max_completion_tokens' || value.output_budget_scope === 'completion_total');
+  const parameter = value.output_token_parameter;
+  const otherParameter = parameter === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
+  assert(value.provider_options.includes(parameter) && !value.provider_options.includes(otherParameter));
+  if (value.model_max_output_tokens !== undefined) assert(Number.isSafeInteger(value.model_max_output_tokens)
+    && Number(value.model_max_output_tokens) >= maxTokens);
+  return { mode: 'explicit', defaultTokens: Number(value.default_output_tokens), maxTokens, parameter,
+    scope: value.output_budget_scope, modelMaxTokens: value.model_max_output_tokens === undefined ? null : Number(value.model_max_output_tokens) };
+}
+
+/** Build one output option for a new request; never converts an existing wire request or recovery snapshot. */
+export function modelOutputOptions(descriptor: UsageOutputBudgetDescriptor,
+  options: { tokens?: number; parameter?: UsageOutputTokenParameter } = {}): Partial<Record<UsageOutputTokenParameter, number>> {
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+    || Object.keys(options).some(key => !['tokens', 'parameter'].includes(key))) throw new TypeError('Invalid model output options.');
+  const budget = resolveModelOutputBudget(descriptor);
+  if (options.parameter !== undefined && options.parameter !== 'max_tokens' && options.parameter !== 'max_completion_tokens') {
+    throw new TypeError('Unsupported output token parameter.');
+  }
+  if (budget.mode === 'explicit' && options.parameter !== undefined && options.parameter !== budget.parameter) {
+    throw new BailingHubUsageError('USAGE_OUTPUT_PARAMETER_MISMATCH', 400, 'not_dispatched', undefined, undefined, undefined,
+      { output_budget: { expected_parameter: budget.parameter, scope: budget.scope } });
+  }
+  const parameter = options.parameter ?? budget.parameter ?? 'max_tokens';
+  if (!descriptor.provider_options.includes(parameter)) throw new BailingHubUsageError('USAGE_UNSUPPORTED_INPUT', 400, 'not_dispatched');
+  const tokens = options.tokens === undefined ? budget.defaultTokens : options.tokens;
+  if (!Number.isSafeInteger(tokens) || tokens <= 0) throw new TypeError('Output token count must be a positive integer.');
+  if (tokens > budget.maxTokens) throw new BailingHubUsageError('USAGE_OUTPUT_LIMIT', 413, 'not_dispatched', undefined, undefined, undefined,
+    { output_limit: { actual: tokens, allowed: budget.maxTokens, parameter,
+      ...(budget.scope === null ? {} : { scope: budget.scope }) } });
+  return { [parameter]: tokens };
 }
 function text(value: unknown, name: string, maximum = 191): string {
   if (typeof value !== 'string' || !value.length || value.length > maximum || value.trim() !== value
@@ -200,6 +294,11 @@ export class BailingHubUsageClient {
       && gateway.requests_path === MODEL_GATEWAY_PATHS.requests && gateway.models_path === MODEL_GATEWAY_PATHS.models
       && gateway.summary_path === MODEL_GATEWAY_PATHS.summary
       && gateway.provider_response === 'bailing.provider-response.v1' && gateway.settlement === 'asynchronous', 'USAGE_UNSUPPORTED');
+    if (gateway.output_budget !== undefined) {
+      const budget = object(gateway.output_budget);
+      assert(budget.schema === 'bailing.model-output-budget.v1' && budget.separate_default === true
+        && budget.explicit_parameter === true && budget.explicit_scope === true);
+    }
     return value as UsageCapabilities;
   }
   private validateModel(result: Record<string, unknown>): void {
@@ -215,6 +314,7 @@ export class BailingHubUsageClient {
       assert(rateValue(rate.multiplier));
     }
     assert(Array.isArray(result.input_formats) && Array.isArray(result.provider_options) && result.provider_options.every(item => typeof item === 'string'));
+    resolveModelOutputBudget(result as UsageModelDescriptor);
   }
   /** Read the live plan/credential intersection. Labels are display text, not model identity. */
   async modelModels(options?: UsageRequestOptions): Promise<ModelDirectory> {

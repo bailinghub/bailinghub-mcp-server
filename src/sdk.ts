@@ -22,13 +22,16 @@ import {
   type AgentTurnContext,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentToolDetail,
+  type GetAgentToolDetailInput,
   type AgentInvocationReceipt,
+  type AgentKnowledgeCapabilities, type AgentKnowledgeSearch, type AgentKnowledgeRead,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
   type SearchAgentCapabilitiesInput,
   type StartAgentTurnInput,
 } from './agent-client.js';
-import { BailingHubClientError, type AgentToolInvocation } from './client.js';
+import { BailingHubClientError, normalizeAgentToolArguments, type AgentToolInvocation } from './client.js';
 import {
   AgentSessionManager,
   performAgentLogin,
@@ -62,7 +65,11 @@ export {
   type AgentWorkspace,
   type AgentWorkspaceList,
   type AgentSystemInfo,
+  type AgentToolDetail,
+  type GetAgentToolDetailInput,
   type AgentInvocationReceipt,
+  type AgentKnowledgeCapabilities, type AgentKnowledgeDelivery, type AgentKnowledgeSearch, type AgentKnowledgeRead,
+  type SearchAgentKnowledgeInput, type ReadAgentKnowledgeInput,
   type AgentInvocationInspectionCapabilities,
   type CompleteAgentRunInput,
   type InvokeAgentCapabilityInput,
@@ -115,7 +122,7 @@ export {
   type CredentialStore,
 } from './credential-store.js';
 
-export { BailingHubClientError } from './client.js';
+export { BailingHubClientError, BailingHubToolArgumentsError, type BailingHubClientErrorDetails } from './client.js';
 export type { StartAgentTurnOptions, AgentTaskBinding, AgentTaskControlCapabilities,
   AgentTaskMember, AgentTaskSnapshot } from './agent-client.js';
 
@@ -203,6 +210,10 @@ export type AgentClientHostTransport = {
   use(input: string | Record<string, unknown>): Promise<Record<string, unknown>>;
   startTurn(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentTurnContext>;
   searchCapabilities(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentCapabilitySearchResult>;
+  getToolDetail(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentToolDetail>;
+  getKnowledgeCapabilities(options?: Record<string, unknown>): Promise<AgentKnowledgeCapabilities>;
+  searchKnowledge(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentKnowledgeSearch>;
+  readKnowledge(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentKnowledgeRead>;
   invoke(input: Record<string, unknown>, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   resume(invocationId: string, input?: unknown, options?: Record<string, unknown>): Promise<AgentToolInvocation>;
   /** Read the original receipt; requires a frozen original connection and never resumes the operation. */
@@ -896,6 +907,26 @@ export function createAgentClientTransport(
     }, { fetchImpl: requestFetch, allowInsecureHttp: profile.allowInsecureHttp, ...(signal ? { signal } : {}) });
   }
 
+  async function boundKnowledgeRead<T>(options: Record<string, unknown>, action: (client: BailingHubAgentClient) => Promise<T>): Promise<T> {
+    const workspace = normalizeAgentRoute(hostText(options.workspace ?? defaultWorkspace, 'workspace', 64));
+    const signal = callerSignal(options.signal);
+    let expected = options.expectedBinding === undefined ? undefined : expectedAgentBinding(options.expectedBinding);
+    let connectionKey: string;
+    if (expected) {
+      if (typeof options.connectionKey !== 'string' || options.connectionName !== undefined || expected.workspace !== workspace) throw new TypeError('Knowledge requires the original connection and expectedBinding.');
+      connectionKey = options.connectionKey;
+    } else {
+      const profile = await resolveProfile(options.connectionKey ?? options.connectionName);
+      const credentials = await connections.credentialStore(profile.connectionKey).load();
+      assertRequestActive(signal);
+      if (!credentials || profile.workspace !== workspace) throw new BailingHubClientError('The original Agent binding is unavailable.', 403, false, 'agent_binding_changed');
+      connectionKey = profile.connectionKey;
+      expected = { hubUrl: profile.baseUrl, clientAppId: profile.clientAppId, workspace, sessionId: credentials.session_id };
+    }
+    const bound = await boundSession(connectionKey, expected, undefined, signal);
+    try { return await action(bound.client); } finally { await bound.assertBinding(); }
+  }
+
   const transport: AgentClientHostTransport = {
     async uploadArtifact(input, options) {
       if (!options?.connectionKey || !options.expectedBinding || !options.workspace) throw new TypeError('Artifact delivery requires the explicit original connection and expectedBinding.');
@@ -1341,13 +1372,15 @@ export function createAgentClientTransport(
 
     async startTurn(inputValue, options = {}) {
       const input = hostRecord(inputValue, 'startTurn input');
-      if (['taskBinding', 'task_binding', 'task_id', 'taskId'].some((key) => key in input)) {
+      if (['knowledgeDelivery', 'knowledge_delivery', 'taskBinding', 'task_binding', 'task_id', 'taskId'].some((key) => key in input)) {
         throw new TypeError('Task bindings must be supplied through trusted host options.');
       }
       if (['task_binding', 'task_id', 'taskId'].some((key) => key in options)) {
         throw new TypeError('Trusted host options require taskBinding.');
       }
       const binding = options.taskBinding === undefined ? undefined : taskBinding(options.taskBinding, true);
+      const knowledgeDelivery = options.knowledgeDelivery;
+      if (knowledgeDelivery !== undefined && knowledgeDelivery !== 'on_demand') throw new TypeError('Unsupported knowledgeDelivery.');
       const workspace = options.workspace ?? defaultWorkspace;
       if (workspace === undefined) throw new TypeError('workspace is required.');
       const dto: StartAgentTurnInput = {
@@ -1374,14 +1407,14 @@ export function createAgentClientTransport(
         }
         dto.renderers = normalized;
       }
-      if (!binding) return (await clientFor(workspace, options)).startTurn(dto);
+      if (!binding) return (await clientFor(workspace, options)).startTurn(dto, { ...(knowledgeDelivery ? { knowledgeDelivery } : {}) });
       if (!options.connectionKey || !options.expectedBinding || options.connectionName !== undefined) {
         throw new TypeError('Managed turns require the explicit original connection and expectedBinding.');
       }
       const expected = expectedAgentBinding(options.expectedBinding);
       if (expected.workspace !== workspace) throw new TypeError('Expected binding does not match the explicit target.');
       const bound = await boundSession(options.connectionKey, expected, undefined, callerSignal(options.signal));
-      try { return await bound.client.startTurn(dto, { taskBinding: binding }); }
+      try { return await bound.client.startTurn(dto, { taskBinding: binding, ...(knowledgeDelivery ? { knowledgeDelivery } : {}) }); }
       finally { await bound.assertBinding(); }
     },
 
@@ -1397,6 +1430,56 @@ export function createAgentClientTransport(
       return (await clientFor(workspace, options)).searchCapabilities(dto);
     },
 
+    async getKnowledgeCapabilities(options = {}) {
+      return boundKnowledgeRead(options, client => client.getKnowledgeCapabilities());
+    },
+    async searchKnowledge(inputValue, options = {}) {
+      const input = hostRecord(inputValue, 'searchKnowledge input');
+      if (Object.keys(input).some(key => !['query', 'limit', 'runId', 'run_id'].includes(key))) throw new TypeError('Unknown knowledge search field.');
+      const dto = { query: hostText(input.query, 'query', 500), ...(input.limit === undefined ? {} : { limit: input.limit as number }),
+        ...(input.runId === undefined && input.run_id === undefined ? {} : { runId: hostText(input.runId ?? input.run_id, 'run_id', 36) }) };
+      return boundKnowledgeRead(options, client => client.searchKnowledge(dto));
+    },
+    async readKnowledge(inputValue, options = {}) {
+      const input = hostRecord(inputValue, 'readKnowledge input');
+      if (Object.keys(input).some(key => !['ref', 'cursor', 'maxBytes', 'max_bytes', 'runId', 'run_id'].includes(key))) throw new TypeError('Unknown knowledge read field.');
+      const dto = { ref: hostText(input.ref, 'ref', 4096), ...(input.cursor === undefined ? {} : { cursor: hostText(input.cursor, 'cursor', 4096) }),
+        ...(input.maxBytes === undefined && input.max_bytes === undefined ? {} : { maxBytes: (input.maxBytes ?? input.max_bytes) as number }),
+        ...(input.runId === undefined && input.run_id === undefined ? {} : { runId: hostText(input.runId ?? input.run_id, 'run_id', 36) }) };
+      return boundKnowledgeRead(options, client => client.readKnowledge(dto));
+    },
+
+    async getToolDetail(inputValue, options = {}) {
+      const input = hostRecord(inputValue, 'getToolDetail input');
+      const workspaceValue = options.workspace ?? defaultWorkspace;
+      if (workspaceValue === undefined) throw new TypeError('workspace is required.');
+      const workspace = normalizeAgentRoute(hostText(workspaceValue, 'workspace', 64));
+      const dto: GetAgentToolDetailInput = {
+        name: hostText(input.name ?? input.tool_name, 'name', 64),
+        capabilityRevision: hostText(input.capabilityRevision ?? input.capability_revision, 'capability_revision', 64),
+      };
+      // The model cannot redirect this read to a different authorization or route.
+      const signal = callerSignal(options.signal);
+      let expected = options.expectedBinding === undefined ? undefined : expectedAgentBinding(options.expectedBinding);
+      let connectionKey: string;
+      if (expected) {
+        if (typeof options.connectionKey !== 'string' || options.connectionName !== undefined
+          || expected.workspace !== workspace) throw new TypeError('Tool guidance requires the exact original connection and expectedBinding.');
+        connectionKey = options.connectionKey;
+      } else {
+        const profile = await resolveProfile(options.connectionKey ?? options.connectionName);
+        const credentials = await connections.credentialStore(profile.connectionKey).load();
+        assertRequestActive(signal);
+        if (!credentials || profile.workspace !== workspace) throw new BailingHubClientError(
+          'The original Agent connection binding is no longer available.', 403, false, 'agent_binding_changed');
+        connectionKey = profile.connectionKey;
+        expected = { hubUrl: profile.baseUrl, clientAppId: profile.clientAppId, workspace, sessionId: credentials.session_id };
+      }
+      const bound = await boundSession(connectionKey, expected, undefined, signal);
+      try { return await bound.client.getToolDetail(dto); }
+      finally { await bound.assertBinding(); }
+    },
+
     async invoke(inputValue, options = {}) {
       const input = hostRecord(inputValue, 'invoke input');
       const workspace = options.workspace ?? input.workspace ?? input.route ?? defaultWorkspace;
@@ -1408,15 +1491,16 @@ export function createAgentClientTransport(
         'client_invocation_id',
         512,
       );
+      const argumentsValue = normalizeAgentToolArguments(input.arguments);
       const invocationId = suppliedInvocation && INVOCATION_ID_PATTERN.test(suppliedInvocation)
         ? suppliedInvocation
-        : stableDigest(String(workspace), runId, tool, suppliedInvocation ?? JSON.stringify(input.arguments ?? {}));
+        : stableDigest(String(workspace), runId, tool, suppliedInvocation ?? JSON.stringify(argumentsValue));
       const dto: InvokeAgentCapabilityInput = {
         invocationId,
         capabilityRevision: hostText(input.capability_revision ?? input.capabilityRevision, 'capability_revision', 128),
         agentRunId: runId,
         tool,
-        arguments: hostRecord(input.arguments, 'arguments'),
+        arguments: argumentsValue,
       };
       return (await clientFor(workspace, options)).invoke(dto);
     },
@@ -1507,7 +1591,7 @@ export function createAgentClientTransport(
     },
   };
   const operations: Partial<Record<keyof AgentClientHostTransport, AgentFailureOperation>> = {
-    startTurn: 'scope', searchCapabilities: 'search', invoke: 'invoke', resume: 'resume', inspectInvocation: 'inspect',
+    startTurn: 'scope', searchCapabilities: 'search', getToolDetail: 'search', getKnowledgeCapabilities: 'search', searchKnowledge: 'search', readKnowledge: 'search', invoke: 'invoke', resume: 'resume', inspectInvocation: 'inspect',
     completeRun: 'scope', getSystemInfo: 'scope', status: 'scope', workspaces: 'scope', login: 'authorize',
     getTaskControlCapabilities: 'scope', getTask: 'scope',
   };

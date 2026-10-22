@@ -1,6 +1,6 @@
-# Current 0.7.0 pairing
+# Current 0.8.0 pairing
 
-Use Core 0.9.0, SDK 0.7.0 and DSH 0.7.0 for optional model plans and image tools. Existing business-governance APIs retain their documented minima. Host orchestration, scope, approval and audit rules remain in effect. See [upgrade](UPGRADE_v0.7.0.en.md).
+Use Core 0.10.0, SDK 0.8.0 and DSH 0.8.0 for larger Agent tool inputs, negotiated on-demand knowledge and explicit model output budgets. Existing business-governance APIs retain their documented minima. New optional endpoints are capability-negotiated; legacy Core responses retain inline knowledge and legacy output budgets. See [upgrade](UPGRADE_v0.8.0.en.md).
 
 # BailingHub Client API Compatibility
 
@@ -25,12 +25,14 @@ current BailingHub contract and rejects:
 MCP protocol versions, this npm package version, BailingHub application versions, and Client
 API versions are deliberately independent.
 
-Version 0.7.0 retains Agent Auth v1, Agent Client Runtime v1 and the existing Client Token flow.
+Version 0.8.0 retains Agent Auth v1, Agent Client Runtime v1 and the existing Client Token flow.
 The Client API contract and payload semantics remain unchanged; the consumer declaration records
 the adapter's new version.
 
 | Feature | Server requirement |
 | --- | --- |
+| Agent 1 MiB tool arguments, guidance detail and on-demand knowledge | Core 0.10.0 for the complete pairing; negotiate optional knowledge support and preserve inline fallback |
+| Separate model default/ceiling and output scope | Core 0.10.0 explicit descriptor fields; legacy descriptors retain their previous fallback |
 | Optional model gateway and plan summaries | Core 0.9.0 with migrations 063/064; discover `model_gateway` support before use |
 | Standalone MCP Client Token jobs | Existing `bailing.client-api.v1` contract |
 | Browser authorization, Agent turns, governed calls and completion | Existing Agent Auth v1 and Agent Client Runtime v1, including Core 0.5.1 |
@@ -41,7 +43,7 @@ the adapter's new version.
 
 The archive is an additive host SDK API. Core releases below 0.6.0 do not implement it; hosts must
 report unsupported archival while preserving the established business flow. Upgrade Core before
-enabling archiving; use Core 0.9.0 for the current complete release pairing. This SDK does not add a
+enabling archiving; use Core 0.10.0 for the current complete release pairing. This SDK does not add a
 multi-account selector or transcript capture to the standalone MCP tools; native host adapters
 own that interface and durable outbox.
 
@@ -92,7 +94,7 @@ compatible on Windows.
 ## Local task control
 
 Task control was introduced in Core 0.8.0 / SDK 0.6.0 and remains available in the current
-Core 0.9.0 / SDK 0.7.0 pairing. See [the host contract and Chinese scenarios](TASK_CONTROL.md).
+Core 0.10.0 / SDK 0.8.0 pairing. See [the host contract and Chinese scenarios](TASK_CONTROL.md).
 `getTaskControlCapabilities` and `getTask` require original binding checks; managed `startTurn`
 requires both task and read-only receipt support and a matching `task_binding` echo. A valid
 `supported: false` response remains distinct from an unavailable network. Missing old endpoints

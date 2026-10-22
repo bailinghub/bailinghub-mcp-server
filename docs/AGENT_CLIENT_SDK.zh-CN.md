@@ -1,12 +1,15 @@
 # BailingHub Agent Client SDK
 
+智能体客户端独立协商的知识按需搜索、分页读取及旧版完整正文回退，见
+[AGENT_KNOWLEDGE.md](AGENT_KNOWLEDGE.md)。中枢自带聊天嵌入的知识装配保持独立。
+
 [English](AGENT_CLIENT_SDK.md) | 简体中文
 
 0.5.0 让配套宿主使用同一中枢下不同系统的明确选定授权。例如，先查库存，再修改商城对应商品的价格
 并上架，每一步使用对应系统的原授权与审批规则。受控系统说明和业务主体名称帮助宿主在搜索工具前
 说明操作目标；0.4.0 引入的对话归档继续把可见消息关联到各项原始业务动作。
 
-当前完整版本配套 SDK 0.6.0 与 BailingHub Core 0.8.0，新增附件、只读回执与任务控制见[升级指南](UPGRADE_v0.6.0.md)。客户端负责显式选择范围、
+当前完整版本配套 SDK 0.8.0 与 BailingHub Core 0.10.0，工具参数、按需知识和输出预算见[升级指南](UPGRADE_v0.8.0.md)。既有附件、只读回执与任务控制保持兼容。客户端负责显式选择范围、
 保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
 原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
 
@@ -22,14 +25,16 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.6.0
+npm install --save-exact bailinghub-mcp-server@0.8.0
 ```
 
-公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.6.0` 后发布。
+公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.8.0` 后发布。
 不要在公开 manifest 中改用本机路径。
 
-服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
-`agent_client` 配置，以及已登记的公开 Client App ID 与业务授权页。
+服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `agent_client` 配置、
+原 Agent Session 与路由授权，以及已登记的公开 Client App ID 与授权页。
+只有业务工具直调需要 route 开启 `tools.agent_direct`；知识专用的 capabilities/search/read
+不要求开放业务工具执行。
 
 同绑定归档接口最低需要 Core 0.6.0；跨系统归档、受控系统说明与授权主体名称配套 Core 0.7.0，
 并按接口协商支持情况。按 [0.5.0 升级步骤](RELEASE_NOTES_v0.5.0.md#简体中文)执行，包括 Core 的
@@ -339,6 +344,17 @@ const result = await transport.invoke({
 SDK 把调用发给 BailingHub，不直连业务接口。Core 每次重新校验 Agent Session、route、工具、ACC
 声明、审批状态、限额和业务身份。不能让模型提供 Hub 地址、凭据、审批结论、行动主体或任意 route。
 
+调用的 `arguments` 必须保持 JSON 对象。SDK、MCP 动态工具和通用工具、旧 Agent 客户端统一允许
+`JSON.stringify(arguments)` 后 UTF-8 表示最多 **1 MiB（1,048,576 字节）**，包含键名及 JSON
+转义的开销。嵌套的 `source` 仍是对象，不要改成 JSON 字符串绕过校验。Core 的完整 HTTP 信封
+另有 2 MiB 上限，业务能力自己的字段和存储上限继续独立生效。本地超限抛出
+`BailingHubToolArgumentsError`（`arguments_too_large`、等价 HTTP 413、
+`dispatch=not_dispatched`），提供 `actualBytes` 和 `maxBytes`，不返回完整参数。本地拒绝尚未
+向中枢发送请求，不应调用 resume。旧 Core 在安装配套修复前，仍可能拒绝较小的请求。
+MCP 的 JSON 文本和 `structuredContent` 继续使用 `bailing.agent-feedback.v1` 反馈信封，超限时
+仅增加 `limits.limit_scope`、`actual_bytes`、`max_bytes` 或 `observed_bytes` 标量。
+本地超限沿用 `sdk` 来源，Core 拒绝保留 `core` 来源。
+
 调用等待审批、仍在执行或结果未知时，保留原 `invocation_id`，并沿用原连接和原授权恢复：
 
 ```js
@@ -574,3 +590,19 @@ if (typeof transport.getSystemInfo === 'function') {
 传入原关联并校验回显；模型 turn input 不能选择任务。SDK 不提供任务创建、暂停、继续或取消的
 管理方法，不携带管理员凭据。使用 SDK 0.6.0 和 Core 0.8.0。
 完整成员校验、计量含义、旧 Core 行为和商城/库存场景见[任务控制接缝](TASK_CONTROL.md)。
+
+## 按需读取工具使用指导
+
+发现结果继续保留短说明。可选 `usage_guidance_available` 表示另有完整指导，
+`description_truncated` 表示短说明被截取；旧 Core 可以不返回这两个字段。
+`client.getToolDetail({ name, capabilityRevision })` 以只读 GET 获取指定工具，
+携带当前 route 和 capability revision。宿主工厂提供同名方法，原连接、工作区和
+`expectedBinding` 由可信 options 传入，模型参数不能选择其他授权；请求前和成功、失败
+返回后均复核原绑定，拒绝授权替换后的迟到结果。
+
+结果保留工具原有治理与参数字段，另返回 `usage_guidance`：`text`、`truncated`、
+`source_chars`、`max_chars`、`source_bytes`、`max_bytes`。指导同时限制32768个
+Unicode字符和65536个UTF-8字节；有省略时明确标记，不能把未显示细节当作不存在。
+目录修订变化须重新发现；旧 Core 没有该可选端点时明确不支持。读取不会创建业务调用、
+派发、恢复或自动重试写操作，提供方文字不能覆盖权限、审批及其他机器校验。
+源码已具备该方法不等于对应 Core/SDK 已正式发行或被宿主安装。
