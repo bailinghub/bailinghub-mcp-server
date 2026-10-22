@@ -31,8 +31,10 @@ npm install --save-exact bailinghub-mcp-server@0.8.0
 公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.8.0` 后发布。
 不要在公开 manifest 中改用本机路径。
 
-服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
-`agent_client` 配置，以及已登记的公开 Client App ID 与业务授权页。
+服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `agent_client` 配置、
+原 Agent Session 与路由授权，以及已登记的公开 Client App ID 与授权页。
+只有业务工具直调需要 route 开启 `tools.agent_direct`；知识专用的 capabilities/search/read
+不要求开放业务工具执行。
 
 同绑定归档接口最低需要 Core 0.6.0；跨系统归档、受控系统说明与授权主体名称配套 Core 0.7.0，
 并按接口协商支持情况。按 [0.5.0 升级步骤](RELEASE_NOTES_v0.5.0.md#简体中文)执行，包括 Core 的

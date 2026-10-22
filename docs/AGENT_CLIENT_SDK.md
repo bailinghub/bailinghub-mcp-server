@@ -41,8 +41,11 @@ Required server surfaces:
 
 - BailingHub Agent Auth v1;
 - BailingHub Agent Client Runtime v1;
-- route `tools.agent_direct` and `agent_client` configuration;
-- a registered public Client App ID and business authorization page.
+- route `agent_client` configuration and the original Agent Session/route authorization;
+- route `tools.agent_direct` only when direct business-tool execution is required;
+- a registered public Client App ID and authorization page.
+
+Knowledge-only capabilities/search/read do not require enabling direct business tools.
 
 Same-binding archives retain a Core 0.6.0 API minimum. Use Core 0.7.0 for cross-system archives,
 controlled system descriptions and authorization subject names, and negotiate server support.

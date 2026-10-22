@@ -32,9 +32,12 @@ strip body text merely because a local setting requested on-demand delivery.
 
 ```js
 const found = await client.searchKnowledge({ query: 'homepage binding', runId: turn.run_id, limit: 3 })
-const page = await client.readKnowledge({ ref: found.hints[0].ref, runId: turn.run_id })
-if (page.next_cursor) {
-  const next = await client.readKnowledge({ ref: page.ref, runId: turn.run_id, cursor: page.next_cursor })
+const hint = (found.status === 'ok' || found.status === 'partial') ? found.hints[0] : undefined
+if (hint) {
+  const page = await client.readKnowledge({ ref: hint.ref, runId: turn.run_id })
+  if (page.next_cursor) {
+    const next = await client.readKnowledge({ ref: page.ref, runId: turn.run_id, cursor: page.next_cursor })
+  }
 }
 ```
 
@@ -69,7 +72,10 @@ accept snake-case aliases. Options use the original explicit `workspace`,
 reads validate the original binding before and after asynchronous work. Model
 arguments cannot choose an identity, route, connection or run.
 
-MCP exposes `search_business_knowledge` and `read_business_knowledge`. Start the
+The Agent Session MCP path exposes `search_business_knowledge` and
+`read_business_knowledge`. Fixed Client Token stdio continues to expose only the
+submit/get/wait job tools. Native DSH integration imports the SDK through its
+plugin; the MCP Registry descriptor configures the separate Client Token path. Start the
 authorized user turn first; subsequent reads bind the current run. These tools
 remain visible independently of business capability hits and return explicit
 `dispatch: not_dispatched`, `business_operation_performed: false`. Their presence

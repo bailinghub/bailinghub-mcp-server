@@ -5,8 +5,8 @@
 ## 新增与修复
 
 - Agent 工具参数按实际 `JSON.stringify(arguments)` 的 UTF-8 字节计算，上限为 1 MiB。保持对象结构；Core HTTP 信封与业务字段限制独立生效。超限返回安全的大小标量和 `not_dispatched`，不回显完整内容。
-- 短工具描述可以声明有补充指导；用 `getToolDetail()`，或 MCP `search_business_capabilities` 的 `tool_name` 与 `include_usage_guidance`，只读取当前授权、运行和能力修订下选定工具的有界指导。
-- 新增 `getKnowledgeCapabilities()`、`searchKnowledge()`、`readKnowledge()`，以及 MCP 的 `search_business_knowledge`、`read_business_knowledge`。协议协商成功后按需返回提示和分页正文；不支持时保留原 inline 知识。知识是参考资料，不覆盖指令、授权、审批或记忆。Core 原生聊天和嵌入的知识组装不变。
+- 短工具描述可以声明有补充指导；用 `getToolDetail()`，或 Agent Session MCP 的 `search_business_capabilities` 的 `tool_name` 与 `include_usage_guidance`，只读取当前授权、运行和能力修订下选定工具的有界指导。
+- 新增 `getKnowledgeCapabilities()`、`searchKnowledge()`、`readKnowledge()`，以及 Agent Session MCP 的 `search_business_knowledge`、`read_business_knowledge`。固定 Client Token stdio 仍只提供提交、查询与等待 Job 的工具；原生 DSH 插件通过 SDK 接入，不使用 MCP Registry 描述符。协议协商成功后按需返回提示和分页正文；不支持时保留原 inline 知识。知识是参考资料，不覆盖指令、授权、审批或记忆。Core 原生聊天和嵌入的知识组装不变。
 - `bailinghub-mcp-server/usage` 新增 `resolveModelOutputBudget()` 与 `modelOutputOptions()`，分开默认请求预算、服务允许上限及可选供应商能力上限，明确输出字段与思考/答案范围。旧目录保持兼容；不改写原已准备请求，不静默裁剪或改名输出参数。
 - MCP SDK 更新至 1.32.1，更新相关生产依赖修复；发布仍执行正常测试、审计与 prepack 门禁。
 
