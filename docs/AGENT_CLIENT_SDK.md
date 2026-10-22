@@ -12,7 +12,7 @@ using each system's original authorization and approval rules. Controlled system
 business-supplied subject names help the host explain the targets before searching for tools.
 The conversation archive introduced in 0.4.0 continues to link visible messages to original actions.
 
-For the complete current release, install SDK 0.6.0 with Core 0.8.0. See the [upgrade guide](UPGRADE_v0.6.0.en.md) for attachments, original receipts and task controls.
+For the complete current release, use SDK 0.8.0 with Core 0.10.0. See the [upgrade guide](UPGRADE_v0.8.0.en.md) for tool input bounds, on-demand knowledge and explicit model output budgets. Existing attachments, original receipts and task controls remain compatible.
 Implement explicit scope selection, local visible-history capture and retry in the host.
 The SDK does not create an account-selection UI or automatically collect conversations.
 Existing Client Token, browser authorization, business invocation and recovery APIs stay compatible.
@@ -31,10 +31,10 @@ resolves the one authorization entry registered for `clientAppId`.
 Install the SDK package version that matches the Agent Client release line:
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.6.0
+npm install --save-exact bailinghub-mcp-server@0.8.0
 ```
 
-Use an exact ordinary dependency for a published host adapter. Publish it only after `0.6.0`
+Use an exact ordinary dependency for a published host adapter. Publish it only after `0.8.0`
 resolves from the public npm registry; never substitute a local path in a public manifest.
 
 Required server surfaces:

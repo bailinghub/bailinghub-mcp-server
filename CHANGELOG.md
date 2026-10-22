@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0 - 2026-10-22
+
+Accept bounded 1 MiB serialized Agent tool arguments, expose selected tool guidance and negotiated knowledge search/read, and separate model default output budgets from service ceilings. Preserve original-operation recovery and leave long-task continuation to the host. Update the MCP SDK and production dependency fixes.
+See [changes](docs/RELEASE_NOTES_v0.8.0.en.md) and [upgrade](docs/UPGRADE_v0.8.0.en.md).
+
 ## 0.7.0 - 2026-09-23
 
 Optional host-orchestrated model gateway, USD plan presentation and asynchronous image tools.

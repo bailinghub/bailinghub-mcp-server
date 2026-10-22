@@ -1,11 +1,10 @@
 # BailingHub MCP Server
 
-## 0.7.0: optional model services and plan billing
+## 0.8.0: larger tool inputs and knowledge on demand
 
-Keep orchestration local while Core relays model requests and meters shared allowance asynchronously. Discover chat models and image tools separately; preserve business authorization, approvals and audit. Pair Core 0.9.0 / SDK 0.7.0 / DSH 0.7.0.
+Save complete page content without a small adapter limit, read only the relevant business guidance, and choose model defaults independently of service ceilings. Pair Core 0.10.0 / SDK 0.8.0 / DSH 0.8.0. Existing authorization, approval and original-operation recovery remain in force; automatic task continuation is a host responsibility.
 
-[Changes](docs/RELEASE_NOTES_v0.7.0.en.md) · [Upgrade](docs/UPGRADE_v0.7.0.en.md)
-
+[Changes](docs/RELEASE_NOTES_v0.8.0.en.md) · [Upgrade](docs/UPGRADE_v0.8.0.en.md)
 
 [简体中文](README.zh-CN.md) | English
 
@@ -29,7 +28,7 @@ business system still makes the final authorization decision.
 
 A host can let a user ask: “Check tumbler stock; if available, change the corresponding shop product to 59 and list it.” This SDK adds original-target checks for different systems on one Hub, system descriptions before tool search, and business-supplied authorization names. Actions must be exposed by the business systems, product mappings confirmed, and original approvals respected.
 
-Use **Core 0.9.0 + SDK 0.7.0** and a compatible host for these extensions, within one Hub and one administrator audit domain. The host owns explicit selection and persistent scope; the standalone MCP server does not gain a multi-system selection UI.
+Use **Core 0.10.0 + SDK 0.8.0** and a compatible host for these extensions, within one Hub and one administrator audit domain. The host owns explicit selection and persistent scope; the standalone MCP server does not gain a multi-system selection UI.
 
 [Scenarios, changes and upgrade steps](docs/RELEASE_NOTES_v0.5.0.md)
 
@@ -38,7 +37,7 @@ Use **Core 0.9.0 + SDK 0.7.0** and a compatible host for these extensions, withi
 When an Agent Client host enables conversation archiving, a BailingHub administrator can follow
 the user's request, the assistant's visible replies and the resulting business actions together.
 For example, one conversation can compare two separately authorized stores while retaining the
-original execution record for each store. Use **BailingHub Core 0.9.0** with a host that
+original execution record for each store. Use **BailingHub Core 0.10.0** with a host that
 captures and synchronizes the conversation. The archive API minimum is Core 0.6.0.
 
 Version 0.4.0 introduced that synchronization API. It does not capture conversations by itself. A native host
@@ -49,9 +48,9 @@ selection and conversation interface. The standalone MCP server keeps its existi
 
 | Your setup | Next step |
 | --- | --- |
-| You use an MCP application with a fixed business route | Install this package at `0.7.0` using the [MCP setup below](#install). Your existing Client Token and Agent Session flows remain compatible. |
+| You use an MCP application with a fixed business route | Install this package at `0.8.0` using the [MCP setup below](#install). Your existing Client Token and Agent Session flows remain compatible. |
 | You use a native Agent Client, such as DSH | Upgrade through that host's matching release and follow its account-selection guide. Installing this MCP command alone does not add a multi-account conversation UI. |
-| You build an Agent Client host | Install `bailinghub-mcp-server@0.7.0`, use Core `0.9.0` for the complete feature set, and follow the [SDK guide](docs/AGENT_CLIENT_SDK.md). |
+| You build an Agent Client host | Install `bailinghub-mcp-server@0.8.0`, use Core `0.10.0` for the complete feature set, and follow the [SDK guide](docs/AGENT_CLIENT_SDK.md). |
 
 You do not need to change business API declarations for this SDK upgrade. Existing read/write,
 approval and invocation recovery behavior stays in place. Conversation upload retries use the
@@ -71,8 +70,8 @@ which a human approves one local Agent through the system browser.
 | `get_governed_job` | Read the current public state of a credential-owned job |
 | `wait_for_governed_job` | Poll one job for at most 60 seconds without resubmitting it |
 
-The Agent Session MCP path starts with five small meta-tools for turn bootstrap,
-capability search, governed invocation/recovery, and visible run completion. BailingHub then
+The Agent Session MCP path starts with seven small meta-tools for turn bootstrap,
+capability and reference-knowledge search/read, governed invocation/recovery, and visible run completion. BailingHub then
 returns at most 12 active business tools for the current turn; each replacement removes the
 previous active set instead of growing the model context indefinitely.
 
@@ -161,7 +160,7 @@ For the legacy static-job mode, configure an MCP host to spawn:
   "mcpServers": {
     "bailinghub": {
       "command": "npx",
-      "args": ["-y", "bailinghub-mcp-server@0.7.0"],
+      "args": ["-y", "bailinghub-mcp-server@0.8.0"],
       "env": {
         "BAILINGHUB_BASE_URL": "https://hub.example.com",
         "BAILINGHUB_CLIENT_TOKEN": "replace-with-a-route-scoped-client-token",
@@ -178,7 +177,7 @@ Authorize one registered public Agent client and one fixed route before starting
 host without a Client Token:
 
 ```bash
-npm install --global bailinghub-mcp-server@0.7.0
+npm install --global bailinghub-mcp-server@0.8.0
 
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \
@@ -279,7 +278,7 @@ Agent Session mode uses the additive Agent Auth v1 and Agent API v1 surfaces:
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
 The host SDK additionally uses conversation audit write APIs available from Core 0.6.0.
-Use Core 0.7.0 for the new cross-system mode, system descriptions and authorization names. These APIs are not exposed as MCP/model tools:
+Use Core 0.8.0 for the new cross-system mode, system descriptions and authorization names. These APIs are not exposed as MCP/model tools:
 
 - `POST /agent-api/v1/conversation-audits`
 - `POST /agent-api/v1/conversation-audits/{conversation_id}/confirm`

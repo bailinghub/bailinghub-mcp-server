@@ -1,11 +1,10 @@
 # BailingHub MCP Server
 
-## 0.7.0：可选模型服务与套餐计费
+## 0.8.0：完整工具输入与知识按需读取
 
-本地宿主继续编排，中枢提供模型转发、共享额度与异步计量。对话模型和图片工具分开下发；原业务权限、审批与审计保持。配套 Core 0.9.0 / SDK 0.7.0 / DSH 0.7.0。
+提交完整页面内容时不再受适配器的小参数限制；只读取相关业务指导，并把模型默认预算与服务上限分开。配套 Core 0.10.0 / SDK 0.8.0 / DSH 0.8.0。原授权、审批和原操作恢复保持；任务自动续跑由宿主实现。
 
-[本次变化](docs/RELEASE_NOTES_v0.7.0.md) · [升级指南](docs/UPGRADE_v0.7.0.md)
-
+[本次变化](docs/RELEASE_NOTES_v0.8.0.md) · [升级指南](docs/UPGRADE_v0.8.0.md)
 
 [English](README.md) | 简体中文
 
@@ -25,7 +24,7 @@
 
 例如，用户说：“先查保温杯库存，有货再把商城对应商品改为 59 元并上架。”SDK 为宿主提供同一中枢下不同系统的原目标校验、首次工具搜索前的系统说明，以及业务后端提供的授权名称。相关业务能力和商品映射需已准备，原审批继续生效。
 
-这些增量配套 **Core 0.9.0 + SDK 0.7.0** 及兼容宿主，范围限同一中枢、同一管理审计域。宿主负责显式选择和持久化会话范围；独立 MCP Server 不会自动新增多系统选择界面。
+这些增量配套 **Core 0.10.0 + SDK 0.8.0** 及兼容宿主，范围限同一中枢、同一管理审计域。宿主负责显式选择和持久化会话范围；独立 MCP Server 不会自动新增多系统选择界面。
 
 [看具体变化和升级步骤](docs/RELEASE_NOTES_v0.5.0.md#简体中文)
 
@@ -34,7 +33,7 @@
 
 支持归档的 Agent 客户端可以把“用户提出了什么、助手如何回复、最后执行了哪些业务动作”
 连成一条可查看的记录。例如，在一段对话里比较两家已经分别授权的门店，管理员既能看到
-整段可见对话，也能追溯每家门店各自的执行记录。推荐配合 **BailingHub Core 0.9.0**，
+整段可见对话，也能追溯每家门店各自的执行记录。推荐配合 **BailingHub Core 0.10.0**，
 以及负责记录和同步对话的客户端使用；归档接口最低需要 Core 0.6.0。
 
 0.4.0 引入了对话同步接口。SDK 本身不会自动记录聊天；账号选择和会话界面由
@@ -45,9 +44,9 @@
 
 | 你的使用方式 | 下一步 |
 | --- | --- |
-| 在 MCP 应用里连接一条固定业务路由 | 按下方[安装说明](#安装)使用 `0.7.0`。原 Client Token 和 Agent Session 用法继续兼容。 |
+| 在 MCP 应用里连接一条固定业务路由 | 按下方[安装说明](#安装)使用 `0.8.0`。原 Client Token 和 Agent Session 用法继续兼容。 |
 | 使用 DSH 等原生 Agent 客户端 | 按客户端配套版本升级，并按其指南选择会话可用账号。单独安装这个 MCP 命令不会增加多账号会话界面。 |
-| 开发自己的 Agent 客户端 | 安装 `bailinghub-mcp-server@0.7.0`，完整新能力配合 Core `0.9.0`，再按 [SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)接入。 |
+| 开发自己的 Agent 客户端 | 安装 `bailinghub-mcp-server@0.8.0`，完整新能力配合 Core `0.10.0`，再按 [SDK 指南](docs/AGENT_CLIENT_SDK.zh-CN.md)接入。 |
 
 升级此 SDK 不需要修改业务 API 声明。原有读写、审批和调用恢复规则继续生效。
 对话补传沿用原事件 ID，不会重新执行业务动作；聚合归档仅供当前部署有权限的管理员读取，
@@ -65,7 +64,7 @@ Session 模式：用户通过系统浏览器授权当前本地智能体。
 | `get_governed_job` | 查询当前 Client 所拥有任务的公开状态 |
 | `wait_for_governed_job` | 最多等待 60 秒，不会重新提交业务操作 |
 
-Agent Session MCP 路径初始只暴露 5 个小型元工具，用于启动本轮、搜索能力、
+Agent Session MCP 路径初始只暴露 7 个小型元工具，用于启动本轮、搜索能力及参考知识、按需读取知识、
 受治理调用/恢复以及同步可见结果。BailingHub 每轮最多返回 12 个 active tools，
 新集合会替换旧集合，不会在上下文中无限累加。
 
@@ -145,7 +144,7 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
   "mcpServers": {
     "bailinghub": {
       "command": "npx",
-      "args": ["-y", "bailinghub-mcp-server@0.7.0"],
+      "args": ["-y", "bailinghub-mcp-server@0.8.0"],
       "env": {
         "BAILINGHUB_BASE_URL": "https://hub.example.com",
         "BAILINGHUB_CLIENT_TOKEN": "替换为仅允许指定-route-的-client-token",
@@ -162,7 +161,7 @@ route 的专用 Client Token。不同 MCP 客户端需要不同边界时，应�
 route 完成授权：
 
 ```bash
-npm install --global bailinghub-mcp-server@0.7.0
+npm install --global bailinghub-mcp-server@0.8.0
 
 bailinghub-mcp-server login \
   --base-url https://hub.example.com \
@@ -252,7 +251,7 @@ Agent Session 模式另外消费增量的 Agent Auth v1 与 Agent API v1：
 - `POST /agent-api/v1/tool-invocations/{invocation_id}/resume`
 - `POST /agent-api/v1/runs/{run_id}/complete`
 
-宿主 SDK 另外使用从 Core 0.6.0 开始提供的对话归档写入接口，跨系统模式、系统说明和授权名称配套 Core 0.7.0。
+宿主 SDK 另外使用从 Core 0.6.0 开始提供的对话归档写入接口，跨系统模式、系统说明和授权名称配套 Core 0.8.0。
 这些接口不作为 MCP 或模型工具开放：
 
 - `POST /agent-api/v1/conversation-audits`

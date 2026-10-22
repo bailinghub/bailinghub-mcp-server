@@ -24,7 +24,7 @@ version, tests, issues, npm package, and release process.
 | BailingHub routes, approvals, runtime behavior, and trace storage | BailingHub repository |
 | Business authorization and trusted-subject resolution | Business system |
 | MCP protocol and host behavior | MCP project and host implementation |
-| DSH/Codex/OpenClaw-specific lifecycle and UI | Each host adapter repository |
+| Host-specific lifecycle and UI | Each host adapter repository |
 | Private host configuration, URLs, tokens, and run evidence | Deploying organization |
 
 ## Dependency Direction

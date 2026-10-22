@@ -9,7 +9,7 @@
 并上架，每一步使用对应系统的原授权与审批规则。受控系统说明和业务主体名称帮助宿主在搜索工具前
 说明操作目标；0.4.0 引入的对话归档继续把可见消息关联到各项原始业务动作。
 
-当前完整版本配套 SDK 0.6.0 与 BailingHub Core 0.8.0，新增附件、只读回执与任务控制见[升级指南](UPGRADE_v0.6.0.md)。客户端负责显式选择范围、
+当前完整版本配套 SDK 0.8.0 与 BailingHub Core 0.10.0，工具参数、按需知识和输出预算见[升级指南](UPGRADE_v0.8.0.md)。既有附件、只读回执与任务控制保持兼容。客户端负责显式选择范围、
 保存可见消息和断线补传；SDK 不会自动增加账号选择界面，也不会自行记录聊天。
 原 Client Token、浏览器授权、业务调用和恢复 API 继续兼容。
 
@@ -25,10 +25,10 @@ SDK 不内嵌 BailingHub，不替开发者注册业务系统，不自动生成�
 安装与 Agent Client 发布线匹配的 SDK 包：
 
 ```bash
-npm install --save-exact bailinghub-mcp-server@0.6.0
+npm install --save-exact bailinghub-mcp-server@0.8.0
 ```
 
-公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.6.0` 后发布。
+公开宿主适配器应使用精确普通 dependency，并在 npm Registry 能解析到 `0.8.0` 后发布。
 不要在公开 manifest 中改用本机路径。
 
 服务端需要具备 Agent Auth v1、Agent Client Runtime v1、route 的 `tools.agent_direct` /
