@@ -52,6 +52,11 @@ optional peer or local path.
     `gitHead` before MCP Registry publication. A timeout stops the job; do not republish the accepted
     version. Inspect the original npm version status, wait for public readback, then resume only the
     necessary workflow steps. An identity mismatch requires investigation rather than another publish.
+    The preflight also fails closed on locked, rate-limited or unavailable reads. Only the first
+    workflow attempt can publish after an exact-version 404. A rerun must first observe matching
+    public metadata and skips npm publication; if it remains unreadable, it stops conservatively,
+    including when an earlier attempt failed before publishing. Investigate that state rather than
+    adding an override or treating a failed read as permission to republish.
 16. Validate `mcpName` against `server.json`, publish metadata with the official
     `mcp-publisher`, and verify it through the Registry API.
 17. Only after this package is publicly resolvable may a host adapter publish with an exact normal

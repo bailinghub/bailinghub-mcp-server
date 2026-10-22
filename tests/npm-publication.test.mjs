@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { waitForNpmPublication } from '../scripts/wait-npm-publication.mjs';
+import { checkNpmPublicationBeforePublish, waitForNpmPublication } from '../scripts/wait-npm-publication.mjs';
 
 const expected = { packageName: 'bailinghub-mcp-server', version: '0.8.0', expectedGitHead: 'a'.repeat(40) };
 const metadata = { name: expected.packageName, version: expected.version, gitHead: expected.expectedGitHead };
@@ -44,6 +44,32 @@ test('accepted but not yet public version waits through 404 and temporary reads 
   assert.equal(result.waitedMs, 20);
   assert.equal(f.pending.length, 2);
   assert.deepEqual(f.requests.map(({ init }) => init.method), ['GET', 'GET', 'GET']);
+});
+
+test('locked processing, rate limits and temporary service failures remain read-only waits', async () => {
+  const f = fixture([{ status: 423 }, { status: 429 }, { status: 503 }, { status: 200, body: metadata }]);
+  f.options.timeoutMs = 40;
+  assert.equal((await waitForNpmPublication(f.options)).attempts, 4);
+  assert.deepEqual(f.requests.map(({ init }) => init.method), ['GET', 'GET', 'GET', 'GET']);
+});
+
+test('only an initial missing version permits publish; a rerun must first read the accepted identity', async () => {
+  const absent = fixture([{ status: 404 }]);
+  assert.deepEqual(await checkNpmPublicationBeforePublish({ ...absent.options, runAttempt: 1 }), { published: false });
+  const readable = fixture([{ status: 200, body: metadata }]);
+  assert.equal((await checkNpmPublicationBeforePublish({ ...readable.options, runAttempt: 1 })).published, true);
+  const processing = fixture([{ status: 404 }, { status: 200, body: metadata }]);
+  assert.equal((await checkNpmPublicationBeforePublish({ ...processing.options, runAttempt: 2 })).published, true);
+  assert.deepEqual(processing.requests.map(({ init }) => init.method), ['GET', 'GET']);
+  await assert.rejects(checkNpmPublicationBeforePublish({ ...absent.options, runAttempt: 2 }), { code: 'NPM_PUBLICATION_TIMEOUT' });
+});
+
+test('uncertain initial preflight never converts locked, rejected or network errors into publish permission', async () => {
+  for (const response of [{ status: 423 }, { status: 429 }, { status: 503 }, new Error('network')]) {
+    const f = fixture([response]);
+    await assert.rejects(checkNpmPublicationBeforePublish({ ...f.options, runAttempt: 1 }), { code: 'NPM_PUBLICATION_PREFLIGHT_UNCERTAIN' });
+    assert.equal(f.requests.length, 1);
+  }
 });
 
 test('publication timeout is bounded and forbids a replacement publish', async () => {
@@ -92,7 +118,7 @@ test('oversized or malformed public metadata fails without logging or retrying i
 test('MCP Registry publication follows the bounded npm identity readback gate', async () => {
   const workflow = await readFile(new URL('../.github/workflows/publish.yml', import.meta.url), 'utf8');
   const publish = workflow.indexOf('run: npm publish --access public');
-  const wait = workflow.indexOf('run: node scripts/wait-npm-publication.mjs');
+  const wait = workflow.indexOf('run: node scripts/wait-npm-publication.mjs', publish);
   const registry = workflow.indexOf('run: ./mcp-publisher publish');
   assert.ok(publish >= 0 && wait > publish && registry > wait);
   assert.match(workflow, /GITHUB_SHA: \$\{\{ github\.sha \}\}/);
