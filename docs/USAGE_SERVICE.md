@@ -29,6 +29,46 @@ Capabilities must advertise `model_gateway` with schema `bailing.model-gateway.v
 
 `modelTools()` reads `/usage/v1/model/tools`, schema `bailing.model-tools.v1`. Each item has a stable `service_id`, `service_revision`, display label, capability/output kinds and a `tool:{name,description,input_schema}`. Register only `callable:true` items in the host's local tool registry. Keep unavailable items as configuration diagnostics with their explicit `reason`. Catalog reads neither generate media nor start business runs. Namespace registrations by service identity to avoid duplicate operator-defined names or collisions with business tools; tool names alone are never authorization identities.
 
+## Output budgets and provider semantics
+
+`max_output_tokens` is the operator's service ceiling, not the supplier's model capability. Explicit output policies add these three fields together to `bailing.usage-model.v1`:
+
+| Field | Meaning |
+| --- | --- |
+| `default_output_tokens` | Budget used when the caller does not choose a value; a positive integer no greater than the service ceiling |
+| `output_token_parameter` | The exact provider option, `max_tokens` or `max_completion_tokens` |
+| `output_budget_scope` | `completion_total` includes reported reasoning and answer output; `final_answer` limits the answer only |
+| `model_max_output_tokens` (optional) | Verified supplier maximum for this same parameter and scope; the service ceiling cannot exceed it |
+
+`max_completion_tokens` requires `completion_total`. `max_tokens` can have either scope, depending on the verified supplier route. The SDK does not infer semantics from a model name or assume that an OpenAI-compatible endpoint gives identically named parameters the same meaning. A supplier's thought budget is not an extra allowance to add to a total output ceiling. Image tools use their own parameters and do not adopt this conversation-token policy.
+
+An explicit descriptor's `provider_options` includes only the chosen output key, alongside its other supported options. A partial or contradictory policy is `USAGE_RESPONSE_INVALID`; it does not fall back to legacy. Gateways can advertise the additive `model_gateway.output_budget` capability with schema `bailing.model-output-budget.v1` and `separate_default`, `explicit_parameter`, `explicit_scope` all `true`.
+
+Old descriptors omit all these fields and keep their old behavior: the service ceiling doubles as the default and the request can use either previously supported output key. This is a compatibility fallback, not a newly verified default, scope or supplier maximum. Old consumers will still use the ceiling as their default even if an operator adds the new fields; update the consumer before enabling a policy that requires different semantics.
+
+Use the public helpers for **newly prepared requests**:
+
+```js
+import { resolveModelOutputBudget, modelOutputOptions } from 'bailinghub-mcp-server/usage'
+
+const catalog = await client.modelModels()
+const descriptor = catalog.items.find(item => item.service_id === selectedServiceId)
+if (!descriptor) throw new Error('Select a currently available service')
+const budget = resolveModelOutputBudget(descriptor)
+
+// The host can use this as its native defaultMaxTokens. Legacy is explicitly marked.
+const defaultMaxTokens = budget.defaultTokens
+// Omit tokens to use that default, or supply a deliberate per-request budget.
+const outputOptions = modelOutputOptions(descriptor, { tokens: requestedTokens })
+const providerOptions = { top_p: 0.9, ...outputOptions }
+```
+
+`resolveModelOutputBudget()` returns `mode:'explicit'|'legacy'`, `defaultTokens`, `maxTokens`, `parameter`, `scope` and `modelMaxTokens`. For legacy mode, the last three are `null`; `defaultTokens` is only the old ceiling fallback. `modelOutputOptions()` builds one fresh output option, rejects values above the ceiling, and never clamps them. Its optional `parameter` argument can select a legacy supported key or confirm the explicit key; a conflicting explicit key gives `USAGE_OUTPUT_PARAMETER_MISMATCH` before dispatch. The helpers do no I/O and never mutate a descriptor or an existing request.
+
+The host must build the option at its existing preparation boundary, using the selected descriptor and an intentional budget with the declared scope. Do not merge it over a different output key left by a serializer. Do not silently rename an existing `max_tokens` into `max_completion_tokens`, reinterpret a final-answer amount as a total amount, or patch a saved intent. Persist the selected descriptor and the final wire request with their existing digests. A new descriptor applies to a new request only. An old prepared request that has not yet reached Core may be rejected after a policy change; resolve that rejection explicitly and prepare a new operation rather than modifying the original intent. Already dispatched operations retain read-only recovery by their original ID.
+
+`USAGE_OUTPUT_PARAMETER_MISMATCH` exposes safe `feedback.output_budget:{expected_parameter,scope}`. `USAGE_OUTPUT_LIMIT` can expose `feedback.output_limit:{actual,allowed,parameter,scope?}`. The SDK retains only validated scalar fields, not messages, credentials or provider bodies. These pre-dispatch rejections do not authorize an automatic retry or a model switch.
+
 ## Shared allowance and display
 
 `modelSummary()` returns `bailing.billing-summary.v1`, with USD fields `availableUsd`, `consumedUsd`, `currentPeriodConsumedUsd`, `overageUsd`, the original grant and current plan. The plan supplies `serviceIds` and one `multiplier`; per-model input/output multipliers and Token balances no longer exist.
