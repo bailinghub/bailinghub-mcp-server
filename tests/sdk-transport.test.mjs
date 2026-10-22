@@ -41,7 +41,9 @@ function tool() {
 }
 
 async function setup(t, options = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'bailinghub-sdk-host-'));
+  const directory = await createLockFixtureDirectory(join(tmpdir(), 'bailinghub-sdk-host-'), candidate => [
+    `registry:${join(candidate, 'registry.json')}`,
+  ]);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const registry = new AgentConnectionRegistry(join(directory, 'registry.json'));
   const connectionStore = new AgentConnectionStore({
