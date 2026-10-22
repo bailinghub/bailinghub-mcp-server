@@ -47,6 +47,11 @@ optional peer or local path.
     `bailinghub-mcp-server/sdk`; no repository path or build tree may be visible.
 15. Publish the npm package with provenance through CI. Verify the exact npm version, sha512
     integrity and `gitHead` matching the immutable Tag commit; missing source identity fails the gate.
+    npm can accept a publication before its exact public metadata is readable. The Publish workflow
+    waits at most ten minutes using read-only official registry GETs and checks name, version and
+    `gitHead` before MCP Registry publication. A timeout stops the job; do not republish the accepted
+    version. Inspect the original npm version status, wait for public readback, then resume only the
+    necessary workflow steps. An identity mismatch requires investigation rather than another publish.
 16. Validate `mcpName` against `server.json`, publish metadata with the official
     `mcp-publisher`, and verify it through the Registry API.
 17. Only after this package is publicly resolvable may a host adapter publish with an exact normal

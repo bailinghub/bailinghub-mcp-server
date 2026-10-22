@@ -42,6 +42,11 @@ jobs:
         if: steps.npm-version.outputs.published != 'true'
         run: npm publish --access public
 
+      - name: Wait for exact npm publication and verify source identity
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: node scripts/wait-npm-publication.mjs
+
       - name: Install MCP Registry publisher
         shell: bash
         run: |
