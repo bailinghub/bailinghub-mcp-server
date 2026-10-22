@@ -38,6 +38,11 @@ workflow; it requires a separate reviewed policy and tested non-`latest` dist-ta
 
 ## 2. Verify the final candidate
 
+The list below specifies required coverage, not separate repeated runs. Cite checks already present
+in this candidate's normal prepack or CI logs, including contract and stdio tests; add only applicable
+seams that those logs do not cover. Actual-archive inspection and official-registry readback remain
+separate gates.
+
 1. Use a clean checkout of the exact candidate. Publication is performed by the tag-triggered
    workflow from an ordinary Git clone of the immutable commit, not a linked Git worktree.
 2. Confirm the matching Core contracts are already released. SDK 0.8.0 pairs with Core 0.10.0.
